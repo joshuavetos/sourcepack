@@ -43,15 +43,7 @@ SECRET_PATTERNS = [
     ("slack_token", re.compile(r"xox[baprs]-[A-Za-z0-9\-]{20,}")),
 ]
 COMMON_DEPENDENCIES = ["fastapi", "flask", "django", "react", "vue", "svelte", "pytest", "typer", "click", "sqlalchemy", "prisma", "pydantic"]
-FEATURE_HINTS = {
-    "pdf": ["pdf", "pdf_parser", "pypdf", "pdfplumber"],
-    "ocr": ["ocr", "tesseract", "easyocr"],
-    "web server": ["fastapi", "flask", "django", "server.py", "app.py"],
-    "react": ["react", "frontend", "App.tsx", "App.jsx"],
-    "docker": ["Dockerfile", "docker-compose.yml", "compose.yaml"],
-    "authentication": ["auth", "jwt", "oauth", "login", "session"],
-    "database": ["sqlite", "postgres", "mysql", "sqlalchemy", "prisma", "database"],
-}
+FEATURE_NAMES = ("pdf", "ocr", "web server", "react", "docker", "authentication", "database")
 
 
 def utc_now() -> str:
@@ -437,6 +429,56 @@ def dependency_inventory(manifest: dict, packet: Path) -> set[str]:
     return deps
 
 
+def _has_import(content: str, *modules: str) -> bool:
+    module_pattern = "|".join(re.escape(module) for module in modules)
+    return bool(re.search(rf"(?m)^\s*(?:import|from)\s+({module_pattern})(?:\b|[._])", content))
+
+
+def feature_inventory(manifest: dict, packet: Path, deps: set[str] | None = None) -> set[str]:
+    if deps is None:
+        deps = dependency_inventory(manifest, packet)
+    contents = _packet_file_contents(packet)
+    files = {rec.get("relative_path", "").replace("\\", "/") for rec in manifest.get("included_files", [])}
+    lower_files = {rel.lower() for rel in files}
+    features: set[str] = set()
+
+    if any(Path(rel).name in {"Dockerfile", "docker-compose.yml", "compose.yaml"} for rel in files):
+        features.add("docker")
+    if any(rel.endswith(("/pdf_parser.py", "pdf_parser.py")) for rel in lower_files):
+        features.add("pdf")
+    if "react" in deps or any(rel in {"frontend/app.tsx", "frontend/app.jsx"} for rel in lower_files):
+        features.add("react")
+    if deps & {"fastapi", "flask", "django"} or any(Path(rel).name.lower() in {"server.py", "app.py"} for rel in files):
+        features.add("web server")
+    if deps & {"sqlalchemy", "prisma"} or any("/migrations/" in f"/{rel}/" or Path(rel).name.lower() in {"schema.prisma", "schema.sql"} for rel in files):
+        features.add("database")
+    if any(part == "auth" or part.startswith("auth_") for rel in lower_files for part in Path(rel).parts):
+        features.add("authentication")
+
+    for rel, content in contents.items():
+        suffix = Path(rel).suffix.lower()
+        if suffix == ".py":
+            if _has_import(content, "pypdf", "pdfplumber", "fitz") or re.search(r"(?i)\.pdf\b", content):
+                features.add("pdf")
+            if _has_import(content, "fastapi", "flask", "django") or re.search(r"(?m)^\s*@\w+\.(?:route|get|post|put|patch|delete)\(", content):
+                features.add("web server")
+            if _has_import(content, "sqlalchemy", "prisma") or re.search(r"(?i)\b(sqlite|postgres(?:ql)?|mysql)://", content):
+                features.add("database")
+            if _has_import(content, "jwt", "oauthlib", "authlib") or re.search(r"(?i)@\w+\.(?:route|get|post)\([^)]*login", content):
+                features.add("authentication")
+            if _has_import(content, "pytesseract", "easyocr"):
+                features.add("ocr")
+        elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
+            if re.search(r"""(?:from\s+["']react["']|require\s*\(\s*["']react["']|import\s+React\b)""", content):
+                features.add("react")
+            if re.search(r"(?i)\b(jwt|oauth|session|login)\b", content):
+                features.add("authentication")
+        elif Path(rel).name.lower() == "package.json":
+            if re.search(r'"react"\s*:', content):
+                features.add("react")
+    return features
+
+
 def judge_ai_answer(packet_path: str | Path, ai_answer_path: str | Path, out_dir: str | Path | None = None) -> dict:
     packet = Path(packet_path)
     manifest = load_manifest(packet)
@@ -465,9 +507,9 @@ def judge_ai_answer(packet_path: str | Path, ai_answer_path: str | Path, out_dir
             if not any(ev in known_files or any(k.endswith(ev) for k in known_files) for ev in evidence):
                 report["unsupported_commands"].append(cmd)
     lower_text = ai_text.lower()
-    evidence_blob = "\n".join(known_files).lower() + "\n" + ((packet / "context.md").read_text(encoding="utf-8", errors="ignore").lower() if (packet / "context.md").exists() else "")
-    for feature, hints in FEATURE_HINTS.items():
-        if feature in lower_text and not any(h.lower() in evidence_blob for h in hints):
+    supported_features = feature_inventory(manifest, packet, deps)
+    for feature in FEATURE_NAMES:
+        if feature in lower_text and feature not in supported_features:
             report["unsupported_capabilities"].append(feature)
     lines = ["# SourcePack Judgment Report", "", "Verdict: " + ("FAIL" if any(report[k] for k in ["missing_files", "unsupported_dependencies", "unsupported_commands", "unsupported_capabilities"]) else "PASS"), ""]
     for section, label in [("supported_files", "Supported File References"), ("missing_files", "Missing File References"), ("unsupported_dependencies", "Unsupported Dependencies"), ("unsupported_commands", "Unsupported Commands"), ("unsupported_capabilities", "Unsupported Capabilities")]:

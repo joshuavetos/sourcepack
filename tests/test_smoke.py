@@ -57,5 +57,26 @@ class SourcePackSmokeTest(unittest.TestCase):
             self.assertIn("[REDACTED:openai_key]", context)
             self.assertEqual(run_cli(["verify", str(packet), "--against", str(repo)]), 0)
 
+
+    def test_readme_negative_prose_does_not_create_capability_evidence(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td)
+            repo = tmp / "repo"
+            repo.mkdir()
+            (repo / "README.md").write_text("PDF parsing is not supported. No React frontend. No database.")
+            packet = tmp / "packet"
+
+            self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
+
+            answer = tmp / "ai_answer.md"
+            answer.write_text("This project supports PDF parsing, React, and database storage.")
+            judgment = tmp / "judgment"
+
+            self.assertEqual(run_cli(["judge", str(packet), str(answer), "--out", str(judgment)]), 0)
+            report = (judgment / "judgment_report.md").read_text()
+            self.assertIn("- [UNSUPPORTED] pdf", report)
+            self.assertIn("- [UNSUPPORTED] react", report)
+            self.assertIn("- [UNSUPPORTED] database", report)
+
 if __name__ == "__main__":
     unittest.main()

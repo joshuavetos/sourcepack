@@ -1,0 +1,21 @@
+{
+  "supported_files": [
+    "pyproject.toml",
+    "sourcepack/judge.py",
+    "sourcepack/verify.py"
+  ],
+  "missing_files": [
+    "frontend/App.tsx",
+    "sourcepack/pdf_parser.py",
+    "sourcepack/server.py"
+  ],
+  "unsupported_dependencies": [
+    "fastapi"
+  ],
+  "unsupported_commands": [
+    "docker compose up"
+  ],
+  "unsupported_capabilities": [
+    "docker"
+  ]
+}

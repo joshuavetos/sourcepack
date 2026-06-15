@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from sourcepack.cli import run_cli
+from sourcepack.cli import dependency_inventory, load_manifest, run_cli
 
 
 class SourcePackSmokeTest(unittest.TestCase):
@@ -29,6 +29,33 @@ class SourcePackSmokeTest(unittest.TestCase):
             report = (judgment / "judgment_report.md").read_text()
             self.assertIn("sourcepack/server.py", report)
             self.assertIn("docker compose up", report)
+
+    def test_readme_prose_does_not_create_dependency_evidence(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td)
+            repo = tmp / "repo"
+            repo.mkdir()
+            (repo / "README.md").write_text("Local-first CLI. No Docker. No FastAPI. No PDF parsing.")
+            packet = tmp / "packet"
+
+            self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
+
+            self.assertNotIn("fastapi", dependency_inventory(load_manifest(packet), packet))
+
+    def test_verify_against_uses_source_hash_when_packet_is_redacted(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td)
+            repo = tmp / "repo"
+            repo.mkdir()
+            secret_line = "OPENAI_API_KEY=sk-proj-SECRETSECRETSECRETSECRET\n"
+            (repo / "config.py").write_text(secret_line)
+            packet = tmp / "packet"
+
+            self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
+
+            context = (packet / "context.md").read_text()
+            self.assertIn("[REDACTED:openai_key]", context)
+            self.assertEqual(run_cli(["verify", str(packet), "--against", str(repo)]), 0)
 
 if __name__ == "__main__":
     unittest.main()

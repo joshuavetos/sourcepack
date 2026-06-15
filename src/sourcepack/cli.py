@@ -108,6 +108,8 @@ class IncludedFile:
     absolute_path: str
     size_bytes: int
     sha256: str
+    source_sha256: str
+    packet_sha256: str
     estimated_tokens: int
     extension: str
     content: str
@@ -183,17 +185,21 @@ class SourceScanner:
                     self.ignored_files.append(IgnoredFile(rel_str, "decode_error")); continue
                 except OSError:
                     self.ignored_files.append(IgnoredFile(rel_str, "read_error")); continue
+                source_sha256 = sha256_text(content)
                 if self.redact:
                     redacted, reds = redact_secrets(content)
                     for r in reds:
                         r["file"] = rel_str
                     self.redactions.extend(reds)
                     content = redacted
+                packet_sha256 = sha256_text(content)
                 self.included_files.append(IncludedFile(
                     relative_path=rel_str,
                     absolute_path=str(fp.resolve()),
                     size_bytes=size,
-                    sha256=sha256_text(content),
+                    sha256=packet_sha256,
+                    source_sha256=source_sha256,
+                    packet_sha256=packet_sha256,
                     estimated_tokens=estimate_tokens(content),
                     extension=fp.suffix.lower(),
                     content=content,
@@ -322,7 +328,14 @@ def verify_packet(packet_path: str | Path, against: str | Path | None = None) ->
                     print(f"FAIL source unreadable {rel}")
                     ok = False
                     continue
-                if sha256_text(content) != rec.get("sha256"):
+                expected_source_hash = rec.get("source_sha256")
+                if expected_source_hash is None:
+                    expected_source_hash = rec.get("sha256")
+                    redacted, _ = redact_secrets(content)
+                    content_hash = sha256_text(redacted)
+                else:
+                    content_hash = sha256_text(content)
+                if content_hash != expected_source_hash:
                     print(f"FAIL source changed {rel}")
                     ok = False
         current_files = []
@@ -347,12 +360,80 @@ def extract_refs(text: str) -> set[str]:
     return {r.replace("\\", "/") for r in refs}
 
 
-def dependency_inventory(manifest: dict, packet: Path) -> set[str]:
-    deps = set()
-    context = (packet / "context.md").read_text(encoding="utf-8", errors="ignore") if (packet / "context.md").exists() else ""
+def _packet_file_contents(packet: Path) -> dict[str, str]:
+    context_path = packet / "context.md"
+    if not context_path.exists():
+        return {}
+    text = context_path.read_text(encoding="utf-8", errors="ignore")
+    contents: dict[str, str] = {}
+    current: str | None = None
+    body: list[str] = []
+    in_content = False
+    for line in text.splitlines():
+        if line.startswith("## File: "):
+            if current is not None:
+                contents[current] = "\n".join(body).rstrip("\n")
+            current = line.removeprefix("## File: ").strip()
+            body = []
+            in_content = False
+        elif current is not None and line == "Content:":
+            in_content = True
+            body = []
+        elif current is not None and in_content and line == "---":
+            contents[current] = "\n".join(body).rstrip("\n")
+            current = None
+            body = []
+            in_content = False
+        elif current is not None and in_content:
+            body.append(line)
+    if current is not None:
+        contents[current] = "\n".join(body).rstrip("\n")
+    return contents
+
+
+def _normalize_dependency_name(name: str) -> str:
+    return name.strip().lower().replace("_", "-")
+
+
+def _add_common_dependency(deps: set[str], name: str):
+    normalized = _normalize_dependency_name(name)
     for dep in COMMON_DEPENDENCIES:
-        if re.search(rf"(?i)\b(import\s+{re.escape(dep)}|from\s+{re.escape(dep)}|{re.escape(dep)}\b)", context):
+        if normalized == _normalize_dependency_name(dep):
             deps.add(dep.lower())
+
+
+def dependency_inventory(manifest: dict, packet: Path) -> set[str]:
+    deps: set[str] = set()
+    contents = _packet_file_contents(packet)
+    for rec in manifest.get("included_files", []):
+        rel = rec.get("relative_path", "")
+        content = contents.get(rel, "")
+        name = Path(rel).name.lower()
+        suffix = Path(rel).suffix.lower()
+        if name == "pyproject.toml":
+            for quoted in re.findall(r"""["']([A-Za-z0-9_.-]+)(?:[<>=!~;\[].*)?["']""", content):
+                _add_common_dependency(deps, quoted)
+        elif name.startswith("requirements") and name.endswith(".txt"):
+            for line in content.splitlines():
+                cleaned = line.split("#", 1)[0].strip()
+                if cleaned and not cleaned.startswith(("-", "--")):
+                    _add_common_dependency(deps, re.split(r"[<>=!~;\[]", cleaned, 1)[0])
+        elif name == "package.json":
+            try:
+                package = json.loads(content)
+            except json.JSONDecodeError:
+                package = {}
+            for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+                section_deps = package.get(section)
+                if isinstance(section_deps, dict):
+                    for dep_name in section_deps:
+                        _add_common_dependency(deps, dep_name)
+        elif suffix == ".py":
+            for imported in re.findall(r"(?m)^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", content):
+                _add_common_dependency(deps, imported)
+        elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
+            for imported in re.findall(r"""(?:from\s+["']|import\s*\(\s*["']|require\s*\(\s*["'])(@?[A-Za-z0-9_.-]+)""", content):
+                _add_common_dependency(deps, imported.split("/", 1)[0])
     return deps
 
 

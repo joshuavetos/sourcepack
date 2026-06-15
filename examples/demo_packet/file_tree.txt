@@ -1,7 +1,0 @@
-[IGN] .env - hidden_file
-[INC] README.md
-[INC] pyproject.toml
-[INC] sourcepack/cli.py
-[INC] sourcepack/judge.py
-[INC] sourcepack/verify.py
-[INC] tests/test_verify.py

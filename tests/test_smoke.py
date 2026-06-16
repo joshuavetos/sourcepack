@@ -496,14 +496,15 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             included = [rec["relative_path"] for rec in manifest["included_files"]]
             self.assertFalse(any(path.startswith(".sourcepack/") for path in included), included)
 
-    def test_prompt_refreshes_baseline_by_default(self):
+    def test_prompt_does_not_refresh_baseline_by_default(self):
         with TemporaryDirectory() as td:
             repo = self._repo(Path(td))
             self.assertEqual(run_cli(["prompt", str(repo), "first task"]), 0)
             (repo / "new_prompt_file.py").write_text("print('fresh')\n", encoding="utf-8")
             self.assertEqual(run_cli(["prompt", str(repo), "second task"]), 0)
-            manifest = json.loads((repo / ".sourcepack" / "current" / "packet" / "manifest.json").read_text(encoding="utf-8"))
-            self.assertIn("new_prompt_file.py", [rec["relative_path"] for rec in manifest["included_files"]])
+            prompt_manifest = json.loads((repo / ".sourcepack" / "prompt" / "packet" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertIn("new_prompt_file.py", [rec["relative_path"] for rec in prompt_manifest["included_files"]])
+            self.assertFalse((repo / ".sourcepack" / "baseline" / "packet" / "manifest.json").exists())
 
     def test_diff_missing_baseline_with_changes_fails_without_autobaseline(self):
         with TemporaryDirectory() as td:
@@ -519,7 +520,7 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             report = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text(encoding="utf-8"))
             self.assertEqual(report["verdict"], "FAIL")
             self.assertIn("baseline_missing", {f["id"] for f in report["findings"]})
-            self.assertFalse((repo / ".sourcepack" / "current" / "packet" / "manifest.json").exists())
+            self.assertFalse((repo / ".sourcepack" / "baseline" / "packet" / "manifest.json").exists())
 
     def test_prompt_creates_storage_gitignore_and_prompt_files(self):
         with TemporaryDirectory() as td:
@@ -528,12 +529,12 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             self.assertEqual(run_cli(["prompt", str(repo), "fix auth bug"]), 0)
             self.assertTrue((repo / ".sourcepack" / "current").is_dir())
             self.assertTrue((repo / ".sourcepack" / "reports").is_dir())
-            prompt = (repo / ".sourcepack" / "current" / "prompt.md").read_text(encoding="utf-8")
+            prompt = (repo / ".sourcepack" / "prompt" / "prompt.md").read_text(encoding="utf-8")
             self.assertIn("fix auth bug", prompt)
             self.assertIn("AI Grounding Instructions", prompt)
             self.assertIn("Do not invent files, dependencies, commands, services, or capabilities.", prompt)
-            self.assertTrue((repo / ".sourcepack" / "current" / "reality_map.json").exists())
-            self.assertTrue((repo / ".sourcepack" / "current" / "ai_instructions.md").exists())
+            self.assertTrue((repo / ".sourcepack" / "prompt" / "reality_map.json").exists())
+            self.assertTrue((repo / ".sourcepack" / "prompt" / "ai_instructions.md").exists())
             gitignore = (repo / ".gitignore").read_bytes()
             self.assertIn(b"dist/\r\n.sourcepack/\r\n", gitignore)
             self.assertEqual(run_cli(["prompt", str(repo), "task"]), 0)
@@ -550,7 +551,7 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
                 os.environ["PATH"] = old_path
             report = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text(encoding="utf-8"))
             self.assertEqual(report["verdict"], "WARN")
-            self.assertTrue((repo / ".sourcepack" / "current" / "prompt.md").exists())
+            self.assertTrue((repo / ".sourcepack" / "prompt" / "prompt.md").exists())
             self.assertEqual(run_cli(["status", str(repo), "--json"]), 0)
 
     def test_traffic_light_renderer_shapes(self):
@@ -568,7 +569,7 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
         with TemporaryDirectory() as td:
             repo = self._repo(Path(td))
             self.assertEqual(run_cli(["baseline", str(repo)]), 0)
-            self.assertTrue((repo / ".sourcepack" / "current" / "packet" / "manifest.json").exists())
+            self.assertTrue((repo / ".sourcepack" / "baseline" / "packet" / "manifest.json").exists())
             first = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text(encoding="utf-8"))
             self.assertIn("created", first["headline"])
             self.assertEqual(run_cli(["baseline", str(repo), "--refresh"]), 0)
@@ -599,7 +600,7 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             self.assertEqual(run_cli(["diff", str(repo)]), 0)
             self.assertEqual(json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text())["verdict"], "WARN")
             self.assertTrue((repo / ".sourcepack" / "reports" / "latest.md").exists())
-            self.assertTrue(list((repo / ".sourcepack" / "reports" / "archive").glob("*_patch_judgment.json")))
+            self.assertTrue(list((repo / ".sourcepack" / "reports" / "archive").glob("*_diff.json")))
             self.assertEqual(run_cli(["diff", str(tmp)]), 1)
 
     def test_diff_staged_commands_artifacts_import_edges_and_hooks(self):
@@ -678,7 +679,7 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             self.assertEqual(run_cli(["init", str(repo), "--auto"]), 0)
             self.assertTrue((repo / ".sourcepack" / "current").is_dir())
             self.assertTrue((repo / ".sourcepack" / "reports").is_dir())
-            self.assertTrue((repo / ".sourcepack" / "current" / "packet" / "manifest.json").exists())
+            self.assertTrue((repo / ".sourcepack" / "baseline" / "packet" / "manifest.json").exists())
             self.assertIn(".sourcepack/", (repo / ".gitignore").read_text())
             hook = repo / ".git" / "hooks" / "pre-commit"
             self.assertTrue(hook.exists())
@@ -707,9 +708,9 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             with contextlib.redirect_stdout(buf): rc = run_cli(["init", str(repo), "--auto"])
             self.assertEqual(rc, 0)
             self.assertIn("YELLOW LIGHT", buf.getvalue())
-            self.assertFalse((repo / ".sourcepack" / "current" / "packet" / "manifest.json").exists())
+            self.assertFalse((repo / ".sourcepack" / "baseline" / "packet" / "manifest.json").exists())
             self.assertEqual(run_cli(["init", str(repo), "--auto", "--refresh-baseline", "--strict"]), 0)
-            self.assertTrue((repo / ".sourcepack" / "current" / "packet" / "manifest.json").exists())
+            self.assertTrue((repo / ".sourcepack" / "baseline" / "packet" / "manifest.json").exists())
             hook = (repo / ".git" / "hooks" / "pre-commit").read_text()
             self.assertIn("strict mode blocks YELLOW LIGHT", hook)
 

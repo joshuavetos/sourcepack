@@ -24,7 +24,7 @@ except Exception:
 
 DEFAULT_IGNORED_DIRS = {
     ".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
-    ".next", ".cache", "target", "coverage", ".pytest_cache"
+    ".next", ".cache", "target", "coverage", ".pytest_cache", ".sourcepack"
 }
 DEFAULT_IGNORED_PATTERNS = {
     ".env", ".env.*", "*.pem", "*.key", "*.sqlite", "*.db", "*.png", "*.jpg",
@@ -789,14 +789,13 @@ def _dependency_additions_from_patch(changes: list[PatchFileChange]) -> set[str]
     return deps
 
 
-def judge_patch(packet_path: str | Path, patch_path: str | Path, out_dir: str | Path) -> dict:
+def analyze_patch(packet_path: str | Path, patch_text: str) -> dict:
     packet = Path(packet_path)
     manifest = load_manifest(packet)
     reality = json.loads((packet / "reality_map.json").read_text(encoding="utf-8")) if (packet / "reality_map.json").exists() else generate_reality_map(manifest, packet)
     files = known_files(manifest)
     deps = dependency_inventory(manifest, packet)
     scripts = _package_json_scripts(packet)
-    patch_text = Path(patch_path).read_text(encoding="utf-8")
     changes = parse_unified_diff(patch_text)
     patch_deps = _dependency_additions_from_patch(changes)
     report = {
@@ -849,16 +848,27 @@ def judge_patch(packet_path: str | Path, patch_path: str | Path, out_dir: str | 
         report["verdict"] = "WARN"
     for key in ["modified_files", "missing_modified_files", "new_files", "deleted_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "warnings"]:
         report[key] = sorted(set(report[key]))
+    return report
+
+
+def render_patch_judgment_report(report: dict) -> str:
     lines = ["# SourcePack Patch Judgment Report", "", f"Verdict: {report['verdict']}", ""]
     sections = [("modified_files", "Modified Files"), ("missing_modified_files", "Missing Modified Files"), ("new_files", "New Files"), ("deleted_files", "Deleted Files"), ("unsupported_dependencies", "Unsupported Dependencies"), ("unsupported_commands", "Unsupported Commands"), ("protected_artifact_modifications", "Protected Packet Artifact Modifications"), ("warnings", "Warnings")]
     for key, title in sections:
         lines.extend([f"## {title}"])
-        lines.extend([f"- {item}" for item in report[key]] or ["None"])
+        lines.extend([f"- {item}" for item in report.get(key, [])] or ["None"])
         lines.append("")
+    return "\n".join(lines)
+
+
+def judge_patch(packet_path: str | Path, patch_path: str | Path, out_dir: str | Path) -> dict:
+    patch_text = Path(patch_path).read_text(encoding="utf-8")
+    report = analyze_patch(packet_path, patch_text)
+    text = render_patch_judgment_report(report)
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
-    (out / "patch_judgment_report.md").write_text("\n".join(lines), encoding="utf-8")
+    (out / "patch_judgment_report.md").write_text(text, encoding="utf-8")
     (out / "patch_judgment_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print("\n".join(lines))
+    print(text)
     return report
 
 def judge_ai_answer(packet_path: str | Path, ai_answer_path: str | Path, out_dir: str | Path | None = None) -> dict:
@@ -1053,10 +1063,7 @@ def _declared_dependency_names_from_patch(changes: list[PatchFileChange]) -> set
 
 
 def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
-    with tempfile.TemporaryDirectory() as td:
-        patch = Path(td) / "change.diff"; out = Path(td) / "out"
-        patch.write_text(patch_text, encoding="utf-8")
-        report = judge_patch(packet_path, patch, out)
+    report = analyze_patch(packet_path, patch_text)
     packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest); deps = dependency_inventory(manifest, packet)
     changes = parse_unified_diff(patch_text); declared = _declared_dependency_names_from_patch(changes)
     unsupported = set(report.get("unsupported_dependencies", [])); used_imports = set()
@@ -1100,7 +1107,10 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
 
 
 def run_git(repo: Path, args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=repo, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        return subprocess.run(["git", *args], cwd=repo, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(["git", *args], 127, "", "git executable not found")
 
 
 def cli_prompt(args) -> int:
@@ -1112,10 +1122,11 @@ def cli_prompt(args) -> int:
     if err:
         rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("gitignore_unwritable", "error", "git", f"Cannot write .gitignore: {err}")])
         print(json.dumps(rep, indent=2) if args.json else render_traffic(rep, args.verbose), end=""); return 1
-    if not (paths["packet"] / "manifest.json").exists():
+    try:
         build_current_baseline(repo)
-    else:
-        shutil.copy2(paths["packet"] / "reality_map.json", paths["reality"]); shutil.copy2(paths["packet"] / "ai_instructions.md", paths["instructions"])
+    except Exception as exc:
+        rep = traffic_report("FAIL", "could not refresh prompt baseline.", [normalized_finding("baseline_failed", "error", "baseline", f"Baseline verification failed: {exc}")])
+        print(json.dumps(rep, indent=2) if args.json else render_traffic(rep, args.verbose), end=""); return 1
     task = args.task or "Explain how this project works and summarize its structure."
     reality = json.loads(paths["reality"].read_text(encoding="utf-8")); instructions = paths["instructions"].read_text(encoding="utf-8")
     prompt = render_prompt(task, instructions, reality); paths["prompt"].write_text(prompt, encoding="utf-8")
@@ -1150,20 +1161,27 @@ def cli_baseline(args) -> int:
 def cli_diff(args) -> int:
     repo_arg = Path(args.repo).resolve(); cp = run_git(repo_arg, ["rev-parse", "--show-toplevel"])
     if cp.returncode != 0:
-        rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("no_git_repo","error","git","No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use.")])
+        message = "Git executable not found." if cp.returncode == 127 else "No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use."
+        rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("git_unavailable" if cp.returncode == 127 else "no_git_repo","error","git",message)])
         print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
     repo = Path(cp.stdout.strip()).resolve(); paths = ensure_sourcepack_dirs(repo); note = None; added, err = ensure_gitignore_entry(repo)
     if err:
         rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("gitignore_unwritable","error","git",f"Cannot write .gitignore: {err}")]); print(render_traffic(rep,args.verbose), end=""); return 1
-    if not (paths["packet"] / "manifest.json").exists():
-        try: build_current_baseline(repo); note = "Created SourcePack baseline because none existed."
-        except Exception as exc:
-            rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("baseline_failed","error","baseline",f"Baseline verification failed: {exc}")]); print(render_traffic(rep,args.verbose), end=""); return 1
     cp = run_git(repo, ["diff", "--staged"] if args.staged else ["diff"]); diff_text = cp.stdout
+    if cp.returncode == 127:
+        rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("git_unavailable","error","git","Git executable not found.")]); print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
     if not args.staged:
         extra = untracked_files_as_diff(repo)
         if extra:
             diff_text = (diff_text + "\n" + extra).strip() + "\n"
+    if not (paths["packet"] / "manifest.json").exists():
+        if diff_text.strip():
+            rep=traffic_report("FAIL","baseline missing while changes are present.",[normalized_finding("baseline_missing","error","baseline","No baseline exists. Run sourcepack baseline before AI edits, or run sourcepack baseline --refresh to accept current repo state.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
+            write_user_report(repo, rep, "patch_judgment")
+            print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
+        try: build_current_baseline(repo); note = "Created SourcePack baseline because none existed and no diff was present."
+        except Exception as exc:
+            rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("baseline_failed","error","baseline",f"Baseline verification failed: {exc}")]); print(render_traffic(rep,args.verbose), end=""); return 1
     if not diff_text.strip():
         rep=traffic_report("PASS","good to continue.",[normalized_finding("no_diff","info","diff","No uncommitted changes detected.")], ["diff"])
     else:
@@ -1192,13 +1210,41 @@ def untracked_files_as_diff(repo: Path) -> str:
     return "\n".join(parts)
 
 def hook_text(strict: bool) -> str:
-    strict_block = "\nif grep -q 'YELLOW LIGHT' .git/SOURCEPACK_LAST_DIFF 2>/dev/null; then\n  echo 'SourcePack strict mode blocks YELLOW LIGHT.'\n  echo 'To bypass manually: git commit --no-verify'\n  exit 1\nfi" if strict else ""
-    return "#!/bin/sh\n# === SOURCEPACK BEGIN ===\nsourcepack diff . --staged > .git/SOURCEPACK_LAST_DIFF\nsp_status=$?\ncat .git/SOURCEPACK_LAST_DIFF\nif [ $sp_status -ne 0 ]; then\n  echo 'To bypass manually: git commit --no-verify'\n  exit $sp_status\nfi" + strict_block + "\n# === SOURCEPACK END ===\n"
+    strict_block = """
+if grep -q 'YELLOW LIGHT' .git/SOURCEPACK_LAST_DIFF 2>/dev/null; then
+  echo 'SourcePack strict mode blocks YELLOW LIGHT.'
+  echo 'To bypass manually: git commit --no-verify'
+  exit 1
+fi""" if strict else ""
+    return """#!/bin/sh
+# === SOURCEPACK BEGIN ===
+sourcepack diff . --staged > .git/SOURCEPACK_LAST_DIFF
+sp_status=$?
+cat .git/SOURCEPACK_LAST_DIFF
+if [ $sp_status -ne 0 ]; then
+  echo 'To bypass manually: git commit --no-verify'
+  exit $sp_status
+fi""" + strict_block + """
+# === SOURCEPACK END ===
+"""
+
+
+def hook_chain_text(strict: bool) -> str:
+    return hook_text(strict) + '''
+orig="$(dirname "$0")/pre-commit.sourcepack.orig"
+if [ -x "$orig" ]; then
+  "$orig" "$@"
+  exit $?
+fi
+exit 0
+'''
 
 
 def cli_install_hook(args) -> int:
     repo=Path(args.repo).resolve(); cp=run_git(repo,["rev-parse","--show-toplevel"])
-    if cp.returncode!=0: print("RED LIGHT: SourcePack pre-commit hook install failed.\n\nNo git repository found."); return 1
+    if cp.returncode!=0:
+        message = "Git executable not found." if cp.returncode == 127 else "No git repository found."
+        print(f"RED LIGHT: SourcePack pre-commit hook install failed.\n\n{message}"); return 1
     root=Path(cp.stdout.strip()); hooks=root/".git"/"hooks"; pre=hooks/"pre-commit"; orig=hooks/"pre-commit.sourcepack.orig"
     try:
         hooks.mkdir(parents=True, exist_ok=True); block=hook_text(args.strict)
@@ -1208,12 +1254,12 @@ def cli_install_hook(args) -> int:
                 pre.write_text(re.sub(r"# === SOURCEPACK BEGIN ===.*?# === SOURCEPACK END ===\n?", block, text, flags=re.S), encoding="utf-8")
             else:
                 if not orig.exists(): shutil.copy2(pre, orig)
-                pre.write_text(block + "\n\"$(dirname \"$0\")/pre-commit.sourcepack.orig\"\n", encoding="utf-8")
-        else: pre.write_text(block, encoding="utf-8")
+                pre.write_text(hook_chain_text(args.strict), encoding="utf-8")
+        else:
+            pre.write_text(hook_text(args.strict) + "\nexit 0\n", encoding="utf-8")
         pre.chmod(0o755); print("GREEN LIGHT: SourcePack pre-commit hook installed."); return 0
     except Exception as exc:
         print(f"RED LIGHT: SourcePack pre-commit hook install failed.\n\n{exc}"); return 1
-
 
 def cli_uninstall_hook(args) -> int:
     repo=Path(args.repo).resolve(); cp=run_git(repo,["rev-parse","--show-toplevel"])

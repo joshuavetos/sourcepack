@@ -976,11 +976,25 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
         elif not evidence["compose"]:
             report["unsupported_commands"].append("docker compose up")
     patch_scripts = set()
+    command_uncertainties = []
     for ch in changes:
-        if Path(ch.path).name.lower() == "package.json":
-            for script in re.findall(r'"([A-Za-z0-9:_-]+)"\s*:', "\n".join(ch.added_lines or [])):
-                if script not in JS_DEP_SECTIONS and script not in {"scripts", "dependencies", "devDependencies", "peerDependencies", "optionalDependencies"}:
-                    patch_scripts.add(script)
+        if Path(ch.path).name.lower() != "package.json":
+            continue
+        base = _packet_file_contents(packet).get(ch.old_path or ch.path, "")
+        post = _apply_patch_change_to_text(base, ch)
+        if post is None:
+            command_uncertainties.append({"id": "command_manifest_uncertain", "message": f"Could not reconstruct {ch.path} safely", "path": ch.path})
+            continue
+        try:
+            package = json.loads(post)
+        except json.JSONDecodeError:
+            command_uncertainties.append({"id": "command_manifest_uncertain", "message": f"Could not parse {ch.path} as JSON", "path": ch.path})
+            continue
+        package_scripts = package.get("scripts")
+        if isinstance(package_scripts, dict):
+            patch_scripts.update(str(script) for script in package_scripts if isinstance(script, str) and script not in scripts)
+    if command_uncertainties:
+        report.setdefault("uncertainties", []).extend(command_uncertainties)
     for cmd in sorted(set(re.findall(r"npm\s+(?:run\s+)?[A-Za-z0-9:_-]+", added_text))):
         normalized = cmd if cmd == "npm test" else cmd
         if normalized.startswith("npm run "):
@@ -1039,6 +1053,8 @@ def judge_ai_answer(packet_path: str | Path, ai_answer_path: str | Path, out_dir
     ai_text = Path(ai_answer_path).read_text(encoding="utf-8")
     refs = extract_refs(ai_text)
     deps = dependency_inventory(manifest, packet)
+    scripts = _package_json_scripts(packet)
+    files_lower = {f.lower() for f in known_files}
     report = {"supported_files": [], "missing_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "unsupported_capabilities": []}
     for ref in sorted(refs):
         if ref in known_files:
@@ -1049,22 +1065,30 @@ def judge_ai_answer(packet_path: str | Path, ai_answer_path: str | Path, out_dir
         if re.search(rf"(?i)\b{re.escape(dep)}\b", ai_text) and dep.lower() not in deps:
             if dep.lower() not in {"pytest"} or not any("tests/" in f for f in known_files):
                 report["unsupported_dependencies"].append(dep)
-    command_patterns = {
-        "docker compose up": ["Dockerfile", "docker-compose.yml", "compose.yaml", "compose.yml"],
-        "npm run dev": ["package.json"],
-        "npm test": ["package.json"],
-        "pytest": ["pyproject.toml", "pytest.ini"],
-    }
-    for cmd, evidence in command_patterns.items():
-        if re.search(re.escape(cmd), ai_text, re.I):
-            if not any(ev in known_files or any(k.endswith(ev) for k in known_files) for ev in evidence):
-                report["unsupported_commands"].append(cmd)
+    if re.search(r"docker\s+compose\s+up", ai_text, re.I):
+        if not any(Path(f).name.lower() in {"docker-compose.yml", "compose.yaml", "compose.yml"} for f in known_files):
+            report["unsupported_commands"].append("docker compose up")
+    for cmd in sorted(set(re.findall(r"npm\s+(?:run\s+)?[A-Za-z0-9:_-]+", ai_text, re.I))):
+        normalized = re.sub(r"\s+", " ", cmd.strip()).lower()
+        if normalized.startswith("npm run "):
+            script = normalized.removeprefix("npm run ").strip()
+            if script not in scripts:
+                report["unsupported_commands"].append(normalized)
+        elif normalized == "npm test" and "test" not in scripts:
+            report["unsupported_commands"].append("npm test")
+    if re.search(r"\b(pytest|python\s+-m\s+pytest)\b", ai_text, re.I):
+        if not ({"pyproject.toml", "pytest.ini"} & files_lower or any(f.startswith("tests/") for f in known_files) or "pytest" in deps):
+            report["unsupported_commands"].append("pytest")
     lower_text = ai_text.lower()
     supported_features = feature_inventory(manifest, packet, deps)
     for feature in FEATURE_NAMES:
         if feature in lower_text and feature not in supported_features:
             report["unsupported_capabilities"].append(feature)
-    lines = ["# SourcePack Judgment Report", "", "Verdict: " + ("FAIL" if any(report[k] for k in ["missing_files", "unsupported_dependencies", "unsupported_commands", "unsupported_capabilities"]) else "PASS"), ""]
+    report["unsupported_dependencies"] = sorted(set(report["unsupported_dependencies"]))
+    report["unsupported_commands"] = sorted(set(report["unsupported_commands"]))
+    report["unsupported_capabilities"] = sorted(set(report["unsupported_capabilities"]))
+    report["verdict"] = "FAIL" if any(report[k] for k in ["missing_files", "unsupported_dependencies", "unsupported_commands", "unsupported_capabilities"]) else "PASS"
+    lines = ["# SourcePack Judgment Report", "", "Verdict: " + report["verdict"], ""]
     for section, label in [("supported_files", "Supported File References"), ("missing_files", "Missing File References"), ("unsupported_dependencies", "Unsupported Dependencies"), ("unsupported_commands", "Unsupported Commands"), ("unsupported_capabilities", "Unsupported Capabilities")]:
         lines.append(f"## {label}")
         items = report[section]

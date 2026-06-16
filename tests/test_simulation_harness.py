@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
-from sourcepack.cli import judge_patch_text, judge_patch, run_cli, validate_baseline
+from sourcepack.cli import judge_patch_text, judge_patch, judge_ai_answer, run_cli, validate_baseline
 from tests.simulation_helpers import *
 
 
@@ -90,6 +90,8 @@ def scenario_cases() -> list[Scenario]:
         cases.append(Scenario(f"cmd_unsupported_{cmd.replace(' ', '_')}", {"README.md": "demo\n", "package.json": "{}\n"}, unified_patch("README.md", "demo\n", f"Run {cmd}\n"), MUST_RED, "unsupported_command", repo_shape="commands unsupported", summary=cmd))
     cases.append(Scenario("cmd_same_patch_script_exact", {"README.md": "demo\n", "package.json": '{"scripts":{}}\n'}, multi_patch([("README.md", "demo\n", "Run npm run dev\n"), ("package.json", '{"scripts":{}}\n', '{"scripts":{"dev":"vite"}}\n')]), MUST_YELLOW, "declared_command", repo_shape="same patch script", summary="exact script"))
     cases.append(Scenario("cmd_same_patch_script_wrong", {"README.md": "demo\n", "package.json": '{"scripts":{}}\n'}, multi_patch([("README.md", "demo\n", "Run npm run build\n"), ("package.json", '{"scripts":{}}\n', '{"scripts":{"dev":"vite"}}\n')]), MUST_RED, "unsupported_command", repo_shape="same patch script", summary="wrong script"))
+    cases.append(Scenario("cmd_same_patch_script_under_wrong_object", {"README.md": "demo\n", "package.json": '{"scripts":{}}\n'}, multi_patch([("README.md", "demo\n", "Run npm run dev\n"), ("package.json", '{"scripts":{}}\n', '{"scripts":{},"metadata":{"dev":"vite"}}\n')]), MUST_RED, "unsupported_command", forbidden_ids={"declared_command"}, repo_shape="same patch script", summary="script-like key outside scripts"))
+    cases.append(Scenario("cmd_same_patch_script_existing_object", {"README.md": "demo\n", "package.json": '{"scripts":{"test":"vitest"}}\n'}, multi_patch([("README.md", "demo\n", "Run npm run dev\n"), ("package.json", '{"scripts":{"test":"vitest"}}\n', '{"scripts":{"test":"vitest","dev":"vite"}}\n')]), MUST_YELLOW, "declared_command", repo_shape="same patch script", summary="script added to existing scripts"))
     cases.append(Scenario("cmd_same_patch_compose", {"README.md": "demo\n"}, unified_patch("README.md", "demo\n", "Run docker compose up\n") + unified_patch("compose.yaml", "", "services: {}\n", new_file=True), MUST_YELLOW, "declared_command", repo_shape="same patch compose", summary="compose added"))
 
     protected = [".sourcepack/baseline/active.json", "src/../.sourcepack/baseline/active.json", "./.sourcepack/baseline/active.json", ".sourcepack\\baseline\\active.json", ".sourcepack/state/baseline.lock"]
@@ -127,6 +129,42 @@ def test_patch_simulation_scenarios(tmp_path: Path, scenario: Scenario) -> None:
 
 def test_simulation_count() -> None:
     assert len(SCENARIOS) >= 100
+
+
+
+def test_ai_answer_simulation_catches_fake_claims(tmp_path: Path) -> None:
+    packet = write_packet(tmp_path, {"app.py": "VALUE = 1\n", "package.json": '{"scripts":{"dev":"vite"}}\n'})
+    answer = tmp_path / "answer.md"
+    answer.write_text(
+        "Edit `src/auth.py`, import requests, run npm run build, use docker compose up, and add database support.\n",
+        encoding="utf-8",
+    )
+    report = judge_ai_answer(packet, answer)
+    assert report["verdict"] == "FAIL"
+    assert "src/auth.py" in report["missing_files"]
+    assert "requests" in {dep.lower() for dep in report["unsupported_dependencies"]}
+    assert "npm run build" in report["unsupported_commands"]
+    assert "docker compose up" in report["unsupported_commands"]
+    assert "database" in report["unsupported_capabilities"]
+
+
+def test_ai_answer_simulation_accepts_supported_claims(tmp_path: Path) -> None:
+    packet = write_packet(
+        tmp_path,
+        {
+            "app.py": "import requests\nVALUE = 1\n",
+            "requirements.txt": "requests\npytest\n",
+            "package.json": '{"scripts":{"dev":"vite","test":"vitest"}}\n',
+            "compose.yaml": "services: {}\n",
+            "tests/test_app.py": "def test_x(): pass\n",
+        },
+    )
+    answer = tmp_path / "answer.md"
+    answer.write_text("Edit `app.py`, then run npm run dev, npm test, pytest, and docker compose up.\n", encoding="utf-8")
+    report = judge_ai_answer(packet, answer)
+    assert report["verdict"] == "PASS"
+    assert report["missing_files"] == []
+    assert report["unsupported_commands"] == []
 
 
 def test_non_utf8_patch_file_fails_closed(tmp_path: Path) -> None:

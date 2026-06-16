@@ -6,7 +6,10 @@ import hashlib
 import json
 import os
 import platform
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - packaging requires Python 3.11+
+    tomllib = None
 import re
 import shutil
 import subprocess
@@ -591,6 +594,8 @@ def _python_dependency_names_from_requirement_lines(text: str) -> set[str]:
 
 
 def _python_dependency_names_from_pyproject(content: str) -> set[str]:
+    if tomllib is None:
+        return set()
     try:
         data = tomllib.loads(content)
     except tomllib.TOMLDecodeError:
@@ -787,14 +792,25 @@ def node_project_evidence(files: set[str], scripts: dict[str, str]) -> dict[str,
     return {"package_json": "package.json" in {f.lower() for f in files}, "scripts": bool(scripts)}
 
 
+def extract_js_import_specifiers_from_text(text: str) -> set[str]:
+    specifiers: set[str] = set()
+    patterns = [
+        r"""\bimport\s+(?:[^"'()]+?\s+from\s+)?["']([^"']+)["']""",
+        r"""\bexport\s+[^"']*?\s+from\s+["']([^"']+)["']""",
+        r"""\bimport\s*\(\s*["']([^"']+)["']\s*\)""",
+        r"""\brequire\s*\(\s*["']([^"']+)["']\s*\)""",
+    ]
+    for pattern in patterns:
+        specifiers.update(m.strip() for m in re.findall(pattern, text) if m.strip())
+    return {s.lower() for s in specifiers}
+
+
 def extract_imports_from_text(text: str, suffix: str = ".py") -> set[str]:
     imports: set[str] = set()
     if suffix == ".py":
         imports |= set(re.findall(r"(?m)^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", text))
-    elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
-        
-        for m in re.findall(r"""(?:from\s+["']|import\s*\(\s*["']|require\s*\(\s*["'])(@?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)""", text):
-            imports.add(_js_package_root(m))
+    elif suffix in JS_EXTS:
+        imports |= extract_js_import_specifiers_from_text(text)
     return {i.lower() for i in imports}
 
 
@@ -956,8 +972,12 @@ def render_patch_judgment_report(report: dict) -> str:
 
 
 def judge_patch(packet_path: str | Path, patch_path: str | Path, out_dir: str | Path) -> dict:
-    patch_text = Path(patch_path).read_text(encoding="utf-8", errors="ignore")
-    report = judge_patch_text(packet_path, patch_text)
+    try:
+        patch_text = Path(patch_path).read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        report = {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
+    else:
+        report = judge_patch_text(packet_path, patch_text)
     text = render_patch_judgment_report(report)
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
     (out / "patch_judgment_report.md").write_text(text, encoding="utf-8")
@@ -1432,26 +1452,22 @@ JS_DEP_SECTIONS = {"dependencies", "devDependencies", "peerDependencies", "optio
 
 
 def _package_json_declared_deps_from_added_lines(lines: list[str]) -> set[str]:
+    added = "\n".join(lines)
+    try:
+        package = json.loads(added)
+    except json.JSONDecodeError:
+        package = None
     deps: set[str] = set()
-    active_section: str | None = None
-    section_depth: int | None = None
-    depth = 0
-    for line in lines:
-        stripped = line.strip()
-        section_match = re.match(r'"(dependencies|devDependencies|peerDependencies|optionalDependencies)"\s*:\s*\{', stripped)
-        if section_match:
-            active_section = section_match.group(1)
-            section_depth = depth + stripped.count("{") - stripped.count("}")
-            depth += stripped.count("{") - stripped.count("}")
-            continue
-        if active_section:
-            dep_match = re.match(r'"(@?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)"\s*:', stripped)
-            if dep_match and dep_match.group(1) not in JS_DEP_SECTIONS:
-                deps.add(dep_match.group(1).lower())
-        depth += stripped.count("{") - stripped.count("}")
-        if active_section and section_depth is not None and depth < section_depth:
-            active_section = None
-            section_depth = None
+    if isinstance(package, dict):
+        for section in JS_DEP_SECTIONS:
+            section_deps = package.get(section)
+            if isinstance(section_deps, dict):
+                deps.update(dep.lower() for dep in section_deps)
+        if deps:
+            return deps
+    for section in JS_DEP_SECTIONS:
+        for body in re.findall(rf'"{section}"\s*:\s*\{{(.*?)\}}', added, re.I | re.S):
+            deps.update(m.lower() for m in re.findall(r'"(@?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)"\s*:', body))
     return deps
 
 
@@ -1528,6 +1544,10 @@ def _workspace_package_names(packet: Path) -> set[str]:
     return names
 
 
+def _is_js_alias_specifier(imported: str) -> bool:
+    return imported.startswith(("@/", "~/"))
+
+
 def _js_alias_local(imported: str, files: set[str], contents: dict[str, str]) -> bool | None:
     configs = []
     for cfg in ("tsconfig.json", "jsconfig.json"):
@@ -1586,7 +1606,7 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
                 pkg = _js_package_root(imported)
                 if pkg in workspace_names or local_alias is True:
                     continue
-                if local_alias is None:
+                if local_alias is None or (local_alias is False and _is_js_alias_specifier(imported)):
                     report.setdefault("uncertainties", []).append({"id": "js_alias_uncertain", "message": f"{imported} could not be resolved safely", "path": ch.path, "evidence": imported})
                     continue
                 if pkg not in existing_declared["js"] and pkg not in patch_declared["js"]:

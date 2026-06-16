@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from sourcepack.cli import run_cli, validate_baseline, judge_patch_text, build_current_baseline
+from sourcepack.cli import run_cli, validate_baseline, judge_patch, judge_patch_text, build_current_baseline, extract_js_import_specifiers_from_text
 
 
 def capture_cli(args):
@@ -158,6 +158,80 @@ diff --git a/pyproject.toml b/pyproject.toml
 """)
             self.assertEqual(report["verdict"], "FAIL")
             self.assertIn("react", report["unsupported_dependencies"])
+
+
+    def test_js_raw_import_specifier_extraction_preserves_alias_scoped_and_subpaths(self):
+        imports = extract_js_import_specifiers_from_text('''
+import { Button } from "@/components/Button"
+import helper from "~/utils"
+import { core } from "@myorg/core/utils"
+import runtime from "react/jsx-runtime"
+const React = require("react")
+const lazy = import("@scope/pkg/subpath")
+''')
+        self.assertIn("@/components/button", imports)
+        self.assertIn("~/utils", imports)
+        self.assertIn("@myorg/core/utils", imports)
+        self.assertIn("react/jsx-runtime", imports)
+        self.assertIn("@scope/pkg/subpath", imports)
+
+    def test_js_unresolved_alias_is_yellow_uncertain_not_silent_green(self):
+        with TemporaryDirectory() as td:
+            repo = self.make_repo(Path(td), {"package.json": '{}', "app.ts": "console.log(1)\n"})
+            (repo / "view.ts").write_text('import { Button } from "@/components/Button"\n', encoding="utf-8")
+            code, data = self.diff_json(repo)
+            self.assertEqual(code, 0)
+            self.assertEqual(data["verdict"], "WARN")
+            self.assertIn("js_alias_uncertain", self.ids(data))
+            self.assertNotIn("unsupported_dependency", self.ids(data))
+
+    def test_same_patch_js_dependencies_are_yellow_for_json_formats_scoped_and_subpaths(self):
+        cases = [
+            ('{"dependencies":{"react":"latest"}}', 'import React from "react"\n', "react"),
+            ('''{
+  "dependencies": {
+    "react": "latest"
+  }
+}''', 'import React from "react"\n', "react"),
+            ('{"dependencies":{"@scope/pkg":"1.0.0"}}', 'import thing from "@scope/pkg/subpath"\n', "@scope/pkg"),
+            ('{"dependencies":{"react":"latest"}}', 'import runtime from "react/jsx-runtime"\n', "react"),
+        ]
+        for package_json, import_line, expected_dep in cases:
+            with self.subTest(expected_dep=expected_dep, import_line=import_line):
+                with TemporaryDirectory() as td:
+                    repo = self.make_repo(Path(td), {"app.js": "export const value = 1;\n", "package.json": '{}\n'})
+                    packet = repo / validate_baseline(repo)["packet_path"]
+                    added_package_json = "\n".join(f"+{line}" for line in package_json.splitlines())
+                    report = judge_patch_text(packet, f'''diff --git a/app.js b/app.js
+--- a/app.js
++++ b/app.js
+@@ -1 +1,2 @@
++{import_line.rstrip()}
+ export const value = 1;
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -1 +1 @@
+-{{}}
+{added_package_json}
+''')
+                    traffic = __import__("sourcepack.cli", fromlist=["patch_report_to_traffic"]).patch_report_to_traffic(report)
+                    self.assertEqual(traffic["verdict"], "WARN")
+                    self.assertNotIn("unsupported_dependency", {f["id"] for f in traffic["findings"]})
+                    self.assertIn(expected_dep, report.get("declared_dependencies", []))
+
+    def test_judge_patch_invalid_utf8_fails_closed_as_malformed_diff(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            repo = self.make_repo(root, {"app.py": "def value(): return 1\n"})
+            packet = repo / validate_baseline(repo)["packet_path"]
+            patch = root / "bad.patch"
+            patch.write_bytes(b"\xff\xfe\x00")
+            out = root / "out"
+            report = judge_patch(packet, patch, out)
+            traffic = __import__("sourcepack.cli", fromlist=["patch_report_to_traffic"]).patch_report_to_traffic(report)
+            self.assertEqual(traffic["verdict"], "FAIL")
+            self.assertIn("malformed_diff", {f["id"] for f in traffic["findings"]})
 
     def test_npm_and_compose_same_patch_support_exactness(self):
         with TemporaryDirectory() as td:

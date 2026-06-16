@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SourcePack Reality Map",
+  "type": "object",
+  "required": ["reality_map_schema_version", "tool_version", "generated_at", "input_path", "project_types", "supported_commands", "detected_dependencies", "supported_capabilities", "claim_boundaries"],
+  "properties": {
+    "reality_map_schema_version": {"type": "string"},
+    "tool_version": {"type": "string"},
+    "generated_at": {"type": "string"},
+    "input_path": {"type": "string"},
+    "project_types": {"type": "array", "items": {"type": "string"}},
+    "supported_commands": {"type": "array", "items": {"type": "string"}},
+    "detected_dependencies": {"type": "array", "items": {"type": "string"}},
+    "supported_capabilities": {"type": "array", "items": {"type": "string"}},
+    "claim_boundaries": {"type": "array", "items": {"type": "string"}}
+  }
+}

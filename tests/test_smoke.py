@@ -214,5 +214,161 @@ class SourcePackRealityMapTest(unittest.TestCase):
             self.assertTrue((packet / "ai_instructions.md").exists())
 
 
+class SourcePackPatchJudgmentTest(unittest.TestCase):
+    def _packet(self, tmp: Path):
+        repo = tmp / "repo"; repo.mkdir()
+        (repo / "README.md").write_text("demo\n")
+        (repo / "app.py").write_text("def main():\n    return True\n")
+        packet = tmp / "packet"
+        self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
+        return packet
+
+    def _judge_patch(self, packet: Path, tmp: Path, text: str):
+        patch = tmp / "change.diff"; patch.write_text(text)
+        out = tmp / "patch_report"
+        self.assertEqual(run_cli(["judge-patch", str(packet), str(patch), "--out", str(out)]), 0)
+        import json
+        return json.loads((out / "patch_judgment_report.json").read_text()), out
+
+    def test_known_file_patch_does_not_fail_for_existence(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); packet = self._packet(tmp)
+            report, _ = self._judge_patch(packet, tmp, """diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1,2 +1,3 @@
+ def main():
++    print('ok')
+     return True
+""")
+            self.assertNotIn("app.py", report["missing_modified_files"])
+            self.assertEqual(report["verdict"], "PASS")
+
+    def test_missing_file_patch_fails(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); packet = self._packet(tmp)
+            report, _ = self._judge_patch(packet, tmp, """diff --git a/sourcepack/server.py b/sourcepack/server.py
+--- a/sourcepack/server.py
++++ b/sourcepack/server.py
+@@ -1 +1,2 @@
++print('x')
+""")
+            self.assertEqual(report["verdict"], "FAIL")
+            self.assertIn("sourcepack/server.py", report["missing_modified_files"])
+
+    def test_new_file_warns_not_fails(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); packet = self._packet(tmp)
+            report, _ = self._judge_patch(packet, tmp, """diff --git a/new.py b/new.py
+new file mode 100644
+--- /dev/null
++++ b/new.py
+@@ -0,0 +1 @@
++print('new')
+""")
+            self.assertEqual(report["verdict"], "WARN")
+            self.assertIn("new.py", report["new_files"])
+
+    def test_deleted_file_reported(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); packet = self._packet(tmp)
+            report, _ = self._judge_patch(packet, tmp, """diff --git a/app.py b/app.py
+deleted file mode 100644
+--- a/app.py
++++ /dev/null
+@@ -1,2 +0,0 @@
+-def main():
+-    return True
+""")
+            self.assertIn("app.py", report["deleted_files"])
+
+    def test_fastapi_import_without_dependency_fails(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); packet = self._packet(tmp)
+            report, _ = self._judge_patch(packet, tmp, """diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1,2 +1,3 @@
++from fastapi import FastAPI
+ def main():
+     return True
+""")
+            self.assertEqual(report["verdict"], "FAIL")
+            self.assertIn("fastapi", report["unsupported_dependencies"])
+
+    def test_unsupported_commands_fail(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); packet = self._packet(tmp)
+            report, _ = self._judge_patch(packet, tmp, """diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1 +1,4 @@
+ demo
++docker compose up
++npm run dev
+""")
+            self.assertEqual(report["verdict"], "FAIL")
+            self.assertIn("docker compose up", report["unsupported_commands"])
+            self.assertIn("npm run dev", report["unsupported_commands"])
+
+    def test_protected_artifact_patch_fails(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); packet = self._packet(tmp)
+            for name in ["receipt.json", "manifest.json", "reality_map.json", "ai_instructions.md"]:
+                report, _ = self._judge_patch(packet, tmp, f"""diff --git a/{name} b/{name}
+--- a/{name}
++++ b/{name}
+@@ -1 +1,2 @@
++tamper
+""")
+                self.assertEqual(report["verdict"], "FAIL")
+                self.assertIn(name, report["protected_artifact_modifications"])
+
+    def test_patch_report_files_created_and_json_parses(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); packet = self._packet(tmp)
+            report, out = self._judge_patch(packet, tmp, """diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1,2 +1,3 @@
++print('ok')
+""")
+            self.assertTrue((out / "patch_judgment_report.md").exists())
+            self.assertIn("verdict", report)
+
+
+class SourcePackSchemaAndDemoTest(unittest.TestCase):
+    def test_generated_artifacts_required_fields(self):
+        import json
+        with TemporaryDirectory() as td:
+            tmp = Path(td); repo = tmp / "repo"; repo.mkdir()
+            (repo / "README.md").write_text("demo")
+            packet = tmp / "packet"
+            self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
+            answer = tmp / "answer.md"; answer.write_text("README.md")
+            judgment = tmp / "judgment"
+            self.assertEqual(run_cli(["judge", str(packet), str(answer), "--out", str(judgment)]), 0)
+            patch = tmp / "change.diff"; patch.write_text("""diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1 +1,2 @@
++more
+""")
+            patch_out = tmp / "patch_judgment"
+            self.assertEqual(run_cli(["judge-patch", str(packet), str(patch), "--out", str(patch_out)]), 0)
+            reality = json.loads((packet / "reality_map.json").read_text())
+            judgment_json = json.loads((judgment / "judgment_report.json").read_text())
+            patch_json = json.loads((patch_out / "patch_judgment_report.json").read_text())
+            for key in ["reality_map_schema_version", "tool_version", "supported_commands", "detected_dependencies"]:
+                self.assertIn(key, reality)
+            for key in ["supported_files", "missing_files", "unsupported_dependencies", "unsupported_commands", "unsupported_capabilities"]:
+                self.assertIn(key, judgment_json)
+            for key in ["patch_judgment_schema_version", "verdict", "modified_files", "missing_modified_files", "new_files"]:
+                self.assertIn(key, patch_json)
+
+    def test_demo_exits_successfully(self):
+        self.assertEqual(run_cli(["demo"]), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

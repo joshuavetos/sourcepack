@@ -528,10 +528,47 @@ def verify_packet(packet_path: str | Path, against: str | Path | None = None) ->
     return ok
 
 
+PATHLIKE_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".toml", ".yaml", ".yml", ".md", ".txt", ".cfg", ".ini", ".css", ".html", ".rs", ".go", ".java", ".rb", ".php", ".sh"}
+PROJECT_PATH_PREFIXES = {"src", "sourcepack", "tests", "test", "frontend", "backend", "docs", "app", "lib", "packages", "public", "config", "scripts"}
+
+
+def _normalize_ai_ref(ref: str) -> str | None:
+    ref = ref.strip().strip("`'\".,;)")
+    ref = ref.replace("\\", "/")
+    if ref.endswith(":"):
+        ref = ref[:-1]
+    while ref.startswith("./"):
+        ref = ref[2:]
+    if not ref or ref.startswith("/") or re.match(r"^[A-Za-z]:/", ref):
+        return None
+    normalized, unsafe = _normalize_diff_path(ref)
+    if unsafe or not normalized:
+        return None
+    return normalized
+
+
+def _looks_like_ai_file_ref(ref: str) -> bool:
+    normalized = ref.replace("\\", "/")
+    name = PurePosixPath(normalized).name
+    if name in {"Dockerfile", "docker-compose.yml", "compose.yaml", "compose.yml", "pyproject.toml", "package.json", "requirements.txt"}:
+        return True
+    suffix = PurePosixPath(normalized).suffix.lower()
+    if suffix not in PATHLIKE_EXTENSIONS:
+        return False
+    parts = [p for p in PurePosixPath(normalized).parts if p not in {"."}]
+    return "/" in normalized or (parts and parts[0] in PROJECT_PATH_PREFIXES)
+
+
 def extract_refs(text: str) -> set[str]:
-    refs = set(re.findall(r"[`'\"]([A-Za-z0-9_./\\-]+\.[A-Za-z0-9_./\\-]+|Dockerfile|docker-compose\.yml|compose\.yaml|pyproject\.toml|package\.json)[`'\"]", text))
-    refs |= set(re.findall(r"\b(?:src|sourcepack|tests|frontend|backend|docs)/[A-Za-z0-9_./-]+\b", text))
-    return {r.replace("\\", "/") for r in refs}
+    refs: set[str] = set()
+    token = r"(?:\./)?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9_.-]+:?|Dockerfile"
+    patterns = [rf"[`'\"]({token})[`'\"]", rf"(?m)^\s*[-*]\s+({token})\b", rf"\b(?:edit|open|update|modify|change|in|file)\s+({token})\b", rf"\b((?:\./)?(?:src|sourcepack|tests|test|frontend|backend|docs|app|lib|packages|public|config|scripts)[\\/][A-Za-z0-9_./\\-]+\.[A-Za-z0-9_.-]+:?)\b"]
+    for pattern in patterns:
+        for candidate in re.findall(pattern, text, re.I):
+            normalized = _normalize_ai_ref(candidate)
+            if normalized and _looks_like_ai_file_ref(normalized):
+                refs.add(normalized)
+    return refs
 
 
 def _packet_file_contents(packet: Path) -> dict[str, str]:
@@ -911,21 +948,7 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
 
 
 def _dependency_additions_from_patch(changes: list[PatchFileChange]) -> set[str]:
-    deps: set[str] = set()
-    for ch in changes:
-        name = Path(ch.path).name.lower()
-        added = "\n".join(ch.added_lines or [])
-        if name == "pyproject.toml":
-            for dep in _python_dependency_names_from_pyproject(added):
-                _add_common_dependency(deps, dep)
-        elif name.startswith("requirements") and name.endswith(".txt"):
-            for dep in _python_dependency_names_from_requirement_lines(added):
-                _add_common_dependency(deps, dep)
-        elif name == "package.json":
-            for dep in COMMON_DEPENDENCIES:
-                if re.search(rf'"{re.escape(dep)}"\s*:', added, re.I):
-                    deps.add(dep)
-    return deps
+    return set()
 
 
 def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchFileChange] | None = None) -> dict:
@@ -1015,7 +1038,7 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
     fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "path_escape"]
     if any(report.get(k) for k in fail_keys):
         report["verdict"] = "FAIL"
-    elif report["new_files"] or report["warnings"]:
+    elif report["new_files"] or report["warnings"] or report.get("uncertainties"):
         report["verdict"] = "WARN"
     for key in ["modified_files", "missing_modified_files", "new_files", "deleted_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "warnings"]:
         report[key] = sorted(set(report[key]))
@@ -1046,6 +1069,57 @@ def judge_patch(packet_path: str | Path, patch_path: str | Path, out_dir: str | 
     print(text)
     return report
 
+def _has_negation_before(text: str, start: int) -> bool:
+    window = text[max(0, start - 48):start].lower()
+    return bool(re.search(r"\b(do not|don't|avoid|not|no|without|unless|until|does not|is no|will not)\b", window))
+
+
+def _ai_dependency_actions(text: str, dep: str) -> bool:
+    dep_pat = re.escape(dep)
+    aliases = [dep_pat]
+    for imported, package in PY_IMPORT_ALIASES.items():
+        if package == _normalize_dependency_name(dep):
+            aliases.append(re.escape(imported))
+    alias_pat = "(?:" + "|".join(sorted(set(aliases), key=len, reverse=True)) + ")"
+    patterns = [
+        rf"\bimport\s+{alias_pat}\b",
+        rf"\bfrom\s+{alias_pat}\s+import\b",
+        rf"\b(?:pip install|python\s+-m\s+pip\s+install|poetry add|uv add|pdm add|add|use|install|import)\s+{dep_pat}\b",
+    ]
+    for pattern in patterns:
+        for m in re.finditer(pattern, text, re.I):
+            if not _has_negation_before(text, m.start()):
+                return True
+    return False
+
+
+def _ai_js_dependency_actions(text: str, dep: str) -> bool:
+    dep_pat = re.escape(dep)
+    patterns = [
+        rf"\bimport\s+[^\n;]*?from\s+[`'\"]{dep_pat}(?:/[^`'\"]*)?[`'\"]",
+        rf"\brequire\s*\(\s*[`'\"]{dep_pat}(?:/[^`'\"]*)?[`'\"]\s*\)",
+        rf"\b(?:npm install|npm i|pnpm add|yarn add|add|use|install|import)\s+{dep_pat}\b",
+    ]
+    for pattern in patterns:
+        for m in re.finditer(pattern, text, re.I):
+            if not _has_negation_before(text, m.start()):
+                return True
+    return False
+
+
+def _ai_command_instructions(text: str, command_pattern: str) -> list[str]:
+    found = []
+    for m in re.finditer(command_pattern, text, re.I):
+        before = text[max(0, m.start() - 32):m.start()].lower()
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        line_prefix = text[line_start:m.start()].strip().lower()
+        backticked = m.start() > 0 and m.end() < len(text) and text[m.start() - 1] == "`" and text[m.end()] == "`"
+        instruction = bool(re.search(r"\b(run|then|execute|use|uses|start with)\s+$", before)) or line_prefix in {"-", "*", "1.", "2.", "3."} or backticked
+        if instruction and not _has_negation_before(text, m.start()):
+            found.append(re.sub(r"\s+", " ", m.group(0).strip()).lower())
+    return found
+
+
 def judge_ai_answer(packet_path: str | Path, ai_answer_path: str | Path, out_dir: str | Path | None = None) -> dict:
     packet = Path(packet_path)
     manifest = load_manifest(packet)
@@ -1062,28 +1136,32 @@ def judge_ai_answer(packet_path: str | Path, ai_answer_path: str | Path, out_dir
         else:
             report["missing_files"].append(ref)
     for dep in COMMON_DEPENDENCIES:
-        if re.search(rf"(?i)\b{re.escape(dep)}\b", ai_text) and dep.lower() not in deps:
-            if dep.lower() not in {"pytest"} or not any("tests/" in f for f in known_files):
+        dep_norm = dep.lower()
+        action = _ai_js_dependency_actions(ai_text, dep_norm) if dep_norm in {"react", "vue", "svelte", "prisma"} else _ai_dependency_actions(ai_text, dep_norm)
+        if action and dep_norm not in deps:
+            if dep_norm != "pytest" or not any(f.startswith("tests/") for f in known_files):
                 report["unsupported_dependencies"].append(dep)
-    if re.search(r"docker\s+compose\s+up", ai_text, re.I):
+    if _ai_command_instructions(ai_text, r"docker\s+compose\s+up"):
         if not any(Path(f).name.lower() in {"docker-compose.yml", "compose.yaml", "compose.yml"} for f in known_files):
             report["unsupported_commands"].append("docker compose up")
-    for cmd in sorted(set(re.findall(r"npm\s+(?:run\s+)?[A-Za-z0-9:_-]+", ai_text, re.I))):
-        normalized = re.sub(r"\s+", " ", cmd.strip()).lower()
+    for cmd in sorted(set(_ai_command_instructions(ai_text, r"npm\s+(?:run\s+)?[A-Za-z0-9:_-]+"))):
+        normalized = cmd
         if normalized.startswith("npm run "):
             script = normalized.removeprefix("npm run ").strip()
             if script not in scripts:
                 report["unsupported_commands"].append(normalized)
         elif normalized == "npm test" and "test" not in scripts:
             report["unsupported_commands"].append("npm test")
-    if re.search(r"\b(pytest|python\s+-m\s+pytest)\b", ai_text, re.I):
+    if _ai_command_instructions(ai_text, r"(?:python\s+-m\s+pytest|pytest)"):
         if not ({"pyproject.toml", "pytest.ini"} & files_lower or any(f.startswith("tests/") for f in known_files) or "pytest" in deps):
             report["unsupported_commands"].append("pytest")
     lower_text = ai_text.lower()
     supported_features = feature_inventory(manifest, packet, deps)
     for feature in FEATURE_NAMES:
-        if feature in lower_text and feature not in supported_features:
-            report["unsupported_capabilities"].append(feature)
+        for m in re.finditer(rf"\b{re.escape(feature)}\b", lower_text):
+            if feature not in supported_features and not _has_negation_before(lower_text, m.start()):
+                report["unsupported_capabilities"].append(feature)
+                break
     report["unsupported_dependencies"] = sorted(set(report["unsupported_dependencies"]))
     report["unsupported_commands"] = sorted(set(report["unsupported_commands"]))
     report["unsupported_capabilities"] = sorted(set(report["unsupported_capabilities"]))

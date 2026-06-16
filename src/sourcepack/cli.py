@@ -965,6 +965,9 @@ def sourcepack_paths(repo: str | Path) -> dict[str, Path]:
         "latest_diff_json": reports / "latest_diff.json",
         "latest_prompt_json": reports / "latest_prompt.json",
         "latest_baseline_json": reports / "latest_baseline.json",
+        "builds": baseline / "builds",
+        "active_pointer": baseline / "active.json",
+        "baseline_lock": base / "state" / "baseline.lock",
     }
 
 
@@ -1100,23 +1103,192 @@ def scanner_config_hash() -> str:
     return sha256_text(json.dumps(payload, sort_keys=True))
 
 
-def build_current_baseline(repo: str | Path, quiet: bool = False) -> tuple[dict, bool]:
-    paths = ensure_sourcepack_dirs(repo)
-    created = not (paths["packet"] / "manifest.json").exists()
-    PacketWriter(paths["packet"], SourceScanner(repo).scan(), force=True).write_all()
-    shutil.copy2(paths["packet"] / "reality_map.json", paths["reality"])
-    shutil.copy2(paths["packet"] / "ai_instructions.md", paths["instructions"])
-    if not quiet and not verify_packet(paths["packet"]):
-        raise RuntimeError("packet verification returned FAIL")
-    elif quiet:
-        receipt = paths["packet"] / "receipt.json"
-        if not receipt.exists():
+class BaselineLockError(RuntimeError):
+    pass
+
+
+def _rel_to_repo(repo: Path, path: Path | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        return str(path.resolve().relative_to(repo.resolve())).replace("\\", "/")
+    except Exception:
+        return str(path)
+
+
+def _read_json_file(path: Path) -> tuple[dict | None, str | None]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return None, f"malformed JSON: {exc}"
+    except OSError as exc:
+        return None, f"unreadable: {exc}"
+    if not isinstance(data, dict):
+        return None, "JSON root is not an object"
+    return data, None
+
+
+def baseline_corrupt_result(repo: Path, message: str, details: dict | None = None, packet_path: Path | None = None, metadata_path: Path | None = None, active_pointer_path: Path | None = None, mode: str = "none", active_build_id: str | None = None) -> dict:
+    return {"ok": False, "state": "corrupt", "finding_id": "baseline_corrupt", "message": "Trusted SourcePack baseline is corrupt or unverifiable. Recreate the baseline only after verifying the current repo state should be trusted.", "details": {"reason": message, **(details or {})}, "packet_path": _rel_to_repo(repo, packet_path), "metadata_path": _rel_to_repo(repo, metadata_path), "active_pointer_path": _rel_to_repo(repo, active_pointer_path), "mode": mode, "active_build_id": active_build_id}
+
+
+def resolve_active_baseline(repo: str | Path) -> dict:
+    repo = Path(repo).resolve(); paths = sourcepack_paths(repo); pointer = paths["active_pointer"]
+    if pointer.exists():
+        data, err = _read_json_file(pointer)
+        if err:
+            return baseline_corrupt_result(repo, f"active.json {err}", active_pointer_path=pointer, mode="pointer")
+        build_id = data.get("active_build_id")
+        if not isinstance(build_id, str) or not build_id or "/" in build_id or "\\" in build_id or build_id in {".", ".."}:
+            return baseline_corrupt_result(repo, "active.json has invalid active_build_id", active_pointer_path=pointer, mode="pointer")
+        build_dir = (paths["builds"] / build_id).resolve(); builds_dir = paths["builds"].resolve()
+        try:
+            build_dir.relative_to(builds_dir)
+        except ValueError:
+            return baseline_corrupt_result(repo, "active.json points outside baseline builds", active_pointer_path=pointer, mode="pointer", active_build_id=build_id)
+        packet = build_dir / "packet"; meta = build_dir / "metadata.json"
+        if not build_dir.exists() or not packet.exists():
+            return baseline_corrupt_result(repo, "active.json points to a missing build", packet_path=packet, metadata_path=meta, active_pointer_path=pointer, mode="pointer", active_build_id=build_id)
+        return {"ok": True, "state": "resolved", "mode": "pointer", "packet_path": _rel_to_repo(repo, packet), "metadata_path": _rel_to_repo(repo, meta), "active_pointer_path": _rel_to_repo(repo, pointer), "active_build_id": build_id, "details": {}}
+    legacy = paths["packet"]
+    if (legacy / "manifest.json").exists():
+        return {"ok": True, "state": "resolved", "mode": "legacy", "packet_path": _rel_to_repo(repo, legacy), "metadata_path": _rel_to_repo(repo, paths["baseline_meta"]), "active_pointer_path": None, "active_build_id": None, "details": {}}
+    return {"ok": False, "state": "missing", "finding_id": "baseline_missing", "message": "No trusted SourcePack baseline exists while changes are present.", "details": {}, "packet_path": None, "metadata_path": None, "active_pointer_path": None, "mode": "none", "active_build_id": None}
+
+
+def _validate_packet_artifacts(repo: Path, packet: Path) -> dict | None:
+    required = ["manifest.json", "receipt.json", "reality_map.json"]
+    for name in required:
+        if not (packet / name).exists():
+            return baseline_corrupt_result(repo, f"active packet missing {name}", packet_path=packet)
+    for name in ["manifest.json", "receipt.json", "reality_map.json", "token_report.json", "redactions.json"]:
+        path = packet / name
+        if path.exists():
+            _, err = _read_json_file(path)
+            if err:
+                return baseline_corrupt_result(repo, f"{name} {err}", packet_path=packet)
+    receipt, err = _read_json_file(packet / "receipt.json")
+    if err:
+        return baseline_corrupt_result(repo, f"receipt.json {err}", packet_path=packet)
+    hashes = receipt.get("hashes")
+    if not isinstance(hashes, dict) or not hashes:
+        return baseline_corrupt_result(repo, "receipt.json has no hashes", packet_path=packet)
+    for name, expected in hashes.items():
+        if not isinstance(name, str) or not isinstance(expected, str):
+            return baseline_corrupt_result(repo, "receipt.json contains invalid hash entry", packet_path=packet)
+        path = packet / name
+        try:
+            path.relative_to(packet)
+        except ValueError:
+            return baseline_corrupt_result(repo, "receipt.json tracks path outside packet", packet_path=packet)
+        if not path.exists():
+            return baseline_corrupt_result(repo, f"receipt-tracked artifact missing: {name}", packet_path=packet)
+        try:
+            actual = sha256_file(path)
+        except OSError as exc:
+            return baseline_corrupt_result(repo, f"receipt-tracked artifact unreadable: {name}: {exc}", packet_path=packet)
+        if actual != expected:
+            return baseline_corrupt_result(repo, f"receipt hash mismatch: {name}", packet_path=packet)
+    return None
+
+
+def validate_baseline(repo: str | Path) -> dict:
+    repo = Path(repo).resolve(); resolved = resolve_active_baseline(repo)
+    if resolved.get("state") == "corrupt":
+        return resolved
+    if resolved.get("state") == "missing":
+        return resolved
+    packet = repo / resolved["packet_path"] if resolved.get("packet_path") else None
+    meta = repo / resolved["metadata_path"] if resolved.get("metadata_path") else None
+    corrupt = _validate_packet_artifacts(repo, packet)
+    if corrupt:
+        corrupt.update({"mode": resolved.get("mode", "none"), "metadata_path": resolved.get("metadata_path"), "active_pointer_path": resolved.get("active_pointer_path"), "active_build_id": resolved.get("active_build_id")})
+        return corrupt
+    if meta and meta.exists():
+        _, err = _read_json_file(meta)
+        if err:
+            return baseline_corrupt_result(repo, f"metadata.json {err}", packet_path=packet, metadata_path=meta, active_pointer_path=repo / resolved["active_pointer_path"] if resolved.get("active_pointer_path") else None, mode=resolved.get("mode", "none"), active_build_id=resolved.get("active_build_id"))
+    paths = sourcepack_paths(repo); stale = paths["stale_marker"].exists()
+    stale_details = None
+    if stale:
+        stale_details, err = _read_json_file(paths["stale_marker"])
+        if err:
+            stale_details = {"reason": "unreadable"}
+    return {"ok": True, "state": "stale" if stale else "present", "finding_id": "baseline_stale" if stale else None, "message": "Trusted SourcePack baseline may not match current repo state." if stale else "Trusted SourcePack baseline is present.", "details": {"stale_details": stale_details} if stale else {}, "packet_path": resolved.get("packet_path"), "metadata_path": resolved.get("metadata_path"), "active_pointer_path": resolved.get("active_pointer_path"), "mode": resolved.get("mode"), "active_build_id": resolved.get("active_build_id")}
+
+
+def acquire_baseline_lock(repo: str | Path, command: str | None = None) -> tuple[Path, int]:
+    paths = ensure_sourcepack_dirs(repo); lock = paths["baseline_lock"]
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as exc:
+        raise BaselineLockError("Another SourcePack baseline operation is already in progress.") from exc
+    payload = {"pid": os.getpid(), "command": command, "started_at": utc_now()}
+    os.write(fd, json.dumps(payload).encode("utf-8"))
+    os.fsync(fd)
+    return lock, fd
+
+
+def release_baseline_lock(lock: Path, fd: int) -> None:
+    try:
+        os.close(fd)
+    finally:
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+        f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def _unique_build_id() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + f"-{os.getpid()}"
+
+
+def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: str | None = None) -> tuple[dict, bool]:
+    repo = Path(repo).resolve(); paths = ensure_sourcepack_dirs(repo)
+    previous = validate_baseline(repo); created = previous.get("state") == "missing"
+    lock = fd = None; build_dir = None
+    try:
+        lock, fd = acquire_baseline_lock(repo, "baseline")
+        build_id = _unique_build_id(); build_dir = paths["builds"] / build_id; packet = build_dir / "packet"
+        build_dir.mkdir(parents=True, exist_ok=False)
+        PacketWriter(packet, SourceScanner(repo).scan(), force=True).write_all()
+        if not quiet and not verify_packet(packet):
             raise RuntimeError("packet verification returned FAIL")
-    meta = {"created_at": utc_now(), "packet_path": str(paths["packet"]), "scanner_config_hash": scanner_config_hash(), **git_metadata(repo)}
-    paths["baseline_meta"].write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    if paths["stale_marker"].exists():
-        paths["stale_marker"].unlink()
-    return paths, created
+        candidate = _validate_packet_artifacts(repo, packet)
+        if candidate:
+            raise RuntimeError(candidate["details"].get("reason", "candidate baseline invalid"))
+        meta = {"created_at": utc_now(), "packet_path": _rel_to_repo(repo, packet), "scanner_config_hash": scanner_config_hash(), **git_metadata(repo)}
+        (build_dir / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        meta_check, meta_err = _read_json_file(build_dir / "metadata.json")
+        if meta_err:
+            raise RuntimeError(f"metadata.json {meta_err}")
+        if fail_stage == "before_pointer_replace":
+            raise RuntimeError("injected failure before pointer replacement")
+        pointer = {"schema_version": "baseline_pointer.v1", "active_build_id": build_id, "activated_at": utc_now(), "packet_path": _rel_to_repo(repo, packet), "metadata_path": _rel_to_repo(repo, build_dir / "metadata.json")}
+        _write_json_atomic(paths["active_pointer"], pointer)
+        if fail_stage == "after_pointer_replace":
+            raise RuntimeError("injected failure after pointer replacement")
+        if paths["packet"].exists():
+            shutil.rmtree(paths["packet"])
+        shutil.copytree(packet, paths["packet"])
+        shutil.copy2(packet / "reality_map.json", paths["reality"])
+        shutil.copy2(packet / "ai_instructions.md", paths["instructions"])
+        paths["baseline_meta"].write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        if paths["stale_marker"].exists():
+            paths["stale_marker"].unlink()
+        return paths, created
+    finally:
+        if lock is not None and fd is not None:
+            release_baseline_lock(lock, fd)
 
 
 def build_prompt_context(repo: str | Path) -> dict:
@@ -1274,6 +1446,21 @@ def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
         return False, "git_unavailable"
     return False, None
 
+
+def baseline_report_fields(status: dict) -> dict:
+    return {
+        "baseline_state": status.get("state"),
+        "baseline_integrity_ok": bool(status.get("ok")) and status.get("state") in {"present", "stale"},
+        "baseline_integrity_finding_id": status.get("finding_id"),
+        "baseline_integrity_message": status.get("message"),
+        "baseline_stale": status.get("state") == "stale",
+        "baseline_stale_details": (status.get("details") or {}).get("stale_details"),
+        "baseline_mode": status.get("mode"),
+        "baseline_packet_path": status.get("packet_path"),
+        "baseline_metadata_path": status.get("metadata_path"),
+        "baseline_active_pointer_path": status.get("active_pointer_path"),
+    }
+
 def cli_prompt(args) -> int:
     repo = Path(args.repo).resolve()
     if not repo.is_dir():
@@ -1312,7 +1499,7 @@ def cli_baseline(args) -> int:
     repo = Path(args.repo).resolve(); dirty, dirty_state = git_worktree_dirty(repo); paths = ensure_sourcepack_dirs(repo); added, err = ensure_gitignore_entry(repo)
     if err:
         rep=traffic_report("FAIL","could not create baseline.",[normalized_finding("gitignore_unwritable","error","git",f"Cannot write .gitignore: {err}")]); print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
-    existed = (paths["packet"] / "manifest.json").exists()
+    existed = validate_baseline(repo).get("state") in {"present", "stale", "corrupt"}
     try:
         build_current_baseline(repo, quiet=getattr(args, "quiet", False)); refreshed = existed or args.refresh
         if dirty:
@@ -1327,6 +1514,9 @@ def cli_baseline(args) -> int:
         if added: print("Added .sourcepack/ to .gitignore.")
         print(render_traffic(rep,args.verbose), end="")
         return 0
+    except BaselineLockError as exc:
+        rep=traffic_report("WARN","baseline writer is locked.",[normalized_finding("baseline_locked","warn","tooling",str(exc))], ["baseline"], "try again after the other baseline operation finishes.", reason_type="tooling"); write_user_report(repo, rep, "baseline")
+        print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
     except Exception as exc:
         rep=traffic_report("FAIL","could not create baseline.",[normalized_finding("baseline_failed","error","baseline",f"Baseline verification failed: {exc}")]); write_user_report(repo, rep, "baseline")
         print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
@@ -1339,7 +1529,7 @@ def cli_diff(args) -> int:
         print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
     git_root = Path(cp.stdout.strip()).resolve()
     candidate_paths = sourcepack_paths(repo_arg)
-    repo = repo_arg if (candidate_paths["packet"] / "manifest.json").exists() else git_root
+    repo = repo_arg if validate_baseline(repo_arg).get("state") in {"present", "stale", "corrupt"} else git_root
     paths = ensure_sourcepack_dirs(repo); note = None; added, err = ensure_gitignore_entry(repo)
     if err:
         rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("gitignore_unwritable","error","git",f"Cannot write .gitignore: {err}")]); print(render_traffic(rep,args.verbose), end=""); return 1
@@ -1353,28 +1543,43 @@ def cli_diff(args) -> int:
         extra = untracked_files_as_diff(repo)
         if extra:
             diff_text = (diff_text + "\n" + extra).strip() + "\n"
-    if not (paths["packet"] / "manifest.json").exists():
+    baseline_status = validate_baseline(repo)
+    if baseline_status["state"] == "corrupt":
+        rep = traffic_report("FAIL", "trusted baseline is corrupt.", [normalized_finding("baseline_corrupt", "error", "baseline", baseline_status["message"])], ["baseline", "diff"], "Recreate the baseline only after verifying the current repo state should be trusted.")
+        rep.update(baseline_report_fields(baseline_status))
+        write_user_report(repo, rep, "diff")
+        print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
+    if baseline_status["state"] == "missing":
         if diff_text.strip():
-            rep=traffic_report("FAIL","baseline missing while changes are present.",[normalized_finding("baseline_missing","error","baseline","No baseline exists. Run sourcepack baseline before AI edits, or run sourcepack baseline --refresh to accept current repo state.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
+            rep=traffic_report("FAIL","baseline missing while changes are present.",[normalized_finding("baseline_missing","error","baseline","No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
+            rep.update(baseline_report_fields(baseline_status))
             write_user_report(repo, rep, "diff")
             print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
-        try: build_current_baseline(repo); note = "Created SourcePack baseline because none existed and no diff was present."
+        try:
+            build_current_baseline(repo, quiet=True); note = "Created SourcePack baseline because none existed and no diff was present."; baseline_status = validate_baseline(repo)
+        except BaselineLockError as exc:
+            rep=traffic_report("WARN","baseline writer is locked.",[normalized_finding("baseline_locked","warn","tooling",str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")
+            print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 0
         except Exception as exc:
             rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("baseline_failed","error","baseline",f"Baseline verification failed: {exc}")]); print(render_traffic(rep,args.verbose), end=""); return 1
     stale_findings = []
-    if paths["stale_marker"].exists():
-        stale_findings.append(normalized_finding("baseline_stale", "warn", "uncertainty", "baseline_stale: trusted baseline may not match current HEAD."))
+    if baseline_status["state"] == "stale":
+        stale_findings.append(normalized_finding("baseline_stale", "warn", "uncertainty", "Trusted SourcePack baseline may not match current repo state."))
     if not diff_text.strip():
         verdict = "WARN" if stale_findings else "PASS"
         rep=traffic_report(verdict,"SourcePack could not fully evaluate this change." if stale_findings else "good to continue.",[normalized_finding("no_diff","info","diff","No uncommitted changes detected."), *stale_findings], ["diff", "baseline freshness"])
     else:
-        raw = judge_patch_text(paths["packet"], diff_text); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
+        raw = judge_patch_text(repo / baseline_status["packet_path"], diff_text); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
         if stale_findings and rep["verdict"] != "FAIL":
             rep = traffic_report("WARN", "SourcePack could not fully evaluate this change.", rep.get("findings", []) + stale_findings, rep.get("checked_categories", []), rep.get("next_action"), reason_type="uncertainty")
             rep["raw_patch_judgment"] = raw
-    if paths["baseline_meta"].exists():
+        elif stale_findings:
+            rep = traffic_report("FAIL", rep.get("headline"), rep.get("findings", []) + stale_findings, rep.get("checked_categories", []), rep.get("next_action"))
+            rep["raw_patch_judgment"] = raw
+    rep.update(baseline_report_fields(baseline_status))
+    if baseline_status.get("metadata_path"):
         try:
-            rep["baseline"] = json.loads(paths["baseline_meta"].read_text(encoding="utf-8"))
+            rep["baseline"] = json.loads((repo / baseline_status["metadata_path"]).read_text(encoding="utf-8"))
         except Exception:
             pass
     rep["current_git"] = git_metadata(repo)
@@ -1392,6 +1597,13 @@ def untracked_files_as_diff(repo: Path) -> str:
     if cp.returncode != 0: return ""
     for rel in cp.stdout.splitlines():
         path = repo / rel
+        if rel == ".gitignore":
+            try:
+                lines = {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+                if lines <= {".sourcepack", ".sourcepack/"}:
+                    continue
+            except Exception:
+                pass
         if not path.is_file() or is_probably_binary(path):
             continue
         try: content = path.read_text(encoding="utf-8")
@@ -1534,10 +1746,12 @@ def cli_uninstall_hook(args) -> int:
 
 def cli_status(args) -> int:
     repo=Path(args.repo).resolve(); paths=ensure_sourcepack_dirs(repo)
-    current=paths["base"].exists(); baseline=(paths["packet"] / "manifest.json").exists(); receipt=paths["packet"] / "receipt.json"; last=None
-    if receipt.exists():
-        try: last=json.loads(receipt.read_text()).get("generated_at")
-        except Exception: last=None
+    current=paths["base"].exists(); baseline_status=validate_baseline(repo); baseline=baseline_status["state"] in {"present", "stale"}; last=None
+    if baseline_status.get("packet_path"):
+        receipt=repo / baseline_status["packet_path"] / "receipt.json"
+        if receipt.exists():
+            try: last=json.loads(receipt.read_text()).get("generated_at")
+            except Exception: last=None
     cp=run_git(repo,["rev-parse","--show-toplevel"]); git_repo=cp.returncode==0; root=Path(cp.stdout.strip()) if git_repo else repo
     pre=root/".git"/"hooks"/"pre-commit"; post=root/".git"/"hooks"/"post-commit"; hook_installed=False; post_hook_installed=False; strict=False
     if pre.exists():
@@ -1553,18 +1767,16 @@ def cli_status(args) -> int:
             lr=json.loads(paths["latest_json"].read_text()); last_report=lr.get("verdict"); last_light=lr.get("light")
         except Exception: pass
     dirty, dirty_state = git_worktree_dirty(repo)
-    stale = paths["stale_marker"].exists()
-    stale_data = None
-    if stale:
-        try: stale_data=json.loads(paths["stale_marker"].read_text(encoding="utf-8"))
-        except Exception: stale_data={"reason":"unreadable"}
+    stale = baseline_status["state"] == "stale"
+    stale_data = (baseline_status.get("details") or {}).get("stale_details")
     prompt_exists = paths["prompt"].exists()
     automatic = current and baseline and hook_installed and post_hook_installed and ignored
-    data={"automatic_mode_enabled":automatic,"local_storage_exists":current,"baseline_exists":baseline,"baseline_stale":stale,"baseline_stale_details":stale_data,"prompt_context_exists":prompt_exists,"pre_commit_hook_installed":hook_installed,"post_commit_hook_installed":post_hook_installed,"hook_strict_mode":strict,"hook_policy":"RED blocks, YELLOW blocks" if strict else "RED blocks, YELLOW warns","sourcepack_gitignored":ignored,"last_report_verdict":last_report,"last_report_light":last_light,"dirty_worktree":dirty if dirty_state is None else None,"git_repo":git_repo,"last_baseline_update":last}
+    data={"automatic_mode_enabled":automatic,"local_storage_exists":current,"baseline_exists":baseline,"prompt_context_exists":prompt_exists,"pre_commit_hook_installed":hook_installed,"post_commit_hook_installed":post_hook_installed,"hook_strict_mode":strict,"hook_policy":"RED blocks, YELLOW blocks" if strict else "RED blocks, YELLOW warns","sourcepack_gitignored":ignored,"last_report_verdict":last_report,"last_report_light":last_light,"dirty_worktree":dirty if dirty_state is None else None,"git_repo":git_repo,"last_baseline_update":last}
+    data.update(baseline_report_fields(baseline_status))
     if args.json: print(json.dumps(data, indent=2)); return 0
     print(f"SourcePack status for {repo}\n")
     print(f"Automatic mode: {'enabled' if automatic else 'not enabled'}")
-    print(f"Baseline: {'present' if baseline else 'missing'}" + (" (stale)" if stale else ""))
+    print(f"Baseline: {baseline_status['state']}")
     print(f"Prompt context: {'present' if prompt_exists else 'missing'}")
     print(f"Pre-commit hook: {'installed' if hook_installed else 'not installed'}")
     print(f"Post-commit baseline hook: {'installed' if post_hook_installed else 'not installed'}")
@@ -1610,7 +1822,7 @@ def cli_init(args) -> int:
     details["sourcepack_gitignored"] = True
     dirty, dirty_state = initial_dirty, initial_dirty_state
     details["dirty_worktree"] = dirty
-    baseline_exists = (paths["packet"] / "manifest.json").exists()
+    baseline_exists = validate_baseline(repo).get("state") in {"present", "stale", "corrupt"}
     if args.refresh_baseline or (not baseline_exists and not dirty):
         try:
             _, created = build_current_baseline(repo)
@@ -1618,6 +1830,9 @@ def cli_init(args) -> int:
             details["baseline_refreshed"] = not created or args.refresh_baseline
             if dirty:
                 findings.append(normalized_finding("dirty_worktree", "warn", "baseline", "dirty_worktree: baseline includes current uncommitted changes."))
+        except BaselineLockError as exc:
+            findings.append(normalized_finding("baseline_locked", "warn", "tooling", str(exc)))
+            details["next_action"] = "Try again after the other baseline operation finishes."
         except Exception as exc:
             findings.append(normalized_finding("baseline_failed", "error", "baseline", f"Baseline verification failed: {exc}"))
     elif not baseline_exists and dirty:

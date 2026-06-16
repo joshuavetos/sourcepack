@@ -1047,13 +1047,40 @@ def _is_local_python_import(name: str, path: str, files: set[str]) -> bool:
     return bool(candidates & files)
 
 
+JS_DEP_SECTIONS = {"dependencies", "devDependencies", "peerDependencies", "optionalDependencies"}
+
+
+def _package_json_declared_deps_from_added_lines(lines: list[str]) -> set[str]:
+    deps: set[str] = set()
+    active_section: str | None = None
+    section_depth: int | None = None
+    depth = 0
+    for line in lines:
+        stripped = line.strip()
+        section_match = re.match(r'"(dependencies|devDependencies|peerDependencies|optionalDependencies)"\s*:\s*\{', stripped)
+        if section_match:
+            active_section = section_match.group(1)
+            section_depth = depth + stripped.count("{") - stripped.count("}")
+            depth += stripped.count("{") - stripped.count("}")
+            continue
+        if active_section:
+            dep_match = re.match(r'"(@?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)"\s*:', stripped)
+            if dep_match and dep_match.group(1) not in JS_DEP_SECTIONS:
+                deps.add(dep_match.group(1).lower())
+        depth += stripped.count("{") - stripped.count("}")
+        if active_section and section_depth is not None and depth < section_depth:
+            active_section = None
+            section_depth = None
+    return deps
+
+
 def _declared_dependency_names_from_patch(changes: list[PatchFileChange]) -> set[str]:
     deps = set(_dependency_additions_from_patch(changes))
     for ch in changes:
         added = "\n".join(ch.added_lines or [])
         name = Path(ch.path).name.lower()
         if name == "package.json":
-            deps |= {m.lower() for m in re.findall(r'"(@?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)"\s*:', added)}
+            deps |= _package_json_declared_deps_from_added_lines(ch.added_lines or [])
         elif name in PY_DEP_FILES or (name.startswith("requirements") and name.endswith(".txt")):
             for line in added.splitlines():
                 cleaned = line.split("#", 1)[0].strip().strip('"\' ,')
@@ -1066,12 +1093,11 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     report = analyze_patch(packet_path, patch_text)
     packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest); deps = dependency_inventory(manifest, packet)
     changes = parse_unified_diff(patch_text); declared = _declared_dependency_names_from_patch(changes)
-    unsupported = set(report.get("unsupported_dependencies", [])); used_imports = set()
+    unsupported = set(report.get("unsupported_dependencies", []))
     for ch in changes:
         suffix = Path(ch.path).suffix.lower(); added = "\n".join(ch.added_lines or [])
         if suffix == ".py":
             for imported in extract_imports_from_text(added, suffix):
-                used_imports.add(_normalize_dependency_name(imported))
                 if imported in PY_STDLIB or imported.startswith(".") or _is_local_python_import(imported, ch.path, files):
                     continue
                 norm = _normalize_dependency_name(imported)
@@ -1079,7 +1105,6 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
                     unsupported.add(imported)
         elif suffix in JS_EXTS:
             for imported in extract_imports_from_text(added, suffix):
-                used_imports.add(imported.lower())
                 if imported.startswith(".") or imported.startswith("/"):
                     continue
                 if imported.lower() not in deps and imported.lower() not in declared:
@@ -1113,6 +1138,26 @@ def run_git(repo: Path, args: list[str]) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(["git", *args], 127, "", "git executable not found")
 
 
+
+def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
+    repo = Path(repo)
+    cp = run_git(repo, ["rev-parse", "--show-toplevel"])
+    if cp.returncode != 0:
+        return False, "git_unavailable" if cp.returncode == 127 else "not_git"
+    root = Path(cp.stdout.strip())
+    for args in (["diff", "--quiet"], ["diff", "--staged", "--quiet"]):
+        diff_cp = run_git(root, list(args))
+        if diff_cp.returncode == 1:
+            return True, None
+        if diff_cp.returncode == 127:
+            return False, "git_unavailable"
+    untracked = run_git(root, ["ls-files", "--others", "--exclude-standard"])
+    if untracked.returncode == 0 and untracked.stdout.strip():
+        return True, None
+    if untracked.returncode == 127:
+        return False, "git_unavailable"
+    return False, None
+
 def cli_prompt(args) -> int:
     repo = Path(args.repo).resolve()
     if not repo.is_dir():
@@ -1143,20 +1188,26 @@ def cli_prompt(args) -> int:
 
 
 def cli_baseline(args) -> int:
-    repo = Path(args.repo).resolve(); paths = ensure_sourcepack_dirs(repo); added, err = ensure_gitignore_entry(repo)
+    repo = Path(args.repo).resolve(); dirty, dirty_state = git_worktree_dirty(repo); paths = ensure_sourcepack_dirs(repo); added, err = ensure_gitignore_entry(repo)
     if err:
         rep=traffic_report("FAIL","could not create baseline.",[normalized_finding("gitignore_unwritable","error","git",f"Cannot write .gitignore: {err}")]); print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
     existed = (paths["packet"] / "manifest.json").exists()
     try:
-        build_current_baseline(repo); headline = "baseline refreshed." if existed else "baseline created."
-        rep=traffic_report("PASS", headline, checked_categories=["baseline","verify"]); write_user_report(repo, rep, "baseline")
+        build_current_baseline(repo); refreshed = existed or args.refresh
+        if dirty:
+            headline = "baseline refreshed while uncommitted changes are present." if refreshed else "baseline created while uncommitted changes are present."
+            rep=traffic_report("WARN", headline, [normalized_finding("dirty_worktree", "warn", "baseline", "baseline now includes current uncommitted changes.")], ["baseline","verify"], "Commit or discard unintended changes before relying on this baseline.")
+        else:
+            headline = "baseline refreshed." if refreshed else "baseline created."
+            rep=traffic_report("PASS", headline, checked_categories=["baseline","verify"])
+        write_user_report(repo, rep, "baseline")
         if args.json: print(json.dumps(rep, indent=2)); return 0
         if added: print("Added .sourcepack/ to .gitignore.")
-        print(f"GREEN LIGHT: {headline}"); return 0
+        print(render_traffic(rep,args.verbose), end="")
+        return 0
     except Exception as exc:
         rep=traffic_report("FAIL","could not create baseline.",[normalized_finding("baseline_failed","error","baseline",f"Baseline verification failed: {exc}")]); write_user_report(repo, rep, "baseline")
         print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
-
 
 def cli_diff(args) -> int:
     repo_arg = Path(args.repo).resolve(); cp = run_git(repo_arg, ["rev-parse", "--show-toplevel"])
@@ -1164,10 +1215,16 @@ def cli_diff(args) -> int:
         message = "Git executable not found." if cp.returncode == 127 else "No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use."
         rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("git_unavailable" if cp.returncode == 127 else "no_git_repo","error","git",message)])
         print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
-    repo = Path(cp.stdout.strip()).resolve(); paths = ensure_sourcepack_dirs(repo); note = None; added, err = ensure_gitignore_entry(repo)
+    git_root = Path(cp.stdout.strip()).resolve()
+    candidate_paths = sourcepack_paths(repo_arg)
+    repo = repo_arg if (candidate_paths["packet"] / "manifest.json").exists() else git_root
+    paths = ensure_sourcepack_dirs(repo); note = None; added, err = ensure_gitignore_entry(repo)
     if err:
         rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("gitignore_unwritable","error","git",f"Cannot write .gitignore: {err}")]); print(render_traffic(rep,args.verbose), end=""); return 1
-    cp = run_git(repo, ["diff", "--staged"] if args.staged else ["diff"]); diff_text = cp.stdout
+    diff_args = ["diff", "--staged"] if args.staged else ["diff"]
+    if 'git_root' in locals() and repo != git_root:
+        diff_args.append("--relative")
+    cp = run_git(repo, diff_args); diff_text = cp.stdout
     if cp.returncode == 127:
         rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("git_unavailable","error","git","Git executable not found.")]); print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
     if not args.staged:
@@ -1218,6 +1275,13 @@ if grep -q 'YELLOW LIGHT' .git/SOURCEPACK_LAST_DIFF 2>/dev/null; then
 fi""" if strict else ""
     return """#!/bin/sh
 # === SOURCEPACK BEGIN ===
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$repo_root" ]; then
+  echo 'RED LIGHT: SourcePack could not locate git repository root.'
+  echo 'To bypass manually: git commit --no-verify'
+  exit 1
+fi
+cd "$repo_root" || exit 1
 sourcepack diff . --staged > .git/SOURCEPACK_LAST_DIFF
 sp_status=$?
 cat .git/SOURCEPACK_LAST_DIFF
@@ -1230,14 +1294,18 @@ fi""" + strict_block + """
 
 
 def hook_chain_text(strict: bool) -> str:
-    return hook_text(strict) + '''
-orig="$(dirname "$0")/pre-commit.sourcepack.orig"
-if [ -x "$orig" ]; then
+    return hook_text(strict) + """
+orig="$(git rev-parse --git-path hooks/pre-commit.sourcepack.orig 2>/dev/null)"
+if [ -n "$orig" ] && [ -x "$orig" ]; then
   "$orig" "$@"
   exit $?
 fi
 exit 0
-'''
+"""
+
+
+def hook_is_sourcepack(text: str) -> bool:
+    return "# === SOURCEPACK BEGIN ===" in text and "# === SOURCEPACK END ===" in text
 
 
 def cli_install_hook(args) -> int:
@@ -1247,11 +1315,11 @@ def cli_install_hook(args) -> int:
         print(f"RED LIGHT: SourcePack pre-commit hook install failed.\n\n{message}"); return 1
     root=Path(cp.stdout.strip()); hooks=root/".git"/"hooks"; pre=hooks/"pre-commit"; orig=hooks/"pre-commit.sourcepack.orig"
     try:
-        hooks.mkdir(parents=True, exist_ok=True); block=hook_text(args.strict)
+        hooks.mkdir(parents=True, exist_ok=True)
         if pre.exists():
             text=pre.read_text(encoding="utf-8", errors="ignore")
-            if "# === SOURCEPACK BEGIN ===" in text:
-                pre.write_text(re.sub(r"# === SOURCEPACK BEGIN ===.*?# === SOURCEPACK END ===\n?", block, text, flags=re.S), encoding="utf-8")
+            if hook_is_sourcepack(text):
+                pre.write_text(hook_chain_text(args.strict) if orig.exists() else hook_text(args.strict) + "\nexit 0\n", encoding="utf-8")
             else:
                 if not orig.exists(): shutil.copy2(pre, orig)
                 pre.write_text(hook_chain_text(args.strict), encoding="utf-8")
@@ -1263,19 +1331,20 @@ def cli_install_hook(args) -> int:
 
 def cli_uninstall_hook(args) -> int:
     repo=Path(args.repo).resolve(); cp=run_git(repo,["rev-parse","--show-toplevel"])
-    if cp.returncode!=0: print("RED LIGHT: SourcePack pre-commit hook uninstall failed.\n\nNo git repository found."); return 1
+    if cp.returncode!=0:
+        message = "Git executable not found." if cp.returncode == 127 else "No git repository found."
+        print(f"RED LIGHT: SourcePack pre-commit hook uninstall failed.\n\n{message}"); return 1
     root=Path(cp.stdout.strip()); hooks=root/".git"/"hooks"; pre=hooks/"pre-commit"; orig=hooks/"pre-commit.sourcepack.orig"
     try:
         if orig.exists(): shutil.move(str(orig), str(pre)); pre.chmod(0o755); print("GREEN LIGHT: SourcePack pre-commit hook uninstalled."); return 0
         if pre.exists():
             text=pre.read_text(encoding="utf-8", errors="ignore")
-            if "# === SOURCEPACK BEGIN ===" not in text:
+            if not hook_is_sourcepack(text):
                 print("RED LIGHT: Cannot safely uninstall SourcePack hook: SourcePack block not found."); return 1
             pre.write_text(re.sub(r"# === SOURCEPACK BEGIN ===.*?# === SOURCEPACK END ===\n?", "", text, flags=re.S), encoding="utf-8")
         print("GREEN LIGHT: SourcePack pre-commit hook uninstalled."); return 0
     except Exception as exc:
         print(f"RED LIGHT: SourcePack pre-commit hook uninstall failed.\n\n{exc}"); return 1
-
 
 def cli_status(args) -> int:
     repo=Path(args.repo).resolve(); paths=ensure_sourcepack_dirs(repo)
@@ -1283,20 +1352,30 @@ def cli_status(args) -> int:
     if receipt.exists():
         try: last=json.loads(receipt.read_text()).get("generated_at")
         except Exception: last=None
-    py=(repo/"requirements.txt").exists() or (repo/"pyproject.toml").exists(); js=(repo/"package.json").exists(); ptype="mixed" if py and js else "Python" if py else "JavaScript/TypeScript" if js else "unknown"
-    counts={"supported_command_count":0,"detected_dependency_count":0,"supported_capability_count":0}
-    if paths["reality"].exists():
-        reality=json.loads(paths["reality"].read_text()); counts={"supported_command_count":len(reality.get("supported_commands",[])),"detected_dependency_count":len(reality.get("detected_dependencies",[])),"supported_capability_count":len(reality.get("supported_capabilities",[]))}
-    ignored=False; cp=run_git(repo,["check-ignore",".sourcepack/"])
-    if cp.returncode==0: ignored=True
+    cp=run_git(repo,["rev-parse","--show-toplevel"]); git_repo=cp.returncode==0; root=Path(cp.stdout.strip()) if git_repo else repo
+    pre=root/".git"/"hooks"/"pre-commit"; hook_installed=False; strict=False
+    if pre.exists():
+        text=pre.read_text(encoding="utf-8", errors="ignore"); hook_installed=hook_is_sourcepack(text); strict="strict mode blocks YELLOW LIGHT" in text
+    ignored=False; cig=run_git(repo,["check-ignore",".sourcepack/"])
+    if cig.returncode==0: ignored=True
     elif (repo/".gitignore").exists(): ignored=any(line.strip() in {".sourcepack",".sourcepack/"} for line in (repo/".gitignore").read_text(errors="ignore").splitlines())
-    last_report=None
+    last_report=None; last_light=None
     if paths["latest_json"].exists():
-        try: last_report=json.loads(paths["latest_json"].read_text()).get("verdict")
-        except Exception: last_report=None
-    data={"current_exists":current,"baseline_packet_exists":baseline,"last_baseline_update":last,"project_type_summary":ptype,**counts,"last_report_status":last_report,"sourcepack_gitignored":ignored}
+        try:
+            lr=json.loads(paths["latest_json"].read_text()); last_report=lr.get("verdict"); last_light=lr.get("light")
+        except Exception: pass
+    dirty, dirty_state = git_worktree_dirty(repo)
+    automatic = current and baseline and hook_installed and ignored
+    data={"automatic_mode_enabled":automatic,"local_storage_exists":current,"baseline_exists":baseline,"pre_commit_hook_installed":hook_installed,"hook_strict_mode":strict,"hook_policy":"RED blocks, YELLOW blocks" if strict else "RED blocks, YELLOW warns","sourcepack_gitignored":ignored,"last_report_verdict":last_report,"last_report_light":last_light,"dirty_worktree":dirty if dirty_state is None else None,"git_repo":git_repo,"last_baseline_update":last}
     if args.json: print(json.dumps(data, indent=2)); return 0
-    print(f"SourcePack status for {repo}"); print(f"Baseline packet: {'present' if baseline else 'missing'}"); print(f"Last baseline update: {last or 'unknown'}"); print(f"Project type: {ptype}"); print(f"Supported commands: {counts['supported_command_count']}"); print(f"Detected dependencies: {counts['detected_dependency_count']}"); print(f"Supported capabilities: {counts['supported_capability_count']}"); print(f"Last report: {last_report or 'none'}"); print(f".sourcepack/ gitignored: {'yes' if ignored else 'no'}")
+    print(f"SourcePack status for {repo}\n")
+    print(f"Automatic mode: {'enabled' if automatic else 'not enabled'}")
+    print(f"Baseline: {'present' if baseline else 'missing'}")
+    print(f"Pre-commit hook: {'installed' if hook_installed else 'not installed'}")
+    print(f"Hook policy: {data['hook_policy']}")
+    print(f".sourcepack/ gitignored: {'yes' if ignored else 'no'}")
+    print(f"Working tree: {'dirty' if dirty else 'clean' if dirty_state is None else 'unknown'}")
+    print(f"Last report: {last_light or last_report or 'none'}")
     return 0
 
 def init_workspace(path: str | Path):
@@ -1309,6 +1388,75 @@ def init_workspace(path: str | Path):
         config.write_text(json.dumps({"max_file_size": 1_000_000, "include_hidden": False, "redact_secrets": True}, indent=2), encoding="utf-8")
     print(f"Initialized SourcePack workspace at {p}")
 
+
+
+def write_auto_report(repo: Path, report: dict, details: dict) -> None:
+    payload = dict(report)
+    payload.update(details)
+    write_user_report(repo, payload, "auto")
+
+
+def cli_init(args) -> int:
+    repo = Path(args.path).resolve()
+    if not getattr(args, "auto", False):
+        init_workspace(repo)
+        return 0
+    initial_dirty, initial_dirty_state = git_worktree_dirty(repo)
+    init_workspace(repo)
+    findings: list[dict] = []
+    details = {"baseline_created": False, "baseline_refreshed": False, "hook_installed": False, "strict_mode": bool(args.strict), "sourcepack_gitignored": False, "dirty_worktree": False, "next_action": "continue."}
+    paths = ensure_sourcepack_dirs(repo)
+    added, err = ensure_gitignore_entry(repo)
+    if err:
+        rep = traffic_report("FAIL", "SourcePack automatic mode could not be enabled.", [normalized_finding("gitignore_unwritable", "error", "git", f"Cannot write .gitignore: {err}")])
+        write_auto_report(repo, rep, details)
+        print(render_traffic(rep), end=""); return 1
+    details["sourcepack_gitignored"] = True
+    dirty, dirty_state = initial_dirty, initial_dirty_state
+    details["dirty_worktree"] = dirty
+    baseline_exists = (paths["packet"] / "manifest.json").exists()
+    if args.refresh_baseline or (not baseline_exists and not dirty):
+        try:
+            _, created = build_current_baseline(repo)
+            details["baseline_created"] = created
+            details["baseline_refreshed"] = not created or args.refresh_baseline
+            if dirty:
+                findings.append(normalized_finding("dirty_worktree", "warn", "baseline", "dirty_worktree: baseline includes current uncommitted changes."))
+        except Exception as exc:
+            findings.append(normalized_finding("baseline_failed", "error", "baseline", f"Baseline verification failed: {exc}"))
+    elif not baseline_exists and dirty:
+        findings.append(normalized_finding("dirty_worktree", "warn", "baseline", "dirty_worktree: working tree has uncommitted changes, so baseline was not created."))
+        findings.append(normalized_finding("baseline_missing", "warn", "baseline", "baseline_missing: run sourcepack baseline --refresh to accept current repo state."))
+        details["next_action"] = "Run sourcepack init . --auto --refresh-baseline or sourcepack baseline --refresh to accept current repo state."
+    if args.install_hygiene_hooks:
+        findings.append(normalized_finding("hygiene_hooks_deferred", "warn", "hook", "baseline hygiene hooks are not installed by this release."))
+    cp = run_git(repo, ["rev-parse", "--show-toplevel"])
+    if args.no_hook:
+        pass
+    elif cp.returncode != 0:
+        findings.append(normalized_finding("no_git_repo" if cp.returncode != 127 else "git_unavailable", "warn", "git", "no_git_repo: pre-commit hook was not installed because this is not a git repository." if cp.returncode != 127 else "Git executable not found."))
+    else:
+        class HookArgs: pass
+        h = HookArgs(); h.repo = str(repo); h.strict = bool(args.strict)
+        rc = cli_install_hook(h)
+        details["hook_installed"] = rc == 0
+        if rc != 0:
+            findings.append(normalized_finding("hook_install_failed", "warn", "hook", "pre-commit hook could not be installed."))
+    verdict = "FAIL" if any(f["severity"] == "error" for f in findings) else "WARN" if findings else "PASS"
+    headline = "SourcePack automatic mode enabled." if verdict == "PASS" else "SourcePack automatic mode partially enabled." if verdict == "WARN" else "SourcePack automatic mode could not be enabled."
+    rep = traffic_report(verdict, headline, findings, ["init", "baseline", "hook"], details.get("next_action", "continue."))
+    write_auto_report(repo, rep, details)
+    if args.json:
+        print(json.dumps({**rep, **details}, indent=2)); return 0 if verdict != "FAIL" else 1
+    print(f"{rep['light']}: {headline}\n")
+    if findings:
+        print("Warnings:" if verdict == "WARN" else "Blockers:")
+        for f in findings: print(f"* {f['id']}: {f['message']}")
+        print()
+    print(f"Baseline: {'created' if details['baseline_created'] else 'refreshed' if details['baseline_refreshed'] else 'present' if baseline_exists else 'missing'}")
+    print(f"Pre-commit hook: {'skipped' if args.no_hook else 'installed' if details['hook_installed'] else 'not installed'}")
+    print(f".sourcepack/ gitignored: {'yes' if details['sourcepack_gitignored'] else 'no'}")
+    return 0 if verdict != "FAIL" else 1
 
 def doctor() -> bool:
     print("--- SourcePack Health Check ---")
@@ -1350,6 +1498,12 @@ def run_cli(args_list=None):
     subs.add_parser("demo")
     init = subs.add_parser("init")
     init.add_argument("path", nargs="?", default=".")
+    init.add_argument("--auto", action="store_true")
+    init.add_argument("--strict", action="store_true")
+    init.add_argument("--no-hook", action="store_true")
+    init.add_argument("--refresh-baseline", action="store_true")
+    init.add_argument("--install-hygiene-hooks", action="store_true")
+    init.add_argument("--json", action="store_true")
     subs.add_parser("doctor")
     prompt_cmd = subs.add_parser("prompt")
     prompt_cmd.add_argument("repo")
@@ -1382,7 +1536,7 @@ def run_cli(args_list=None):
         if args.command == "doctor":
             doctor(); return 0
         if args.command == "init":
-            init_workspace(args.path); return 0
+            return cli_init(args)
         if args.command == "prompt":
             return cli_prompt(args)
         if args.command == "baseline":

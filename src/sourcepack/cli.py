@@ -434,6 +434,24 @@ def _has_import(content: str, *modules: str) -> bool:
     return bool(re.search(rf"(?m)^\s*(?:import|from)\s+({module_pattern})(?:\b|[._])", content))
 
 
+PDF_DEPENDENCIES = {"pypdf", "pdfplumber", "fitz", "pymupdf"}
+
+
+def _declares_pdf_dependency(rel: str, content: str) -> bool:
+    name = Path(rel).name.lower()
+    if name == "pyproject.toml":
+        declared = re.findall(r"""["']([A-Za-z0-9_.-]+)(?:[<>=!~;\[].*)?["']""", content)
+        return any(_normalize_dependency_name(dep) in PDF_DEPENDENCIES for dep in declared)
+    if name.startswith("requirements") and name.endswith(".txt"):
+        for line in content.splitlines():
+            cleaned = line.split("#", 1)[0].strip()
+            if cleaned and not cleaned.startswith(("-", "--")):
+                dep = re.split(r"[<>=!~;\[]", cleaned, 1)[0]
+                if _normalize_dependency_name(dep) in PDF_DEPENDENCIES:
+                    return True
+    return False
+
+
 def feature_inventory(manifest: dict, packet: Path, deps: set[str] | None = None) -> set[str]:
     if deps is None:
         deps = dependency_inventory(manifest, packet)
@@ -442,9 +460,11 @@ def feature_inventory(manifest: dict, packet: Path, deps: set[str] | None = None
     lower_files = {rel.lower() for rel in files}
     features: set[str] = set()
 
-    if any(Path(rel).name in {"Dockerfile", "docker-compose.yml", "compose.yaml"} for rel in files):
+    if any(Path(rel).name.lower() in {"dockerfile", "docker-compose.yml", "compose.yaml", "compose.yml"} for rel in files):
         features.add("docker")
     if any(rel.endswith(("/pdf_parser.py", "pdf_parser.py")) for rel in lower_files):
+        features.add("pdf")
+    if any(_declares_pdf_dependency(rel, content) for rel, content in contents.items()):
         features.add("pdf")
     if "react" in deps or any(rel in {"frontend/app.tsx", "frontend/app.jsx"} for rel in lower_files):
         features.add("react")
@@ -458,7 +478,7 @@ def feature_inventory(manifest: dict, packet: Path, deps: set[str] | None = None
     for rel, content in contents.items():
         suffix = Path(rel).suffix.lower()
         if suffix == ".py":
-            if _has_import(content, "pypdf", "pdfplumber", "fitz") or re.search(r"(?i)\.pdf\b", content):
+            if _has_import(content, "pypdf", "pdfplumber", "fitz"):
                 features.add("pdf")
             if _has_import(content, "fastapi", "flask", "django") or re.search(r"(?m)^\s*@\w+\.(?:route|get|post|put|patch|delete)\(", content):
                 features.add("web server")
@@ -497,7 +517,7 @@ def judge_ai_answer(packet_path: str | Path, ai_answer_path: str | Path, out_dir
             if dep.lower() not in {"pytest"} or not any("tests/" in f for f in known_files):
                 report["unsupported_dependencies"].append(dep)
     command_patterns = {
-        "docker compose up": ["Dockerfile", "docker-compose.yml", "compose.yaml"],
+        "docker compose up": ["Dockerfile", "docker-compose.yml", "compose.yaml", "compose.yml"],
         "npm run dev": ["package.json"],
         "npm test": ["package.json"],
         "pytest": ["pyproject.toml", "pytest.ini"],

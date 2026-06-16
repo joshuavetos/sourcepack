@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from sourcepack.cli import dependency_inventory, load_manifest, run_cli
+from sourcepack.cli import dependency_inventory, feature_inventory, load_manifest, run_cli
 
 
 class SourcePackSmokeTest(unittest.TestCase):
@@ -41,6 +41,7 @@ class SourcePackSmokeTest(unittest.TestCase):
             self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
 
             self.assertNotIn("fastapi", dependency_inventory(load_manifest(packet), packet))
+            self.assertNotIn("pdf", dependency_inventory(load_manifest(packet), packet))
 
     def test_verify_against_uses_source_hash_when_packet_is_redacted(self):
         with TemporaryDirectory() as td:
@@ -63,20 +64,57 @@ class SourcePackSmokeTest(unittest.TestCase):
             tmp = Path(td)
             repo = tmp / "repo"
             repo.mkdir()
-            (repo / "README.md").write_text("PDF parsing is not supported. No React frontend. No database.")
+            (repo / "README.md").write_text("PDF parsing is not supported. No Docker setup. No React frontend. No database.")
             packet = tmp / "packet"
 
             self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
 
             answer = tmp / "ai_answer.md"
-            answer.write_text("This project supports PDF parsing, React, and database storage.")
+            answer.write_text("This project supports PDF parsing, Docker, React, and database storage.")
             judgment = tmp / "judgment"
 
             self.assertEqual(run_cli(["judge", str(packet), str(answer), "--out", str(judgment)]), 0)
             report = (judgment / "judgment_report.md").read_text()
             self.assertIn("- [UNSUPPORTED] pdf", report)
+            self.assertIn("- [UNSUPPORTED] docker", report)
             self.assertIn("- [UNSUPPORTED] react", report)
             self.assertIn("- [UNSUPPORTED] database", report)
+
+    def test_dockerfile_creates_docker_capability_evidence(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td)
+            repo = tmp / "repo"
+            repo.mkdir()
+            (repo / "Dockerfile").write_text("FROM python:3.12-slim\n")
+            packet = tmp / "packet"
+
+            self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
+
+            self.assertIn("docker", feature_inventory(load_manifest(packet), packet))
+
+    def test_pdf_parser_file_creates_pdf_capability_evidence(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td)
+            repo = tmp / "repo"
+            repo.mkdir()
+            (repo / "pdf_parser.py").write_text("def parse_pdf(path):\n    return path\n")
+            packet = tmp / "packet"
+
+            self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
+
+            self.assertIn("pdf", feature_inventory(load_manifest(packet), packet))
+
+    def test_pdf_library_import_creates_pdf_capability_evidence(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td)
+            repo = tmp / "repo"
+            repo.mkdir()
+            (repo / "reader.py").write_text("import pypdf\n")
+            packet = tmp / "packet"
+
+            self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
+
+            self.assertIn("pdf", feature_inventory(load_manifest(packet), packet))
 
 if __name__ == "__main__":
     unittest.main()

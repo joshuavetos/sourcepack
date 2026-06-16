@@ -20,7 +20,7 @@ from xml.sax.saxutils import escape as xml_escape
 try:
     from . import __version__
 except Exception:
-    __version__ = "1.9.8"
+    __version__ = "1.10.0-alpha"
 
 DEFAULT_IGNORED_DIRS = {
     ".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
@@ -405,6 +405,7 @@ def generate_reality_map(manifest: dict, packet: Path) -> dict:
         "supported_capabilities": sorted(features),
         "excluded_files_summary": {"total": len(ignored), "reasons": ignored_reasons, "records": ignored[:25]},
         "included_file_count": included_count,
+        "confirmed_files": sorted(files),
         "ignored_file_count": len(ignored),
         "safe_claims": safe_claims,
         "unknowns": [
@@ -436,6 +437,10 @@ def render_ai_instructions(reality_map: dict) -> str:
         "If a required file is missing, say it is missing and ask for it rather than hallucinating it.",
         "If a command is unsupported by detected evidence, say it is unsupported.",
         "If a capability is not listed in `supported_capabilities`, treat it as unknown or unsupported.",
+        "If you introduce a new external dependency, modify the appropriate dependency manifest in the same patch and list it under Dependency Changes.",
+        "Only recommend commands listed under Supported Commands unless your patch also adds the project file that defines the new command.",
+        "Before referencing a file as existing, it must appear in Confirmed Files; label intentional creations as NEW FILE.",
+        "If required evidence is missing, say UNKNOWN and ask for the missing file/output instead of guessing.",
         "Cite file paths when making project-specific claims.",
         "Do not claim SourcePack proves semantic truth, security, production readiness, or external service behavior.", "",
         "## Supported Commands", "",
@@ -445,7 +450,9 @@ def render_ai_instructions(reality_map: dict) -> str:
     lines.extend(["", "## Supported Capabilities", ""])
     caps = reality_map.get("supported_capabilities", [])
     lines.extend([f"- {cap}" for cap in caps] or ["- None detected"])
-    lines.extend(["", "## Claim Boundaries", ""])
+    lines.extend(["", "## Confirmed Files", ""])
+    lines.extend(f"- `{path}`" for path in reality_map.get("confirmed_files", [])[:200])
+    lines.extend(["", "## Required Answer Contract", "", "- Files to modify", "- New files", "- Dependency changes", "- Commands to run", "- Assumptions/unknowns", "- Patch or code", "", "## Claim Boundaries", ""])
     lines.extend(f"- {boundary}" for boundary in reality_map.get("claim_boundaries", []))
     return "\n".join(lines) + "\n"
 
@@ -932,14 +939,43 @@ JS_EXTS = {".js", ".jsx", ".ts", ".tsx"}
 def sourcepack_paths(repo: str | Path) -> dict[str, Path]:
     root = Path(repo).resolve()
     base = root / ".sourcepack"
-    return {"root": root, "base": base, "current": base / "current", "packet": base / "current" / "packet", "reports": base / "reports", "archive": base / "reports" / "archive", "reality": base / "current" / "reality_map.json", "instructions": base / "current" / "ai_instructions.md", "prompt": base / "current" / "prompt.md", "latest_json": base / "reports" / "latest.json", "latest_md": base / "reports" / "latest.md"}
+    baseline = base / "baseline"
+    prompt = base / "prompt"
+    reports = base / "reports"
+    return {
+        "root": root,
+        "base": base,
+        "current": base / "current",  # legacy compatibility marker only
+        "baseline": baseline,
+        "packet": baseline / "packet",
+        "baseline_meta": baseline / "metadata.json",
+        "prompt_dir": prompt,
+        "prompt_packet": prompt / "packet",
+        "prompt_reality": prompt / "reality_map.json",
+        "prompt_instructions": prompt / "ai_instructions.md",
+        "reports": reports,
+        "archive": reports / "archive",
+        "reality": baseline / "reality_map.json",
+        "instructions": baseline / "ai_instructions.md",
+        "prompt": prompt / "prompt.md",
+        "state": base / "state",
+        "stale_marker": base / "state" / "baseline_stale.json",
+        "latest_json": reports / "latest.json",
+        "latest_md": reports / "latest.md",
+        "latest_diff_json": reports / "latest_diff.json",
+        "latest_prompt_json": reports / "latest_prompt.json",
+        "latest_baseline_json": reports / "latest_baseline.json",
+    }
 
 
 def ensure_sourcepack_dirs(repo: str | Path) -> dict[str, Path]:
     paths = sourcepack_paths(repo)
+    paths["baseline"].mkdir(parents=True, exist_ok=True)
+    paths["prompt_dir"].mkdir(parents=True, exist_ok=True)
     paths["current"].mkdir(parents=True, exist_ok=True)
     paths["reports"].mkdir(parents=True, exist_ok=True)
     paths["archive"].mkdir(parents=True, exist_ok=True)
+    paths["state"].mkdir(parents=True, exist_ok=True)
     return paths
 
 
@@ -965,22 +1001,35 @@ def normalized_finding(fid: str, severity: str, category: str, message: str, pat
     return {"id": fid, "severity": severity, "category": category, "path": path, "message": message, "evidence": evidence, "suggestion": suggestion}
 
 
-def traffic_report(verdict: str, headline: str | None = None, findings: list[dict] | None = None, checked_categories: list[str] | None = None, next_action: str | None = None, report_path: str = ".sourcepack/reports/latest.json") -> dict:
+def traffic_report(verdict: str, headline: str | None = None, findings: list[dict] | None = None, checked_categories: list[str] | None = None, next_action: str | None = None, report_path: str = ".sourcepack/reports/latest.json", reason_type: str | None = None, not_checked: list[str] | None = None) -> dict:
     findings = sorted(findings or [], key=lambda f: (SEVERITY_ORDER.get(f.get("severity", "info"), 9), f.get("id", ""), f.get("path") or ""))
     blockers = [f for f in findings if f.get("severity") == "error"]
     warnings = [f for f in findings if f.get("severity") == "warn"]
     light = LIGHT_BY_VERDICT.get(verdict, "YELLOW LIGHT")
     headline = headline or {"PASS": "good to continue.", "WARN": "review before continuing.", "FAIL": "stop before trusting this output."}.get(verdict, "review before continuing.")
     next_action = next_action or ("ask the AI to revise using only files, dependencies, and commands confirmed by SourcePack." if verdict == "FAIL" else "review the listed items before continuing." if verdict == "WARN" else "continue.")
-    return {"verdict": verdict, "light": light, "headline": headline, "blockers": blockers, "warnings": warnings, "checked_categories": checked_categories or [], "next_action": next_action, "report_path": report_path, "findings": findings}
+    if reason_type is None:
+        reason_type = "blocker" if verdict == "FAIL" else "review" if warnings else "none"
+        if any(f.get("category") in {"uncertainty", "tooling"} for f in warnings):
+            reason_type = "uncertainty" if any(f.get("category") == "uncertainty" for f in warnings) else "tooling"
+    return {"verdict": verdict, "light": light, "headline": headline, "reason_type": reason_type, "blockers": blockers, "warnings": warnings, "checked_categories": checked_categories or [], "not_checked": not_checked or ["runtime behavior", "semantic correctness", "security", "external services"], "next_action": next_action, "report_path": report_path, "findings": findings}
 
 
 def render_traffic(report: dict, verbose: bool = False) -> str:
     verdict = report.get("verdict", "WARN")
     lines = [f"{report.get('light', LIGHT_BY_VERDICT.get(verdict, 'YELLOW LIGHT'))}: {report.get('headline', '')}", ""]
+    if report.get("reason_type") and verdict != "PASS":
+        lines.append(f"Reason type: {report.get('reason_type')}")
+        lines.append("")
     if verdict == "PASS":
         info = [f for f in report.get("findings", []) if f.get("severity") == "info"]
         lines.append(info[0]["message"] if info else "No unsupported project claims or patch assumptions detected.")
+        if report.get("checked_categories"):
+            lines.extend(["", "Checked:", ""])
+            lines.extend(f"- {item}" for item in report.get("checked_categories", []))
+        if report.get("not_checked"):
+            lines.extend(["", "Not checked:", ""])
+            lines.extend(f"- {item}" for item in report.get("not_checked", []))
     elif verdict == "WARN":
         lines.append("SourcePack found new or uncertain items, but no clear unsupported blocker.")
         lines.extend(["", "Warnings:", ""])
@@ -1000,23 +1049,69 @@ def render_traffic(report: dict, verbose: bool = False) -> str:
 def write_user_report(repo: str | Path, report: dict, stem: str = "report") -> None:
     paths = ensure_sourcepack_dirs(repo)
     full = dict(report)
+    full.setdefault("sourcepack_version", __version__)
+    full.setdefault("schema_version", "traffic_report.v1")
     full["generated_at"] = utc_now()
     paths["latest_json"].write_text(json.dumps(full, indent=2), encoding="utf-8")
     paths["latest_md"].write_text(render_traffic(report, verbose=True), encoding="utf-8")
+    typed = paths.get(f"latest_{stem}_json")
+    if typed is not None:
+        typed.write_text(json.dumps(full, indent=2), encoding="utf-8")
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     (paths["archive"] / f"{ts}_{stem}.json").write_text(json.dumps(full, indent=2), encoding="utf-8")
     (paths["archive"] / f"{ts}_{stem}.md").write_text(render_traffic(report, verbose=True), encoding="utf-8")
 
 
-def build_current_baseline(repo: str | Path) -> tuple[dict, bool]:
+def git_metadata(repo: str | Path) -> dict:
+    root = Path(repo)
+    head = run_git(root, ["rev-parse", "HEAD"])
+    branch = run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
+    dirty, dirty_state = git_worktree_dirty(root)
+    return {
+        "branch": branch.stdout.strip() if branch.returncode == 0 else None,
+        "head_commit": head.stdout.strip() if head.returncode == 0 else None,
+        "dirty": dirty if dirty_state is None else None,
+        "dirty_state": dirty_state,
+    }
+
+
+def scanner_config_hash() -> str:
+    payload = {
+        "ignored_dirs": sorted(DEFAULT_IGNORED_DIRS),
+        "ignored_patterns": sorted(DEFAULT_IGNORED_PATTERNS),
+        "text_extensions": sorted(DEFAULT_TEXT_EXTENSIONS),
+        "max_file_size": 1_000_000,
+        "include_hidden": False,
+        "redact": True,
+    }
+    return sha256_text(json.dumps(payload, sort_keys=True))
+
+
+def build_current_baseline(repo: str | Path, quiet: bool = False) -> tuple[dict, bool]:
     paths = ensure_sourcepack_dirs(repo)
     created = not (paths["packet"] / "manifest.json").exists()
     PacketWriter(paths["packet"], SourceScanner(repo).scan(), force=True).write_all()
     shutil.copy2(paths["packet"] / "reality_map.json", paths["reality"])
     shutil.copy2(paths["packet"] / "ai_instructions.md", paths["instructions"])
-    if not verify_packet(paths["packet"]):
+    if not quiet and not verify_packet(paths["packet"]):
         raise RuntimeError("packet verification returned FAIL")
+    elif quiet:
+        receipt = paths["packet"] / "receipt.json"
+        if not receipt.exists():
+            raise RuntimeError("packet verification returned FAIL")
+    meta = {"created_at": utc_now(), "packet_path": str(paths["packet"]), "scanner_config_hash": scanner_config_hash(), **git_metadata(repo)}
+    paths["baseline_meta"].write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    if paths["stale_marker"].exists():
+        paths["stale_marker"].unlink()
     return paths, created
+
+
+def build_prompt_context(repo: str | Path) -> dict:
+    paths = ensure_sourcepack_dirs(repo)
+    PacketWriter(paths["prompt_packet"], SourceScanner(repo).scan(), force=True).write_all()
+    shutil.copy2(paths["prompt_packet"] / "reality_map.json", paths["prompt_reality"])
+    shutil.copy2(paths["prompt_packet"] / "ai_instructions.md", paths["prompt_instructions"])
+    return paths
 
 
 def render_prompt(task: str, instructions: str, reality: dict) -> str:
@@ -1110,25 +1205,33 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
                 if imported.lower() not in deps and imported.lower() not in declared:
                     unsupported.add(imported)
     declared_only = {d for d in declared if d not in deps}
+    unsupported_ecosystems = []
+    baseline_names = {Path(f).name.lower() for f in files}
+    patch_names = {Path(ch.path).name.lower() for ch in changes}
+    if "cargo.toml" in baseline_names or "cargo.toml" in patch_names:
+        unsupported_ecosystems.append("unsupported_ecosystem: Cargo.toml detected, but Rust dependency validation is not implemented")
+    if unsupported_ecosystems:
+        report["uncertainties"] = sorted(set(report.get("uncertainties", []) + unsupported_ecosystems))
     report["unsupported_dependencies"] = sorted(unsupported)
     if declared_only:
         report.setdefault("warnings", []).append("Patch declares new dependencies that require review.")
         report["declared_dependencies"] = sorted(declared_only)
     fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications"]
-    report["verdict"] = "FAIL" if any(report.get(k) for k in fail_keys) else "WARN" if (report.get("new_files") or report.get("deleted_files") or report.get("warnings") or declared_only) else "PASS"
+    report["verdict"] = "FAIL" if any(report.get(k) for k in fail_keys) else "WARN" if (report.get("new_files") or report.get("deleted_files") or report.get("warnings") or declared_only or report.get("uncertainties")) else "PASS"
     return report
 
 
 def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/reports/latest.json") -> dict:
     findings=[]
-    for p in report.get("missing_modified_files", []): findings.append(normalized_finding("missing_file", "error", "missing_file", f"{p} not found.", p))
-    for d in report.get("unsupported_dependencies", []): findings.append(normalized_finding("unsupported_dependency", "error", "dependency", f"{d} not declared in dependency files.", evidence=d))
-    for c in report.get("unsupported_commands", []): findings.append(normalized_finding("unsupported_command", "error", "command", f"{c} is not supported by project evidence.", evidence=c))
+    for p in report.get("missing_modified_files", []): findings.append(normalized_finding("missing_file", "error", "file", f"{p} not found in the trusted baseline.", p, suggestion="Restore the file, create it as a new file, or refresh the baseline only after accepting the current repo state."))
+    for d in report.get("unsupported_dependencies", []): findings.append(normalized_finding("unsupported_dependency", "error", "dependency", f"{d} is imported but not declared in scanned dependency files.", evidence=d, suggestion=f"Either remove {d} usage or add it intentionally to the appropriate dependency manifest."))
+    for c in report.get("unsupported_commands", []): findings.append(normalized_finding("unsupported_command", "error", "command", f"{c} is not supported by project evidence.", evidence=c, suggestion="Use a detected supported command or add the project file that defines this command."))
     for p in report.get("protected_artifact_modifications", []): findings.append(normalized_finding("protected_artifact", "error", "artifact", f"{p} is a protected SourcePack packet artifact.", p))
-    for p in report.get("new_files", []): findings.append(normalized_finding("new_file", "warn", "new_file", f"{p} was created by the patch.", p))
-    for p in report.get("deleted_files", []): findings.append(normalized_finding("deleted_file", "warn", "deleted_file", f"{p} was deleted by the patch.", p))
-    for d in report.get("declared_dependencies", []): findings.append(normalized_finding("declared_dependency", "warn", "dependency", f"{d} was added to dependency files.", evidence=d))
-    return traffic_report(report.get("verdict", "PASS"), findings=findings, checked_categories=["diff", "dependency", "command", "artifact"], report_path=report_path)
+    for p in report.get("new_files", []): findings.append(normalized_finding("new_file", "warn", "review", f"{p} was created by the patch.", p))
+    for p in report.get("deleted_files", []): findings.append(normalized_finding("deleted_file", "warn", "review", f"{p} was deleted by the patch.", p))
+    for d in report.get("declared_dependencies", []): findings.append(normalized_finding("declared_dependency", "warn", "review", f"{d} was added to dependency files.", evidence=d))
+    for w in report.get("uncertainties", []): findings.append(normalized_finding(w, "warn", "uncertainty", f"{w}: SourcePack could not fully evaluate this change."))
+    return traffic_report(report.get("verdict", "PASS"), findings=findings, checked_categories=["file references", "Python imports", "JS/TS imports", "known project commands", "protected SourcePack artifacts"], report_path=report_path)
 
 
 def run_git(repo: Path, args: list[str]) -> subprocess.CompletedProcess:
@@ -1168,22 +1271,27 @@ def cli_prompt(args) -> int:
         rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("gitignore_unwritable", "error", "git", f"Cannot write .gitignore: {err}")])
         print(json.dumps(rep, indent=2) if args.json else render_traffic(rep, args.verbose), end=""); return 1
     try:
-        build_current_baseline(repo)
+        build_prompt_context(repo)
     except Exception as exc:
-        rep = traffic_report("FAIL", "could not refresh prompt baseline.", [normalized_finding("baseline_failed", "error", "baseline", f"Baseline verification failed: {exc}")])
+        rep = traffic_report("FAIL", "could not generate prompt context.", [normalized_finding("prompt_context_failed", "error", "prompt", f"Prompt context generation failed: {exc}")])
         print(json.dumps(rep, indent=2) if args.json else render_traffic(rep, args.verbose), end=""); return 1
     task = args.task or "Explain how this project works and summarize its structure."
-    reality = json.loads(paths["reality"].read_text(encoding="utf-8")); instructions = paths["instructions"].read_text(encoding="utf-8")
+    reality = json.loads(paths["prompt_reality"].read_text(encoding="utf-8")); instructions = paths["prompt_instructions"].read_text(encoding="utf-8")
     prompt = render_prompt(task, instructions, reality); paths["prompt"].write_text(prompt, encoding="utf-8")
     copied = copy_to_clipboard(prompt) if args.copy else False
-    verdict = "PASS" if (not args.copy or copied) else "WARN"
-    headline = "verified prompt copied to clipboard." if args.copy and copied else "clipboard unavailable." if args.copy else "verified prompt saved."
-    findings = [] if verdict == "PASS" else [normalized_finding("clipboard_unavailable", "warn", "clipboard", "clipboard unavailable.")]
-    rep = traffic_report(verdict, headline, findings, ["prompt", "baseline"], "continue with the saved prompt.")
+    dirty, dirty_state = git_worktree_dirty(repo)
+    findings = []
+    if args.copy and not copied:
+        findings.append(normalized_finding("clipboard_unavailable", "warn", "clipboard", "clipboard unavailable."))
+    if dirty:
+        findings.append(normalized_finding("dirty_worktree", "warn", "prompt", "prompt context includes uncommitted working tree changes."))
+    verdict = "WARN" if findings else "PASS"
+    headline = "verified prompt copied to clipboard." if args.copy and copied else "clipboard unavailable." if args.copy and not copied else "verified prompt context saved."
+    rep = traffic_report(verdict, headline, findings, ["prompt context", "file references", "known project commands"], "continue with the saved prompt; enforcement baseline was not changed.")
     write_user_report(repo, rep, "prompt")
-    if args.json: print(json.dumps({**rep, "prompt_path": ".sourcepack/current/prompt.md", "clipboard_copied": copied}, indent=2)); return 0
+    if args.json: print(json.dumps({**rep, "prompt_path": ".sourcepack/prompt/prompt.md", "clipboard_copied": copied}, indent=2)); return 0
     if added: print("Added .sourcepack/ to .gitignore.")
-    print(f"{rep['light']}: {headline}\n\nPrompt saved: .sourcepack/current/prompt.md")
+    print(f"{rep['light']}: {headline}\n\nPrompt saved: .sourcepack/prompt/prompt.md")
     return 0
 
 
@@ -1193,7 +1301,7 @@ def cli_baseline(args) -> int:
         rep=traffic_report("FAIL","could not create baseline.",[normalized_finding("gitignore_unwritable","error","git",f"Cannot write .gitignore: {err}")]); print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
     existed = (paths["packet"] / "manifest.json").exists()
     try:
-        build_current_baseline(repo); refreshed = existed or args.refresh
+        build_current_baseline(repo, quiet=getattr(args, "quiet", False)); refreshed = existed or args.refresh
         if dirty:
             headline = "baseline refreshed while uncommitted changes are present." if refreshed else "baseline created while uncommitted changes are present."
             rep=traffic_report("WARN", headline, [normalized_finding("dirty_worktree", "warn", "baseline", "baseline now includes current uncommitted changes.")], ["baseline","verify"], "Commit or discard unintended changes before relying on this baseline.")
@@ -1202,6 +1310,7 @@ def cli_baseline(args) -> int:
             rep=traffic_report("PASS", headline, checked_categories=["baseline","verify"])
         write_user_report(repo, rep, "baseline")
         if args.json: print(json.dumps(rep, indent=2)); return 0
+        if getattr(args, "quiet", False): return 0
         if added: print("Added .sourcepack/ to .gitignore.")
         print(render_traffic(rep,args.verbose), end="")
         return 0
@@ -1234,16 +1343,29 @@ def cli_diff(args) -> int:
     if not (paths["packet"] / "manifest.json").exists():
         if diff_text.strip():
             rep=traffic_report("FAIL","baseline missing while changes are present.",[normalized_finding("baseline_missing","error","baseline","No baseline exists. Run sourcepack baseline before AI edits, or run sourcepack baseline --refresh to accept current repo state.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
-            write_user_report(repo, rep, "patch_judgment")
+            write_user_report(repo, rep, "diff")
             print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
         try: build_current_baseline(repo); note = "Created SourcePack baseline because none existed and no diff was present."
         except Exception as exc:
             rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("baseline_failed","error","baseline",f"Baseline verification failed: {exc}")]); print(render_traffic(rep,args.verbose), end=""); return 1
+    stale_findings = []
+    if paths["stale_marker"].exists():
+        stale_findings.append(normalized_finding("baseline_stale", "warn", "uncertainty", "baseline_stale: trusted baseline may not match current HEAD."))
     if not diff_text.strip():
-        rep=traffic_report("PASS","good to continue.",[normalized_finding("no_diff","info","diff","No uncommitted changes detected.")], ["diff"])
+        verdict = "WARN" if stale_findings else "PASS"
+        rep=traffic_report(verdict,"SourcePack could not fully evaluate this change." if stale_findings else "good to continue.",[normalized_finding("no_diff","info","diff","No uncommitted changes detected."), *stale_findings], ["diff", "baseline freshness"])
     else:
         raw = judge_patch_text(paths["packet"], diff_text); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
-    write_user_report(repo, rep, "patch_judgment")
+        if stale_findings and rep["verdict"] != "FAIL":
+            rep = traffic_report("WARN", "SourcePack could not fully evaluate this change.", rep.get("findings", []) + stale_findings, rep.get("checked_categories", []), rep.get("next_action"), reason_type="uncertainty")
+            rep["raw_patch_judgment"] = raw
+    if paths["baseline_meta"].exists():
+        try:
+            rep["baseline"] = json.loads(paths["baseline_meta"].read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    rep["current_git"] = git_metadata(repo)
+    write_user_report(repo, rep, "diff")
     if args.json: print(json.dumps(rep, indent=2)); return 0 if rep["verdict"] != "FAIL" else 1
     if added: print("Added .sourcepack/ to .gitignore.")
     if note: print(note)
@@ -1275,6 +1397,7 @@ if grep -q 'YELLOW LIGHT' .git/SOURCEPACK_LAST_DIFF 2>/dev/null; then
 fi""" if strict else ""
     return """#!/bin/sh
 # === SOURCEPACK BEGIN ===
+# SourcePack hook version: 1
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
 if [ -z "$repo_root" ]; then
   echo 'RED LIGHT: SourcePack could not locate git repository root.'
@@ -1292,6 +1415,50 @@ fi""" + strict_block + """
 # === SOURCEPACK END ===
 """
 
+
+
+def post_commit_hook_text() -> str:
+    return """#!/bin/sh
+# === SOURCEPACK POST-COMMIT BEGIN ===
+# SourcePack hook version: 1
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$repo_root" ]; then
+  exit 0
+fi
+cd "$repo_root" || exit 0
+if git diff --quiet && git diff --staged --quiet; then
+  sourcepack baseline . --refresh --quiet >/dev/null 2>&1 || echo 'YELLOW LIGHT: SourcePack post-commit baseline refresh failed.'
+else
+  mkdir -p .sourcepack/state
+  current_head="$(git rev-parse HEAD 2>/dev/null)"
+  cat > .sourcepack/state/baseline_stale.json <<EOF
+{"reason": "post_commit_dirty_worktree", "detected_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)", "current_head": "$current_head", "dirty_worktree": true}
+EOF
+  echo 'YELLOW LIGHT: SourcePack baseline is stale because uncommitted changes remain after commit.'
+fi
+# === SOURCEPACK POST-COMMIT END ===
+"""
+
+
+def install_post_commit_hook(repo: Path) -> bool:
+    cp = run_git(repo, ["rev-parse", "--show-toplevel"])
+    if cp.returncode != 0:
+        return False
+    root = Path(cp.stdout.strip())
+    hooks = root / ".git" / "hooks"
+    post = hooks / "post-commit"
+    hooks.mkdir(parents=True, exist_ok=True)
+    text = post.read_text(encoding="utf-8", errors="ignore") if post.exists() else ""
+    block = post_commit_hook_text()
+    if "# === SOURCEPACK POST-COMMIT BEGIN ===" in text:
+        text = re.sub(r"#!/bin/sh\n?# === SOURCEPACK POST-COMMIT BEGIN ===.*?# === SOURCEPACK POST-COMMIT END ===\n?", block, text, flags=re.S)
+    elif text.strip():
+        text = text.rstrip() + "\n" + block
+    else:
+        text = block
+    post.write_text(text, encoding="utf-8")
+    post.chmod(0o755)
+    return True
 
 def hook_chain_text(strict: bool) -> str:
     return hook_text(strict) + """
@@ -1313,7 +1480,7 @@ def cli_install_hook(args) -> int:
     if cp.returncode!=0:
         message = "Git executable not found." if cp.returncode == 127 else "No git repository found."
         print(f"RED LIGHT: SourcePack pre-commit hook install failed.\n\n{message}"); return 1
-    root=Path(cp.stdout.strip()); hooks=root/".git"/"hooks"; pre=hooks/"pre-commit"; orig=hooks/"pre-commit.sourcepack.orig"
+    root=Path(cp.stdout.strip()); hooks=root/".git"/"hooks"; pre=hooks/"pre-commit"; post=hooks/"post-commit"; orig=hooks/"pre-commit.sourcepack.orig"
     try:
         hooks.mkdir(parents=True, exist_ok=True)
         if pre.exists():
@@ -1325,7 +1492,7 @@ def cli_install_hook(args) -> int:
                 pre.write_text(hook_chain_text(args.strict), encoding="utf-8")
         else:
             pre.write_text(hook_text(args.strict) + "\nexit 0\n", encoding="utf-8")
-        pre.chmod(0o755); print("GREEN LIGHT: SourcePack pre-commit hook installed."); return 0
+        pre.chmod(0o755); install_post_commit_hook(root); print("GREEN LIGHT: SourcePack pre-commit and post-commit hooks installed."); return 0
     except Exception as exc:
         print(f"RED LIGHT: SourcePack pre-commit hook install failed.\n\n{exc}"); return 1
 
@@ -1334,28 +1501,36 @@ def cli_uninstall_hook(args) -> int:
     if cp.returncode!=0:
         message = "Git executable not found." if cp.returncode == 127 else "No git repository found."
         print(f"RED LIGHT: SourcePack pre-commit hook uninstall failed.\n\n{message}"); return 1
-    root=Path(cp.stdout.strip()); hooks=root/".git"/"hooks"; pre=hooks/"pre-commit"; orig=hooks/"pre-commit.sourcepack.orig"
+    root=Path(cp.stdout.strip()); hooks=root/".git"/"hooks"; pre=hooks/"pre-commit"; post=hooks/"post-commit"; orig=hooks/"pre-commit.sourcepack.orig"
     try:
-        if orig.exists(): shutil.move(str(orig), str(pre)); pre.chmod(0o755); print("GREEN LIGHT: SourcePack pre-commit hook uninstalled."); return 0
-        if pre.exists():
+        restored_original = False
+        if orig.exists():
+            shutil.move(str(orig), str(pre)); pre.chmod(0o755); restored_original = True
+        elif pre.exists():
             text=pre.read_text(encoding="utf-8", errors="ignore")
             if not hook_is_sourcepack(text):
                 print("RED LIGHT: Cannot safely uninstall SourcePack hook: SourcePack block not found."); return 1
             pre.write_text(re.sub(r"# === SOURCEPACK BEGIN ===.*?# === SOURCEPACK END ===\n?", "", text, flags=re.S), encoding="utf-8")
-        print("GREEN LIGHT: SourcePack pre-commit hook uninstalled."); return 0
+        if post.exists():
+            post_text=post.read_text(encoding="utf-8", errors="ignore")
+            if "# === SOURCEPACK POST-COMMIT BEGIN ===" in post_text:
+                post.write_text(re.sub(r"#!/bin/sh\n?# === SOURCEPACK POST-COMMIT BEGIN ===.*?# === SOURCEPACK POST-COMMIT END ===\n?", "", post_text, flags=re.S), encoding="utf-8")
+        print("GREEN LIGHT: SourcePack hooks uninstalled." if not restored_original else "GREEN LIGHT: SourcePack hooks uninstalled and original pre-commit hook restored."); return 0
     except Exception as exc:
         print(f"RED LIGHT: SourcePack pre-commit hook uninstall failed.\n\n{exc}"); return 1
 
 def cli_status(args) -> int:
     repo=Path(args.repo).resolve(); paths=ensure_sourcepack_dirs(repo)
-    current=paths["current"].exists(); baseline=(paths["packet"] / "manifest.json").exists(); receipt=paths["packet"] / "receipt.json"; last=None
+    current=paths["base"].exists(); baseline=(paths["packet"] / "manifest.json").exists(); receipt=paths["packet"] / "receipt.json"; last=None
     if receipt.exists():
         try: last=json.loads(receipt.read_text()).get("generated_at")
         except Exception: last=None
     cp=run_git(repo,["rev-parse","--show-toplevel"]); git_repo=cp.returncode==0; root=Path(cp.stdout.strip()) if git_repo else repo
-    pre=root/".git"/"hooks"/"pre-commit"; hook_installed=False; strict=False
+    pre=root/".git"/"hooks"/"pre-commit"; post=root/".git"/"hooks"/"post-commit"; hook_installed=False; post_hook_installed=False; strict=False
     if pre.exists():
         text=pre.read_text(encoding="utf-8", errors="ignore"); hook_installed=hook_is_sourcepack(text); strict="strict mode blocks YELLOW LIGHT" in text
+    if post.exists():
+        post_hook_installed="# === SOURCEPACK POST-COMMIT BEGIN ===" in post.read_text(encoding="utf-8", errors="ignore")
     ignored=False; cig=run_git(repo,["check-ignore",".sourcepack/"])
     if cig.returncode==0: ignored=True
     elif (repo/".gitignore").exists(): ignored=any(line.strip() in {".sourcepack",".sourcepack/"} for line in (repo/".gitignore").read_text(errors="ignore").splitlines())
@@ -1365,13 +1540,21 @@ def cli_status(args) -> int:
             lr=json.loads(paths["latest_json"].read_text()); last_report=lr.get("verdict"); last_light=lr.get("light")
         except Exception: pass
     dirty, dirty_state = git_worktree_dirty(repo)
-    automatic = current and baseline and hook_installed and ignored
-    data={"automatic_mode_enabled":automatic,"local_storage_exists":current,"baseline_exists":baseline,"pre_commit_hook_installed":hook_installed,"hook_strict_mode":strict,"hook_policy":"RED blocks, YELLOW blocks" if strict else "RED blocks, YELLOW warns","sourcepack_gitignored":ignored,"last_report_verdict":last_report,"last_report_light":last_light,"dirty_worktree":dirty if dirty_state is None else None,"git_repo":git_repo,"last_baseline_update":last}
+    stale = paths["stale_marker"].exists()
+    stale_data = None
+    if stale:
+        try: stale_data=json.loads(paths["stale_marker"].read_text(encoding="utf-8"))
+        except Exception: stale_data={"reason":"unreadable"}
+    prompt_exists = paths["prompt"].exists()
+    automatic = current and baseline and hook_installed and post_hook_installed and ignored
+    data={"automatic_mode_enabled":automatic,"local_storage_exists":current,"baseline_exists":baseline,"baseline_stale":stale,"baseline_stale_details":stale_data,"prompt_context_exists":prompt_exists,"pre_commit_hook_installed":hook_installed,"post_commit_hook_installed":post_hook_installed,"hook_strict_mode":strict,"hook_policy":"RED blocks, YELLOW blocks" if strict else "RED blocks, YELLOW warns","sourcepack_gitignored":ignored,"last_report_verdict":last_report,"last_report_light":last_light,"dirty_worktree":dirty if dirty_state is None else None,"git_repo":git_repo,"last_baseline_update":last}
     if args.json: print(json.dumps(data, indent=2)); return 0
     print(f"SourcePack status for {repo}\n")
     print(f"Automatic mode: {'enabled' if automatic else 'not enabled'}")
-    print(f"Baseline: {'present' if baseline else 'missing'}")
+    print(f"Baseline: {'present' if baseline else 'missing'}" + (" (stale)" if stale else ""))
+    print(f"Prompt context: {'present' if prompt_exists else 'missing'}")
     print(f"Pre-commit hook: {'installed' if hook_installed else 'not installed'}")
+    print(f"Post-commit baseline hook: {'installed' if post_hook_installed else 'not installed'}")
     print(f"Hook policy: {data['hook_policy']}")
     print(f".sourcepack/ gitignored: {'yes' if ignored else 'no'}")
     print(f"Working tree: {'dirty' if dirty else 'clean' if dirty_state is None else 'unknown'}")
@@ -1516,6 +1699,7 @@ def run_cli(args_list=None):
     baseline_cmd.add_argument("--refresh", action="store_true")
     baseline_cmd.add_argument("--verbose", action="store_true")
     baseline_cmd.add_argument("--json", action="store_true")
+    baseline_cmd.add_argument("--quiet", action="store_true")
     diff_cmd = subs.add_parser("diff")
     diff_cmd.add_argument("repo")
     diff_cmd.add_argument("--staged", action="store_true")

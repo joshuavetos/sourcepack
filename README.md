@@ -1,8 +1,8 @@
 # SourcePack
 
-SourcePack is a **Project Reality Compiler** for AI-assisted software work.
+SourcePack is a **local reality check for AI code changes**.
 
-It compiles a local project into a verified reality map so AI tools know what files, commands, dependencies, and capabilities actually exist before they generate code. It also judges whether AI answers and proposed patches stay inside that compiled project reality.
+It catches fake files, fake commands, undeclared imports, and protected SourcePack artifact edits before you commit AI-assisted work. SourcePack compiles local repo evidence into a verified reality map, then judges whether AI answers and proposed patches stay inside that evidence.
 
 SourcePack is local-first. It does not host a service, use a database, call external APIs, or execute your application by default.
 
@@ -10,6 +10,26 @@ SourcePack is local-first. It does not host a service, use a database, call exte
 
 ```bash
 python -m pip install -e .
+```
+
+Target packaged install after release:
+
+```bash
+pipx install sourcepack
+# or
+uv tool install sourcepack
+```
+
+## Quick start
+
+```bash
+sourcepack init . --auto
+```
+
+Then work normally. SourcePack checks staged AI changes before commit and refreshes its trusted baseline after clean commits. For AI prompts, use:
+
+```bash
+sourcepack prompt . "your task" --copy
 ```
 
 ## Build → verify → judge
@@ -86,26 +106,33 @@ The demo builds `examples/demo_repo` into a temporary packet directory, verifies
 
 The fake AI answer and fake AI patch are expected to produce FAIL verdicts because they intentionally contain unsupported claims and assumptions. The demo command itself exits successfully when the SourcePack workflow runs correctly.
 
-## What SourcePack checks
+## What SourcePack catches
 
-- Files included in the packet and file references made by an AI answer or patch.
-- Dependencies detected from structural evidence such as imports and dependency manifests.
-- Commands supported by structural evidence, including package scripts, Docker/compose files, and Python test evidence.
-- Capabilities detected from structural project evidence.
-- Packet tampering through `receipt.json` artifact hashes.
-- Source drift with `sourcepack verify --against`.
-- Patch assumptions, including missing modified files, new files, deleted files, unsupported imports, unsupported commands, and protected packet artifact edits.
+- Missing modified files relative to the trusted baseline.
+- Undeclared Python and JS/TS imports detected in patches.
+- Unsupported project commands such as missing `npm` scripts or missing Docker Compose evidence.
+- Protected SourcePack artifact edits.
+- New files, deleted files, and declared dependency changes that need review.
+- Unsupported ecosystems, such as Rust dependency validation, as YELLOW uncertainty rather than false GREEN.
 
-## What SourcePack does not prove
+## What SourcePack does not catch
 
-- Semantic correctness.
-- Runtime behavior.
-- Security.
-- Production readiness.
-- External service behavior.
-- All possible hallucinations.
+- Bad logic.
+- Failing runtime behavior.
+- Security flaws.
+- External API behavior.
+- Unsupported ecosystems beyond explicit uncertainty warnings.
 
-SourcePack does not execute the target application by default. Capability, dependency, and patch detection are structural and heuristic. Dependency detection is bounded by current inventory logic. Absence of evidence means unknown, not impossible.
+SourcePack does not execute the target application by default. Capability, dependency, and patch detection are structural and heuristic. Absence of evidence means unknown, not impossible. GREEN means SourcePack found no blockers only inside the checked scope printed in the report.
+
+## Traffic lights and exit codes
+
+- GREEN exits `0`: checked scope found no blockers.
+- YELLOW exits `0` by default: review or uncertainty exists, but no clear blocker was found.
+- RED exits `1`: action is blocked unless the user explicitly bypasses the gate.
+- Hook strict mode blocks YELLOW as well as RED.
+
+YELLOW findings are classified internally as review, uncertainty, or tooling so the CLI can distinguish normal changes from incomplete judgment.
 
 ## Development
 
@@ -120,6 +147,11 @@ sourcepack demo
 
 ## Local trust semantics
 
-`sourcepack prompt` refreshes project reality from the current working tree before generating the prompt. `sourcepack baseline` accepts the current working tree as trusted reality, and `sourcepack baseline --refresh` intentionally replaces trusted project reality with the current working tree. `sourcepack diff` refuses to silently create a baseline when changes already exist; if no baseline exists and changes exist, explicitly decide whether to run `sourcepack baseline --refresh` before trusting that state.
+SourcePack keeps two local realities separate:
 
-`sourcepack init . --auto` enables the first automatic local workflow by creating local `.sourcepack/` state, ensuring `.sourcepack/` is ignored, creating a safe baseline when possible, and installing the pre-commit diff gate when a git repository is available.
+- `.sourcepack/baseline/` is the trusted enforcement baseline used by `sourcepack diff` and hooks.
+- `.sourcepack/prompt/` is current working-tree prompt context generated by `sourcepack prompt`.
+
+`sourcepack prompt` never refreshes the enforcement baseline. This prevents a dirty prompt run from silently accepting bad AI edits as trusted reality. `sourcepack baseline` accepts the current working tree as trusted reality, and `sourcepack baseline --refresh` intentionally replaces trusted project reality with the current working tree. `sourcepack diff` refuses to silently create a baseline when changes already exist; if no baseline exists and changes exist, explicitly decide whether to run `sourcepack baseline --refresh` before trusting that state.
+
+`sourcepack init . --auto` enables the first automatic local workflow by creating local `.sourcepack/` state, ensuring `.sourcepack/` is ignored, creating a safe baseline when possible, and installing pre-commit and post-commit hooks when a git repository is available. The pre-commit hook gates the staged diff. The post-commit hook refreshes the baseline only after clean commits; if uncommitted changes remain, it marks the baseline stale instead of accepting the dirty working tree.

@@ -441,15 +441,53 @@ class SourcePackSchemaAndDemoTest(unittest.TestCase):
         self.assertEqual(run_cli(["demo"]), 0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class SourcePackLocalUsabilityTest(unittest.TestCase):
     def _repo(self, tmp: Path) -> Path:
         repo = tmp / "repo"; repo.mkdir()
         (repo / "README.md").write_text("demo\n", encoding="utf-8")
         (repo / "app.py").write_text("def main():\n    return True\n", encoding="utf-8")
         return repo
+
+
+    def test_sourcepack_directory_is_not_included_in_manifest(self):
+        with TemporaryDirectory() as td:
+            repo = self._repo(Path(td))
+            sp = repo / ".sourcepack" / "current" / "packet"
+            sp.mkdir(parents=True)
+            (sp / "manifest.json").write_text('{"generated": true}\n', encoding="utf-8")
+            (repo / ".sourcepack" / "reports").mkdir(parents=True)
+            (repo / ".sourcepack" / "reports" / "latest.json").write_text('{"verdict":"PASS"}\n', encoding="utf-8")
+
+            packet = Path(td) / "packet"
+            self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
+            manifest = json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
+            included = [rec["relative_path"] for rec in manifest["included_files"]]
+            self.assertFalse(any(path.startswith(".sourcepack/") for path in included), included)
+
+    def test_prompt_refreshes_baseline_by_default(self):
+        with TemporaryDirectory() as td:
+            repo = self._repo(Path(td))
+            self.assertEqual(run_cli(["prompt", str(repo), "first task"]), 0)
+            (repo / "new_prompt_file.py").write_text("print('fresh')\n", encoding="utf-8")
+            self.assertEqual(run_cli(["prompt", str(repo), "second task"]), 0)
+            manifest = json.loads((repo / ".sourcepack" / "current" / "packet" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertIn("new_prompt_file.py", [rec["relative_path"] for rec in manifest["included_files"]])
+
+    def test_diff_missing_baseline_with_changes_fails_without_autobaseline(self):
+        with TemporaryDirectory() as td:
+            repo = self._repo(Path(td))
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "a@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "A"], cwd=repo, check=True)
+            subprocess.run(["git", "add", "README.md", "app.py"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            (repo / "app.py").write_text("def main():\n    return False\n", encoding="utf-8")
+
+            self.assertEqual(run_cli(["diff", str(repo)]), 1)
+            report = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["verdict"], "FAIL")
+            self.assertIn("baseline_missing", {f["id"] for f in report["findings"]})
+            self.assertFalse((repo / ".sourcepack" / "current" / "packet" / "manifest.json").exists())
 
     def test_prompt_creates_storage_gitignore_and_prompt_files(self):
         with TemporaryDirectory() as td:
@@ -517,10 +555,10 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             self.assertEqual(run_cli(["diff", str(repo)]), 0)
             no_diff = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text())
             self.assertEqual(no_diff["verdict"], "PASS")
-            (repo / "new.py").write_text("print('new')\n")
+            (repo / "new.py").write_text("print('new')\n", encoding="utf-8")
             self.assertEqual(run_cli(["diff", str(repo)]), 0)
             self.assertEqual(json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text())["verdict"], "WARN")
-            (repo / "api.py").write_text("from fastapi import FastAPI\n")
+            (repo / "api.py").write_text("from fastapi import FastAPI\n", encoding="utf-8")
             self.assertEqual(run_cli(["diff", str(repo)]), 1)
             red = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text())
             self.assertEqual(red["verdict"], "FAIL")
@@ -561,4 +599,40 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             hook = (repo / ".git" / "hooks" / "pre-commit").read_text()
             self.assertIn("sourcepack diff . --staged", hook)
             self.assertNotIn('exec "$0"', hook)
-            self.assertEqual(run_cli(["uninstall-hook", str(repo)]), 0)
+
+    def test_installed_hook_execution_blocks_red_allows_yellow_and_chains_original(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); repo = self._repo(tmp)
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "a@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "A"], cwd=repo, check=True)
+            self.assertEqual(run_cli(["baseline", str(repo)]), 0)
+            subprocess.run(["git", "add", "README.md", "app.py", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            bindir = tmp / "bin"; bindir.mkdir()
+            sourcepack_bin = bindir / "sourcepack"
+            sourcepack_bin.write_text("#!/bin/sh\nif [ \"$SOURCEPACK_FAKE\" = red ]; then echo 'RED LIGHT: fake'; exit 1; fi\nif [ \"$SOURCEPACK_FAKE\" = green ]; then echo 'GREEN LIGHT: fake'; exit 0; fi\necho 'YELLOW LIGHT: fake'; exit 0\n", encoding="utf-8")
+            sourcepack_bin.chmod(0o755)
+            env = {**os.environ, "PATH": f"{bindir}{os.pathsep}" + os.environ.get("PATH", "")}
+
+            (repo / "new.py").write_text("print('new')\n", encoding="utf-8")
+            self.assertEqual(run_cli(["install-hook", str(repo)]), 0)
+            yellow = subprocess.run([str(repo / ".git" / "hooks" / "pre-commit")], cwd=repo, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(yellow.returncode, 0, yellow.stdout + yellow.stderr)
+            self.assertIn("YELLOW LIGHT", yellow.stdout)
+
+            (repo / "api.py").write_text("from fastapi import FastAPI\n", encoding="utf-8")
+            red = subprocess.run([str(repo / ".git" / "hooks" / "pre-commit")], cwd=repo, env={**env, "SOURCEPACK_FAKE": "red"}, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertNotEqual(red.returncode, 0, red.stdout + red.stderr)
+            self.assertIn("RED LIGHT", red.stdout)
+
+            subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            original = repo / ".git" / "hooks" / "pre-commit"
+            original.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+            chained = subprocess.run([str(original), "arg1"], cwd=repo, env={**env, "SOURCEPACK_FAKE": "green"}, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(chained.returncode, 7, chained.stdout + chained.stderr)
+
+
+
+if __name__ == "__main__":
+    unittest.main()

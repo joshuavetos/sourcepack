@@ -1,7 +1,8 @@
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from sourcepack.cli import dependency_inventory, feature_inventory, load_manifest, run_cli
+from sourcepack.cli import dependency_inventory, extract_imports_from_text, feature_inventory, load_manifest, run_cli
 
 
 class SourcePackSmokeTest(unittest.TestCase):
@@ -296,6 +297,27 @@ deleted file mode 100644
             self.assertEqual(report["verdict"], "FAIL")
             self.assertIn("fastapi", report["unsupported_dependencies"])
 
+    def test_new_file_with_unsupported_fastapi_import_fails(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); packet = self._packet(tmp)
+            report, _ = self._judge_patch(packet, tmp, """diff --git a/api.py b/api.py
+new file mode 100644
+--- /dev/null
++++ b/api.py
+@@ -0,0 +1,2 @@
++from fastapi import FastAPI
++app = FastAPI()
+""")
+            self.assertEqual(report["verdict"], "FAIL")
+            self.assertIn("api.py", report["new_files"])
+            self.assertIn("fastapi", report["unsupported_dependencies"])
+
+    def test_import_extraction_catches_python_and_javascript_imports(self):
+        self.assertIn("fastapi", extract_imports_from_text("import fastapi\n", ".py"))
+        self.assertIn("fastapi", extract_imports_from_text("from fastapi import FastAPI\n", ".py"))
+        self.assertIn("react", extract_imports_from_text("import React from 'react'\n", ".tsx"))
+        self.assertIn("vue", extract_imports_from_text("const vue = require('vue')\n", ".js"))
+
     def test_unsupported_commands_fail(self):
         with TemporaryDirectory() as td:
             tmp = Path(td); packet = self._packet(tmp)
@@ -324,6 +346,37 @@ deleted file mode 100644
                 self.assertEqual(report["verdict"], "FAIL")
                 self.assertIn(name, report["protected_artifact_modifications"])
 
+    def test_nested_receipt_json_is_not_protected_artifact(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); packet = self._packet(tmp)
+            report, _ = self._judge_patch(packet, tmp, """diff --git a/docs/receipt.json b/docs/receipt.json
+new file mode 100644
+--- /dev/null
++++ b/docs/receipt.json
+@@ -0,0 +1 @@
++{}
+""")
+            self.assertNotIn("docs/receipt.json", report["protected_artifact_modifications"])
+            self.assertEqual(report["verdict"], "WARN")
+
+    def test_judge_patch_does_not_mutate_packet_artifacts(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); packet = self._packet(tmp)
+            names = ["manifest.json", "receipt.json", "reality_map.json", "ai_instructions.md"]
+            before = {name: (packet / name).read_bytes() for name in names}
+            report, out = self._judge_patch(packet, tmp, """diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1,2 +1,3 @@
++print('ok')
+ def main():
+     return True
+""")
+            self.assertTrue((out / "patch_judgment_report.json").exists())
+            self.assertIn("verdict", report)
+            after = {name: (packet / name).read_bytes() for name in names}
+            self.assertEqual(before, after)
+
     def test_patch_report_files_created_and_json_parses(self):
         with TemporaryDirectory() as td:
             tmp = Path(td); packet = self._packet(tmp)
@@ -335,6 +388,22 @@ deleted file mode 100644
 """)
             self.assertTrue((out / "patch_judgment_report.md").exists())
             self.assertIn("verdict", report)
+            json.loads((out / "patch_judgment_report.json").read_text())
+
+    def test_judge_patch_exit_code_zero_when_verdict_fails(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); packet = self._packet(tmp)
+            patch = tmp / "fail.diff"
+            patch.write_text("""diff --git a/receipt.json b/receipt.json
+--- a/receipt.json
++++ b/receipt.json
+@@ -1 +1,2 @@
++tamper
+""")
+            out = tmp / "patch_report"
+            self.assertEqual(run_cli(["judge-patch", str(packet), str(patch), "--out", str(out)]), 0)
+            report = json.loads((out / "patch_judgment_report.json").read_text())
+            self.assertEqual(report["verdict"], "FAIL")
 
 
 class SourcePackSchemaAndDemoTest(unittest.TestCase):

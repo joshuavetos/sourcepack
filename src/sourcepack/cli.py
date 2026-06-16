@@ -704,7 +704,6 @@ def node_project_evidence(files: set[str], scripts: dict[str, str]) -> dict[str,
 def extract_imports_from_text(text: str, suffix: str = ".py") -> set[str]:
     imports: set[str] = set()
     if suffix == ".py":
-        imports |= set(re.findall(r"(?m)^\+\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", text))
         imports |= set(re.findall(r"(?m)^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", text))
     elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
         imports |= {m.split("/", 1)[0] for m in re.findall(r"""(?:from\s+["']|import\s*\(\s*["']|require\s*\(\s*["'])(@?[A-Za-z0-9_.-]+)""", text)}
@@ -809,7 +808,7 @@ def judge_patch(packet_path: str | Path, patch_path: str | Path, out_dir: str | 
             report["missing_modified_files"].append(ch.path)
         if ch.deleted_file:
             report["deleted_files"].append(ch.path)
-        if Path(ch.path).name in PROTECTED_PACKET_ARTIFACTS:
+        if ch.path in PROTECTED_PACKET_ARTIFACTS:
             report["protected_artifact_modifications"].append(ch.path)
         added = "\n".join(ch.added_lines or [])
         all_added.append(added)

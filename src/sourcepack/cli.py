@@ -6,10 +6,7 @@ import hashlib
 import json
 import os
 import platform
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - packaging requires Python 3.11+
-    tomllib = None
+import tomllib
 import re
 import shutil
 import subprocess
@@ -631,8 +628,6 @@ def _python_dependency_names_from_requirement_lines(text: str) -> set[str]:
 
 
 def _python_dependency_names_from_pyproject(content: str) -> set[str]:
-    if tomllib is None:
-        return set()
     try:
         data = tomllib.loads(content)
     except tomllib.TOMLDecodeError:
@@ -1661,8 +1656,6 @@ def _apply_patch_change_to_text(original: str, change: PatchFileChange) -> str |
 
 def _python_dependency_names_by_scope_from_pyproject(content: str) -> dict[str, set[str]]:
     scopes = {"runtime": set(), "dev": set(), "optional": set()}
-    if tomllib is None:
-        return scopes
     try:
         data = tomllib.loads(content)
     except tomllib.TOMLDecodeError:

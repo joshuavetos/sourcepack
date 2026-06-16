@@ -561,6 +561,8 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
         self.assertIn("RED LIGHT", render_traffic(red))
         self.assertIn("missing_file", render_traffic(red))
         self.assertIn("YELLOW LIGHT", render_traffic(yellow))
+        self.assertIn("Reason type: review", render_traffic(yellow))
+        self.assertIn("Commit policy: allowed locally, blocked in strict mode.", render_traffic(yellow))
         self.assertIn("new_file", render_traffic(yellow))
         self.assertIn("GREEN LIGHT", render_traffic(green))
         json.dumps(green)
@@ -713,6 +715,8 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             self.assertTrue((repo / ".sourcepack" / "baseline" / "packet" / "manifest.json").exists())
             hook = (repo / ".git" / "hooks" / "pre-commit").read_text()
             self.assertIn("strict mode blocks YELLOW LIGHT", hook)
+            post_hook = (repo / ".git" / "hooks" / "post-commit").read_text()
+            self.assertIn("git ls-files --others --exclude-standard", post_hook)
 
     def test_hook_chains_existing_hook_and_uninstall_restores(self):
         with TemporaryDirectory() as td:

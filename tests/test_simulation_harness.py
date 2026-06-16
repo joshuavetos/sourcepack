@@ -167,6 +167,60 @@ def test_ai_answer_simulation_accepts_supported_claims(tmp_path: Path) -> None:
     assert report["unsupported_commands"] == []
 
 
+
+def test_analyze_patch_warns_when_uncertainties_exist(tmp_path: Path) -> None:
+    from sourcepack.cli import analyze_patch
+
+    packet = write_packet(tmp_path, {"package.json": '{"scripts":{}}\n'})
+    patch = unified_patch("package.json", '{"scripts":{}}\n', '{"scripts":{"dev":"vite"}\n')
+    report = analyze_patch(packet, patch)
+    assert report["verdict"] == "WARN"
+    assert any(item.get("id") == "command_manifest_uncertain" for item in report.get("uncertainties", []))
+
+
+def test_ai_answer_negated_and_cautionary_mentions_do_not_fail(tmp_path: Path) -> None:
+    packet = write_packet(tmp_path, {"app.py": "VALUE = 1\n", "package.json": "{}\n"})
+    answer = tmp_path / "answer.md"
+    answer.write_text(
+        "Do not use FastAPI. This repo does not include React. Avoid requests unless added to requirements.txt. "
+        "Do not run npm run build. There is no docker compose up support. Avoid pytest until tests are configured. "
+        "Do not import pydantic unless it is added first. There is no need for SQLAlchemy here.\n",
+        encoding="utf-8",
+    )
+    report = judge_ai_answer(packet, answer)
+    assert report["verdict"] == "PASS"
+    assert report["unsupported_dependencies"] == []
+    assert report["unsupported_commands"] == []
+
+
+def test_ai_answer_file_reference_forms(tmp_path: Path) -> None:
+    packet = write_packet(tmp_path, {"src/auth.py": "VALUE = 1\n"})
+    supported = ["`src/auth.py`", "'src/auth.py'", "edit src/auth.py", "edit ./src/auth.py", "src/auth.py:", "- src/auth.py", "edit src\\auth.py"]
+    for index, text in enumerate(supported):
+        answer = tmp_path / f"answer-{index}.md"
+        answer.write_text(text, encoding="utf-8")
+        report = judge_ai_answer(packet, answer)
+        assert report["verdict"] == "PASS", text
+        assert "src/auth.py" in report["supported_files"], text
+
+
+def test_ai_answer_action_like_unsupported_claims_fail(tmp_path: Path) -> None:
+    packet = write_packet(tmp_path, {"app.py": "VALUE = 1\n", "package.json": "{}\n"})
+    cases = [
+        ("import fastapi", "unsupported_dependencies", "fastapi"),
+        ('import React from "react"', "unsupported_dependencies", "react"),
+        ("run npm run build", "unsupported_commands", "npm run build"),
+        ("use docker compose up", "unsupported_commands", "docker compose up"),
+        ("add database support", "unsupported_capabilities", "database"),
+    ]
+    for index, (text, key, expected) in enumerate(cases):
+        answer = tmp_path / f"unsupported-{index}.md"
+        answer.write_text(text, encoding="utf-8")
+        report = judge_ai_answer(packet, answer)
+        assert report["verdict"] == "FAIL", text
+        assert expected in {str(item).lower() for item in report[key]}, report
+
+
 def test_non_utf8_patch_file_fails_closed(tmp_path: Path) -> None:
     packet = write_packet(tmp_path, {"a.py": "x\n"})
     patch = tmp_path / "bad.diff"

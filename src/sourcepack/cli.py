@@ -44,7 +44,7 @@ SECRET_PATTERNS = [
     ("github_token", re.compile(r"ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}")),
     ("slack_token", re.compile(r"xox[baprs]-[A-Za-z0-9\-]{20,}")),
 ]
-COMMON_DEPENDENCIES = ["fastapi", "flask", "django", "react", "vue", "svelte", "pytest", "typer", "click", "sqlalchemy", "prisma", "pydantic"]
+COMMON_DEPENDENCIES = ["fastapi", "flask", "django", "react", "vue", "svelte", "pytest", "typer", "click", "sqlalchemy", "prisma", "pydantic", "pyyaml", "pillow", "beautifulsoup4", "opencv-python", "scikit-learn", "python-dotenv", "pyjwt", "python-dateutil", "boto3", "requests"]
 FEATURE_NAMES = ("pdf", "ocr", "web server", "react", "docker", "authentication", "database")
 
 
@@ -565,6 +565,11 @@ def _normalize_dependency_name(name: str) -> str:
     return name.strip().lower().replace("_", "-")
 
 
+def _dependency_name_for_import(name: str) -> str:
+    normalized = _normalize_dependency_name(name)
+    return PY_IMPORT_ALIASES.get(normalized, normalized)
+
+
 def _add_common_dependency(deps: set[str], name: str):
     normalized = _normalize_dependency_name(name)
     for dep in COMMON_DEPENDENCIES:
@@ -678,6 +683,7 @@ def feature_inventory(manifest: dict, packet: Path, deps: set[str] | None = None
 
 
 PROTECTED_PACKET_ARTIFACTS = {"manifest.json", "receipt.json", "reality_map.json", "ai_instructions.md"}
+PY_IMPORT_ALIASES = {"yaml": "pyyaml", "pil": "pillow", "bs4": "beautifulsoup4", "cv2": "opencv-python", "sklearn": "scikit-learn", "dotenv": "python-dotenv", "jwt": "pyjwt", "dateutil": "python-dateutil"}
 
 
 def known_files(manifest: dict) -> set[str]:
@@ -820,7 +826,8 @@ def analyze_patch(packet_path: str | Path, patch_text: str) -> dict:
             report["missing_modified_files"].append(ch.path)
         if ch.deleted_file:
             report["deleted_files"].append(ch.path)
-        if ch.path in PROTECTED_PACKET_ARTIFACTS:
+        protected = ch.path.startswith(".sourcepack/baseline/") or ch.path.startswith(".sourcepack/state/")
+        if protected:
             report["protected_artifact_modifications"].append(ch.path)
         added = "\n".join(ch.added_lines or [])
         all_added.append(added)
@@ -830,15 +837,27 @@ def analyze_patch(packet_path: str | Path, patch_text: str) -> dict:
                     report["unsupported_dependencies"].append(dep)
     added_text = "\n".join(all_added)
     supported = supported_commands_inventory(reality)
+    added_paths = {ch.path for ch in changes}
+    compose_added = any(Path(path).name.lower() in {"docker-compose.yml", "compose.yaml", "compose.yml"} for path in added_paths)
     if re.search(r"docker\s+compose\s+up", added_text, re.I):
         evidence = docker_evidence(files)
-        if "docker compose up" not in supported or not evidence["compose"]:
+        if compose_added:
+            report["warnings"].append("Patch adds Docker Compose support used by commands; review the new support.")
+        elif "docker compose up" not in supported or not evidence["compose"]:
             report["unsupported_commands"].append("docker compose up")
+    patch_scripts = set()
+    for ch in changes:
+        if Path(ch.path).name.lower() == "package.json":
+            for script in re.findall(r'"([A-Za-z0-9:_-]+)"\s*:', "\n".join(ch.added_lines or [])):
+                if script not in JS_DEP_SECTIONS and script not in {"scripts", "dependencies", "devDependencies", "peerDependencies", "optionalDependencies"}:
+                    patch_scripts.add(script)
     for cmd in sorted(set(re.findall(r"npm\s+(?:run\s+)?[A-Za-z0-9:_-]+", added_text))):
         normalized = cmd if cmd == "npm test" else cmd
         if normalized.startswith("npm run "):
             script = normalized.removeprefix("npm run ").strip()
-            if script not in scripts:
+            if script in patch_scripts:
+                report["warnings"].append(f"Patch adds npm script {script} used by commands; review the new support.")
+            elif script not in scripts:
                 report["unsupported_commands"].append(normalized)
         elif normalized == "npm test" and "test" not in scripts:
             report["unsupported_commands"].append(normalized)
@@ -869,8 +888,8 @@ def render_patch_judgment_report(report: dict) -> str:
 
 
 def judge_patch(packet_path: str | Path, patch_path: str | Path, out_dir: str | Path) -> dict:
-    patch_text = Path(patch_path).read_text(encoding="utf-8")
-    report = analyze_patch(packet_path, patch_text)
+    patch_text = Path(patch_path).read_text(encoding="utf-8", errors="ignore")
+    report = judge_patch_text(packet_path, patch_text)
     text = render_patch_judgment_report(report)
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
     (out / "patch_judgment_report.md").write_text(text, encoding="utf-8")
@@ -1151,8 +1170,13 @@ def resolve_active_baseline(repo: str | Path) -> dict:
             return baseline_corrupt_result(repo, "active.json points to a missing build", packet_path=packet, metadata_path=meta, active_pointer_path=pointer, mode="pointer", active_build_id=build_id)
         return {"ok": True, "state": "resolved", "mode": "pointer", "packet_path": _rel_to_repo(repo, packet), "metadata_path": _rel_to_repo(repo, meta), "active_pointer_path": _rel_to_repo(repo, pointer), "active_build_id": build_id, "details": {}}
     legacy = paths["packet"]
-    if (legacy / "manifest.json").exists():
-        return {"ok": True, "state": "resolved", "mode": "legacy", "packet_path": _rel_to_repo(repo, legacy), "metadata_path": _rel_to_repo(repo, paths["baseline_meta"]), "active_pointer_path": None, "active_build_id": None, "details": {}}
+    if legacy.exists():
+        legacy_artifacts = {"manifest.json", "receipt.json", "reality_map.json", "context.md", "ai_instructions.md"}
+        present = {child.name for child in legacy.iterdir()} if legacy.is_dir() else set()
+        if (legacy / "manifest.json").exists():
+            return {"ok": True, "state": "resolved", "mode": "legacy", "packet_path": _rel_to_repo(repo, legacy), "metadata_path": _rel_to_repo(repo, paths["baseline_meta"]), "active_pointer_path": None, "active_build_id": None, "details": {}}
+        if present & legacy_artifacts:
+            return baseline_corrupt_result(repo, "legacy baseline packet has baseline artifacts but is missing manifest.json", packet_path=legacy, mode="legacy")
     return {"ok": False, "state": "missing", "finding_id": "baseline_missing", "message": "No trusted SourcePack baseline exists while changes are present.", "details": {}, "packet_path": None, "metadata_path": None, "active_pointer_path": None, "mode": "none", "active_build_id": None}
 
 
@@ -1176,9 +1200,12 @@ def _validate_packet_artifacts(repo: Path, packet: Path) -> dict | None:
     for name, expected in hashes.items():
         if not isinstance(name, str) or not isinstance(expected, str):
             return baseline_corrupt_result(repo, "receipt.json contains invalid hash entry", packet_path=packet)
-        path = packet / name
+        if Path(name).is_absolute() or ".." in Path(name).parts:
+            return baseline_corrupt_result(repo, "receipt.json tracks unsafe artifact path", packet_path=packet)
+        packet_root = packet.resolve()
+        path = (packet / name).resolve()
         try:
-            path.relative_to(packet)
+            path.relative_to(packet_root)
         except ValueError:
             return baseline_corrupt_result(repo, "receipt.json tracks path outside packet", packet_path=packet)
         if not path.exists():
@@ -1277,15 +1304,21 @@ def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: st
         _write_json_atomic(paths["active_pointer"], pointer)
         if fail_stage == "after_pointer_replace":
             raise RuntimeError("injected failure after pointer replacement")
-        if paths["packet"].exists():
-            shutil.rmtree(paths["packet"])
-        shutil.copytree(packet, paths["packet"])
-        shutil.copy2(packet / "reality_map.json", paths["reality"])
-        shutil.copy2(packet / "ai_instructions.md", paths["instructions"])
-        paths["baseline_meta"].write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        # Enforcement state is active.json -> builds/<id>/packet. Legacy packet copies are intentionally not updated after pointer activation.
         if paths["stale_marker"].exists():
             paths["stale_marker"].unlink()
         return paths, created
+    except Exception:
+        if build_dir is not None:
+            active = None
+            try:
+                if paths["active_pointer"].exists():
+                    active = json.loads(paths["active_pointer"].read_text(encoding="utf-8")).get("active_build_id")
+            except Exception:
+                active = None
+            if active != build_dir.name:
+                shutil.rmtree(build_dir, ignore_errors=True)
+        raise
     finally:
         if lock is not None and fd is not None:
             release_baseline_lock(lock, fd)
@@ -1369,10 +1402,99 @@ def _declared_dependency_names_from_patch(changes: list[PatchFileChange]) -> set
     return deps
 
 
+
+def _declared_dependency_names(manifest: dict, packet: Path) -> set[str]:
+    declared: set[str] = set()
+    contents = _packet_file_contents(packet)
+    for rec in manifest.get("included_files", []):
+        rel = rec.get("relative_path", "")
+        content = contents.get(rel, "")
+        name = Path(rel).name.lower()
+        if name == "pyproject.toml":
+            for quoted in re.findall(r"""["']([A-Za-z0-9_.-]+)(?:[<>=!~;\[].*)?["']""", content):
+                declared.add(_normalize_dependency_name(quoted))
+        elif name.startswith("requirements") and name.endswith(".txt"):
+            for line in content.splitlines():
+                cleaned = line.split("#", 1)[0].strip()
+                if cleaned and not cleaned.startswith(("-", "--")):
+                    declared.add(_normalize_dependency_name(re.split(r"[<>=!~;\[]", cleaned, 1)[0]))
+        elif name == "package.json":
+            try:
+                package = json.loads(content)
+            except json.JSONDecodeError:
+                package = {}
+            for section in JS_DEP_SECTIONS:
+                section_deps = package.get(section)
+                if isinstance(section_deps, dict):
+                    declared.update(dep.lower() for dep in section_deps)
+    return declared
+
+
+def _workspace_package_names(packet: Path) -> set[str]:
+    contents = _packet_file_contents(packet)
+    root = {}
+    try:
+        root = json.loads(contents.get("package.json", "{}"))
+    except json.JSONDecodeError:
+        return set()
+    workspaces = root.get("workspaces")
+    patterns = workspaces if isinstance(workspaces, list) else workspaces.get("packages", []) if isinstance(workspaces, dict) else []
+    names: set[str] = set()
+    for pattern in patterns:
+        if not isinstance(pattern, str) or not pattern.endswith("/*"):
+            continue
+        prefix = pattern[:-2].strip("/")
+        for rel, content in contents.items():
+            if Path(rel).name == "package.json" and rel.startswith(prefix + "/"):
+                try:
+                    package = json.loads(content)
+                except json.JSONDecodeError:
+                    continue
+                name = package.get("name")
+                if isinstance(name, str):
+                    names.add(name.lower())
+    return names
+
+
+def _js_alias_local(imported: str, files: set[str], contents: dict[str, str]) -> bool | None:
+    configs = []
+    for cfg in ("tsconfig.json", "jsconfig.json"):
+        if cfg in contents:
+            try:
+                configs.append(json.loads(contents[cfg]))
+            except json.JSONDecodeError:
+                return None
+    for cfg in configs:
+        opts = cfg.get("compilerOptions", {}) if isinstance(cfg, dict) else {}
+        base = str(opts.get("baseUrl", ".")).strip("./")
+        paths = opts.get("paths", {})
+        candidates = []
+        if isinstance(paths, dict):
+            for alias, targets in paths.items():
+                prefix = alias[:-1] if alias.endswith("*") else alias
+                if imported.startswith(prefix):
+                    rest = imported[len(prefix):]
+                    for target in targets if isinstance(targets, list) else []:
+                        tprefix = target[:-1] if isinstance(target, str) and target.endswith("*") else target
+                        candidates.append((tprefix + rest).strip("/"))
+        if base and not imported.startswith("@") and not imported.startswith("~"):
+            candidates.append(f"{base}/{imported}".strip("/"))
+        for c in candidates:
+            variants = {c, f"{c}.ts", f"{c}.tsx", f"{c}.js", f"{c}.jsx", f"{c}/index.ts", f"{c}/index.tsx", f"{c}/index.js", f"{c}/index.jsx"}
+            if variants & files:
+                return True
+        if candidates:
+            return None
+    return False
+
 def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     report = analyze_patch(packet_path, patch_text)
-    packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest); deps = dependency_inventory(manifest, packet)
-    changes = parse_unified_diff(patch_text); declared = _declared_dependency_names_from_patch(changes)
+    packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest); deps = _declared_dependency_names(manifest, packet) | dependency_inventory(manifest, packet); contents = _packet_file_contents(packet)
+    changes = parse_unified_diff(patch_text)
+    if patch_text.strip() and not changes and "Binary files " not in patch_text:
+        return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
+    declared = _declared_dependency_names_from_patch(changes)
+    workspace_names = _workspace_package_names(packet)
     unsupported = set(report.get("unsupported_dependencies", []))
     for ch in changes:
         suffix = Path(ch.path).suffix.lower(); added = "\n".join(ch.added_lines or [])
@@ -1380,16 +1502,36 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
             for imported in extract_imports_from_text(added, suffix):
                 if imported in PY_STDLIB or imported.startswith(".") or _is_local_python_import(imported, ch.path, files):
                     continue
-                norm = _normalize_dependency_name(imported)
-                if norm not in deps and norm not in declared:
+                dep_name = _dependency_name_for_import(imported)
+                if dep_name not in deps and dep_name not in declared:
                     unsupported.add(imported)
         elif suffix in JS_EXTS:
             for imported in extract_imports_from_text(added, suffix):
                 if imported.startswith(".") or imported.startswith("/"):
                     continue
-                if imported.lower() not in deps and imported.lower() not in declared:
-                    unsupported.add(imported)
+                local_alias = _js_alias_local(imported, files, contents)
+                if imported.lower() in workspace_names or local_alias is True:
+                    continue
+                if local_alias is None:
+                    report.setdefault("uncertainties", []).append(f"js_alias_uncertain: {imported} could not be resolved safely")
+                    continue
+                pkg = imported.lower() if imported.startswith("@") and "/" in imported else imported.split("/", 1)[0].lower()
+                if pkg not in deps and pkg not in declared:
+                    unsupported.add(pkg)
     declared_only = {d for d in declared if d not in deps}
+    binary_paths = []
+    binary_blockers = []
+    for line in patch_text.splitlines():
+        if line.startswith("Binary files "):
+            m = re.search(r" b/(.+?) differ", line)
+            rel = m.group(1) if m else "unknown"
+            binary_paths.append(rel)
+            if rel == "unknown" or _is_high_risk_binary_path(rel):
+                binary_blockers.append(rel)
+    if binary_paths:
+        report["binary_diffs"] = sorted(set(binary_paths))
+    if binary_blockers:
+        report["binary_diff_blockers"] = sorted(set(binary_blockers))
     unsupported_ecosystems = []
     baseline_names = {Path(f).name.lower() for f in files}
     patch_names = {Path(ch.path).name.lower() for ch in changes}
@@ -1401,8 +1543,8 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     if declared_only:
         report.setdefault("warnings", []).append("Patch declares new dependencies that require review.")
         report["declared_dependencies"] = sorted(declared_only)
-    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications"]
-    report["verdict"] = "FAIL" if any(report.get(k) for k in fail_keys) else "WARN" if (report.get("new_files") or report.get("deleted_files") or report.get("warnings") or declared_only or report.get("uncertainties")) else "PASS"
+    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "binary_diff_blockers"]
+    report["verdict"] = "FAIL" if any(report.get(k) for k in fail_keys) else "WARN" if (report.get("new_files") or report.get("deleted_files") or report.get("warnings") or declared_only or report.get("uncertainties") or report.get("binary_diffs")) else "PASS"
     return report
 
 
@@ -1411,7 +1553,13 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
     for p in report.get("missing_modified_files", []): findings.append(normalized_finding("missing_file", "error", "file", f"{p} not found in the trusted baseline.", p, suggestion="Restore the file, create it as a new file, or refresh the baseline only after accepting the current repo state."))
     for d in report.get("unsupported_dependencies", []): findings.append(normalized_finding("unsupported_dependency", "error", "dependency", f"{d} is imported but not declared in scanned dependency files.", evidence=d, suggestion=f"Either remove {d} usage or add it intentionally to the appropriate dependency manifest."))
     for c in report.get("unsupported_commands", []): findings.append(normalized_finding("unsupported_command", "error", "command", f"{c} is not supported by project evidence.", evidence=c, suggestion="Use a detected supported command or add the project file that defines this command."))
-    for p in report.get("protected_artifact_modifications", []): findings.append(normalized_finding("protected_artifact", "error", "artifact", f"{p} is a protected SourcePack packet artifact.", p))
+    if report.get("malformed_diff"):
+        findings.append(normalized_finding("malformed_diff", "error", "diff", "SourcePack could not safely parse the diff artifact it was asked to judge."))
+    for p in report.get("protected_artifact_modifications", []): findings.append(normalized_finding("protected_artifact", "error", "artifact", f"{p} is a protected SourcePack trust artifact.", p))
+    for p in report.get("binary_diff_blockers", []): findings.append(normalized_finding("binary_diff", "error", "diff", f"Binary change at {p} crosses a SourcePack trust or high-risk control boundary.", p))
+    for p in report.get("binary_diffs", []):
+        if p not in set(report.get("binary_diff_blockers", [])):
+            findings.append(normalized_finding("binary_diff", "warn", "uncertainty", f"Binary content was detected at {p} and was not semantically evaluated.", p))
     for p in report.get("new_files", []): findings.append(normalized_finding("new_file", "warn", "review", f"{p} was created by the patch.", p))
     for p in report.get("deleted_files", []): findings.append(normalized_finding("deleted_file", "warn", "review", f"{p} was deleted by the patch.", p))
     for d in report.get("declared_dependencies", []): findings.append(normalized_finding("declared_dependency", "warn", "review", f"{d} was added to dependency files.", evidence=d))
@@ -1446,6 +1594,24 @@ def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
         return False, "git_unavailable"
     return False, None
 
+
+
+def _only_sourcepack_gitignore_change(repo: Path) -> bool:
+    status = run_git(repo, ["status", "--porcelain", "--", ".gitignore"])
+    others = run_git(repo, ["status", "--porcelain"])
+    if status.returncode != 0 or others.returncode != 0:
+        return False
+    lines = [line for line in others.stdout.splitlines() if line.strip()]
+    if not lines or any(not line.endswith(".gitignore") for line in lines):
+        return False
+    try:
+        text = (repo / ".gitignore").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    tracked = run_git(repo, ["show", "HEAD:.gitignore"])
+    before = tracked.stdout if tracked.returncode == 0 else ""
+    added = [line.strip() for line in text.splitlines() if line.strip() and line.strip() not in {l.strip() for l in before.splitlines()}]
+    return bool(added) and set(added) <= {".sourcepack", ".sourcepack/"}
 
 def baseline_report_fields(status: dict) -> dict:
     return {
@@ -1550,7 +1716,8 @@ def cli_diff(args) -> int:
         write_user_report(repo, rep, "diff")
         print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
     if baseline_status["state"] == "missing":
-        if diff_text.strip():
+        dirty_now, dirty_state_now = git_worktree_dirty(repo)
+        if diff_text.strip() or (dirty_now and not _only_sourcepack_gitignore_change(repo)):
             rep=traffic_report("FAIL","baseline missing while changes are present.",[normalized_finding("baseline_missing","error","baseline","No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
             rep.update(baseline_report_fields(baseline_status))
             write_user_report(repo, rep, "diff")
@@ -1592,6 +1759,11 @@ def cli_diff(args) -> int:
 
 
 
+def _is_high_risk_binary_path(rel: str) -> bool:
+    name = Path(rel).name.lower()
+    return rel.startswith(".sourcepack/baseline/") or rel.startswith(".sourcepack/state/") or name in {"requirements.txt", "pyproject.toml", "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"}
+
+
 def untracked_files_as_diff(repo: Path) -> str:
     cp = run_git(repo, ["ls-files", "--others", "--exclude-standard"]); parts=[]
     if cp.returncode != 0: return ""
@@ -1604,7 +1776,11 @@ def untracked_files_as_diff(repo: Path) -> str:
                     continue
             except Exception:
                 pass
-        if not path.is_file() or is_probably_binary(path):
+        if not path.is_file():
+            continue
+        if is_probably_binary(path):
+            lines = [f"diff --git a/{rel} b/{rel}", "new file mode 100644", f"Binary files /dev/null and b/{rel} differ"]
+            parts.append("\n".join(lines))
             continue
         try: content = path.read_text(encoding="utf-8")
         except Exception: continue
@@ -2010,7 +2186,8 @@ def run_cli(args_list=None):
         if args.command == "judge":
             judge_ai_answer(args.packet, args.ai_answer, args.out); return 0
         if args.command == "judge-patch":
-            judge_patch(args.packet, args.patch, args.out); return 0
+            report = judge_patch(args.packet, args.patch, args.out)
+            return 1 if report.get("malformed_diff") else 0
         parser.print_help(); return 1
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

@@ -340,7 +340,7 @@ new file mode 100644
     def test_protected_artifact_patch_fails(self):
         with TemporaryDirectory() as td:
             tmp = Path(td); packet = self._packet(tmp)
-            for name in ["receipt.json", "manifest.json", "reality_map.json", "ai_instructions.md"]:
+            for name in [".sourcepack/baseline/active.json", ".sourcepack/baseline/builds/x/packet/receipt.json"]:
                 report, _ = self._judge_patch(packet, tmp, f"""diff --git a/{name} b/{name}
 --- a/{name}
 +++ b/{name}
@@ -571,7 +571,7 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
         with TemporaryDirectory() as td:
             repo = self._repo(Path(td))
             self.assertEqual(run_cli(["baseline", str(repo)]), 0)
-            self.assertTrue((repo / ".sourcepack" / "baseline" / "packet" / "manifest.json").exists())
+            self.assertTrue((repo / ".sourcepack" / "baseline" / "active.json").exists())
             first = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text(encoding="utf-8"))
             self.assertIn("created", first["headline"])
             self.assertEqual(run_cli(["baseline", str(repo), "--refresh"]), 0)
@@ -681,7 +681,7 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             self.assertEqual(run_cli(["init", str(repo), "--auto"]), 0)
             self.assertTrue((repo / ".sourcepack" / "current").is_dir())
             self.assertTrue((repo / ".sourcepack" / "reports").is_dir())
-            self.assertTrue((repo / ".sourcepack" / "baseline" / "packet" / "manifest.json").exists())
+            self.assertTrue((repo / ".sourcepack" / "baseline" / "active.json").exists())
             self.assertIn(".sourcepack/", (repo / ".gitignore").read_text())
             hook = repo / ".git" / "hooks" / "pre-commit"
             self.assertTrue(hook.exists())
@@ -712,7 +712,7 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             self.assertIn("YELLOW LIGHT", buf.getvalue())
             self.assertFalse((repo / ".sourcepack" / "baseline" / "packet" / "manifest.json").exists())
             self.assertEqual(run_cli(["init", str(repo), "--auto", "--refresh-baseline", "--strict"]), 0)
-            self.assertTrue((repo / ".sourcepack" / "baseline" / "packet" / "manifest.json").exists())
+            self.assertTrue((repo / ".sourcepack" / "baseline" / "active.json").exists())
             hook = (repo / ".git" / "hooks" / "pre-commit").read_text()
             self.assertIn("strict mode blocks YELLOW LIGHT", hook)
             post_hook = (repo / ".git" / "hooks" / "post-commit").read_text()

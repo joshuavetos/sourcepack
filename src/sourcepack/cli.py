@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import platform
+import tomllib
 import re
 import shutil
 import subprocess
@@ -570,6 +571,85 @@ def _dependency_name_for_import(name: str) -> str:
     return PY_IMPORT_ALIASES.get(normalized, normalized)
 
 
+def _js_package_root(imported: str) -> str:
+    imported = imported.strip().lower()
+    parts = imported.split("/")
+    if imported.startswith("@") and len(parts) >= 2 and parts[0] != "@":
+        return "/".join(parts[:2])
+    if imported.startswith("@/"):
+        return imported
+    return parts[0]
+
+
+def _python_dependency_names_from_requirement_lines(text: str) -> set[str]:
+    deps: set[str] = set()
+    for line in text.splitlines():
+        cleaned = line.split("#", 1)[0].strip()
+        if cleaned and not cleaned.startswith(("-", "--")):
+            deps.add(_normalize_dependency_name(re.split(r"[<>=!~;\[]", cleaned, 1)[0]))
+    return deps
+
+
+def _python_dependency_names_from_pyproject(content: str) -> set[str]:
+    try:
+        data = tomllib.loads(content)
+    except tomllib.TOMLDecodeError:
+        return set()
+    deps: set[str] = set()
+
+    def add_requirement(req: object) -> None:
+        if isinstance(req, str):
+            name = re.split(r"[<>=!~;\[]", req.strip(), 1)[0]
+            if name:
+                deps.add(_normalize_dependency_name(name))
+
+    project = data.get("project", {})
+    if isinstance(project, dict):
+        for req in project.get("dependencies", []) if isinstance(project.get("dependencies"), list) else []:
+            add_requirement(req)
+        optional = project.get("optional-dependencies", {})
+        if isinstance(optional, dict):
+            for group in optional.values():
+                if isinstance(group, list):
+                    for req in group:
+                        add_requirement(req)
+
+    tool = data.get("tool", {})
+    if isinstance(tool, dict):
+        poetry = tool.get("poetry", {})
+        if isinstance(poetry, dict):
+            for section_name in ("dependencies", "dev-dependencies"):
+                section = poetry.get(section_name, {})
+                if isinstance(section, dict):
+                    for dep in section:
+                        if dep.lower() != "python":
+                            deps.add(_normalize_dependency_name(dep))
+            group = poetry.get("group", {})
+            if isinstance(group, dict):
+                for group_data in group.values():
+                    if isinstance(group_data, dict):
+                        section = group_data.get("dependencies", {})
+                        if isinstance(section, dict):
+                            deps.update(_normalize_dependency_name(dep) for dep in section)
+        for tool_name in ("pdm", "uv"):
+            tool_data = tool.get(tool_name, {})
+            if isinstance(tool_data, dict):
+                for key in ("dev-dependencies", "dependency-groups"):
+                    groups = tool_data.get(key, {})
+                    if isinstance(groups, dict):
+                        for group in groups.values():
+                            if isinstance(group, list):
+                                for req in group:
+                                    add_requirement(req)
+    dependency_groups = data.get("dependency-groups", {})
+    if isinstance(dependency_groups, dict):
+        for group in dependency_groups.values():
+            if isinstance(group, list):
+                for req in group:
+                    add_requirement(req)
+    return deps
+
+
 def _add_common_dependency(deps: set[str], name: str):
     normalized = _normalize_dependency_name(name)
     for dep in COMMON_DEPENDENCIES:
@@ -586,13 +666,11 @@ def dependency_inventory(manifest: dict, packet: Path) -> set[str]:
         name = Path(rel).name.lower()
         suffix = Path(rel).suffix.lower()
         if name == "pyproject.toml":
-            for quoted in re.findall(r"""["']([A-Za-z0-9_.-]+)(?:[<>=!~;\[].*)?["']""", content):
-                _add_common_dependency(deps, quoted)
+            for dep in _python_dependency_names_from_pyproject(content):
+                _add_common_dependency(deps, dep)
         elif name.startswith("requirements") and name.endswith(".txt"):
-            for line in content.splitlines():
-                cleaned = line.split("#", 1)[0].strip()
-                if cleaned and not cleaned.startswith(("-", "--")):
-                    _add_common_dependency(deps, re.split(r"[<>=!~;\[]", cleaned, 1)[0])
+            for dep in _python_dependency_names_from_requirement_lines(content):
+                _add_common_dependency(deps, dep)
         elif name == "package.json":
             try:
                 package = json.loads(content)
@@ -608,7 +686,7 @@ def dependency_inventory(manifest: dict, packet: Path) -> set[str]:
                 _add_common_dependency(deps, imported)
         elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
             for imported in re.findall(r"""(?:from\s+["']|import\s*\(\s*["']|require\s*\(\s*["'])(@?[A-Za-z0-9_.-]+)""", content):
-                _add_common_dependency(deps, imported.split("/", 1)[0])
+                _add_common_dependency(deps, _js_package_root(imported))
     return deps
 
 
@@ -623,15 +701,9 @@ PDF_DEPENDENCIES = {"pypdf", "pdfplumber", "fitz", "pymupdf"}
 def _declares_pdf_dependency(rel: str, content: str) -> bool:
     name = Path(rel).name.lower()
     if name == "pyproject.toml":
-        declared = re.findall(r"""["']([A-Za-z0-9_.-]+)(?:[<>=!~;\[].*)?["']""", content)
-        return any(_normalize_dependency_name(dep) in PDF_DEPENDENCIES for dep in declared)
+        return any(dep in PDF_DEPENDENCIES for dep in _python_dependency_names_from_pyproject(content))
     if name.startswith("requirements") and name.endswith(".txt"):
-        for line in content.splitlines():
-            cleaned = line.split("#", 1)[0].strip()
-            if cleaned and not cleaned.startswith(("-", "--")):
-                dep = re.split(r"[<>=!~;\[]", cleaned, 1)[0]
-                if _normalize_dependency_name(dep) in PDF_DEPENDENCIES:
-                    return True
+        return any(dep in PDF_DEPENDENCIES for dep in _python_dependency_names_from_requirement_lines(content))
     return False
 
 
@@ -721,11 +793,8 @@ def extract_imports_from_text(text: str, suffix: str = ".py") -> set[str]:
         imports |= set(re.findall(r"(?m)^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", text))
     elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
         
-        for m in re.findall(r"""(?:from\s+["']|import\s*\(\s*["']|require\s*\(\s*["'])(@?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)""", text):
-            if m.startswith("@") and "/" in m:
-                imports.add(m.lower())
-            else:
-                imports.add(m.split("/", 1)[0].lower())
+        for m in re.findall(r"""(?:from\s+["']|import\s*\(\s*["']|require\s*\(\s*["'])(@?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)""", text):
+            imports.add(_js_package_root(m))
     return {i.lower() for i in imports}
 
 
@@ -788,13 +857,11 @@ def _dependency_additions_from_patch(changes: list[PatchFileChange]) -> set[str]
         name = Path(ch.path).name.lower()
         added = "\n".join(ch.added_lines or [])
         if name == "pyproject.toml":
-            for quoted in re.findall(r"""["']([A-Za-z0-9_.-]+)(?:[<>=!~;\[].*)?["']""", added):
-                _add_common_dependency(deps, quoted)
+            for dep in _python_dependency_names_from_pyproject(added):
+                _add_common_dependency(deps, dep)
         elif name.startswith("requirements") and name.endswith(".txt"):
-            for line in added.splitlines():
-                cleaned = line.split("#", 1)[0].strip()
-                if cleaned and not cleaned.startswith(("-", "--")):
-                    _add_common_dependency(deps, re.split(r"[<>=!~;\[]", cleaned, 1)[0])
+            for dep in _python_dependency_names_from_requirement_lines(added):
+                _add_common_dependency(deps, dep)
         elif name == "package.json":
             for dep in COMMON_DEPENDENCIES:
                 if re.search(rf'"{re.escape(dep)}"\s*:', added, re.I):
@@ -802,14 +869,15 @@ def _dependency_additions_from_patch(changes: list[PatchFileChange]) -> set[str]
     return deps
 
 
-def analyze_patch(packet_path: str | Path, patch_text: str) -> dict:
+def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchFileChange] | None = None) -> dict:
     packet = Path(packet_path)
     manifest = load_manifest(packet)
     reality = json.loads((packet / "reality_map.json").read_text(encoding="utf-8")) if (packet / "reality_map.json").exists() else generate_reality_map(manifest, packet)
     files = known_files(manifest)
     deps = dependency_inventory(manifest, packet)
     scripts = _package_json_scripts(packet)
-    changes = parse_unified_diff(patch_text)
+    if changes is None:
+        changes = parse_unified_diff(patch_text)
     patch_deps = _dependency_additions_from_patch(changes)
     report = {
         "patch_judgment_schema_version": "1.0",
@@ -1387,37 +1455,36 @@ def _package_json_declared_deps_from_added_lines(lines: list[str]) -> set[str]:
     return deps
 
 
-def _declared_dependency_names_from_patch(changes: list[PatchFileChange]) -> set[str]:
-    deps = set(_dependency_additions_from_patch(changes))
+def _declared_dependency_names_from_patch_by_ecosystem(changes: list[PatchFileChange]) -> dict[str, set[str]]:
+    deps = {"python": set(), "js": set()}
     for ch in changes:
         added = "\n".join(ch.added_lines or [])
         name = Path(ch.path).name.lower()
         if name == "package.json":
-            deps |= _package_json_declared_deps_from_added_lines(ch.added_lines or [])
-        elif name in PY_DEP_FILES or (name.startswith("requirements") and name.endswith(".txt")):
-            for line in added.splitlines():
-                cleaned = line.split("#", 1)[0].strip().strip('"\' ,')
-                if cleaned and not cleaned.startswith(("-", "[")):
-                    deps.add(_normalize_dependency_name(re.split(r"[<>=!~;\[]", cleaned, 1)[0]))
+            deps["js"].update(_package_json_declared_deps_from_added_lines(ch.added_lines or []))
+        elif name == "pyproject.toml":
+            deps["python"].update(_python_dependency_names_from_pyproject(added))
+        elif name.startswith("requirements") and name.endswith(".txt"):
+            deps["python"].update(_python_dependency_names_from_requirement_lines(added))
     return deps
 
 
+def _declared_dependency_names_from_patch(changes: list[PatchFileChange]) -> set[str]:
+    scoped = _declared_dependency_names_from_patch_by_ecosystem(changes)
+    return scoped["python"] | scoped["js"]
 
-def _declared_dependency_names(manifest: dict, packet: Path) -> set[str]:
-    declared: set[str] = set()
+
+def _declared_dependency_names_by_ecosystem(manifest: dict, packet: Path) -> dict[str, set[str]]:
+    declared = {"python": set(), "js": set()}
     contents = _packet_file_contents(packet)
     for rec in manifest.get("included_files", []):
         rel = rec.get("relative_path", "")
         content = contents.get(rel, "")
         name = Path(rel).name.lower()
         if name == "pyproject.toml":
-            for quoted in re.findall(r"""["']([A-Za-z0-9_.-]+)(?:[<>=!~;\[].*)?["']""", content):
-                declared.add(_normalize_dependency_name(quoted))
+            declared["python"].update(_python_dependency_names_from_pyproject(content))
         elif name.startswith("requirements") and name.endswith(".txt"):
-            for line in content.splitlines():
-                cleaned = line.split("#", 1)[0].strip()
-                if cleaned and not cleaned.startswith(("-", "--")):
-                    declared.add(_normalize_dependency_name(re.split(r"[<>=!~;\[]", cleaned, 1)[0]))
+            declared["python"].update(_python_dependency_names_from_requirement_lines(content))
         elif name == "package.json":
             try:
                 package = json.loads(content)
@@ -1426,8 +1493,13 @@ def _declared_dependency_names(manifest: dict, packet: Path) -> set[str]:
             for section in JS_DEP_SECTIONS:
                 section_deps = package.get(section)
                 if isinstance(section_deps, dict):
-                    declared.update(dep.lower() for dep in section_deps)
+                    declared["js"].update(dep.lower() for dep in section_deps)
     return declared
+
+
+def _declared_dependency_names(manifest: dict, packet: Path) -> set[str]:
+    scoped = _declared_dependency_names_by_ecosystem(manifest, packet)
+    return scoped["python"] | scoped["js"]
 
 
 def _workspace_package_names(packet: Path) -> set[str]:
@@ -1488,12 +1560,13 @@ def _js_alias_local(imported: str, files: set[str], contents: dict[str, str]) ->
     return False
 
 def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
-    report = analyze_patch(packet_path, patch_text)
-    packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest); deps = _declared_dependency_names(manifest, packet) | dependency_inventory(manifest, packet); contents = _packet_file_contents(packet)
     changes = parse_unified_diff(patch_text)
     if patch_text.strip() and not changes and "Binary files " not in patch_text:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
-    declared = _declared_dependency_names_from_patch(changes)
+    report = analyze_patch(packet_path, patch_text, changes)
+    packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest); contents = _packet_file_contents(packet)
+    existing_declared = _declared_dependency_names_by_ecosystem(manifest, packet)
+    patch_declared = _declared_dependency_names_from_patch_by_ecosystem(changes)
     workspace_names = _workspace_package_names(packet)
     unsupported = set(report.get("unsupported_dependencies", []))
     for ch in changes:
@@ -1503,22 +1576,24 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
                 if imported in PY_STDLIB or imported.startswith(".") or _is_local_python_import(imported, ch.path, files):
                     continue
                 dep_name = _dependency_name_for_import(imported)
-                if dep_name not in deps and dep_name not in declared:
+                if dep_name not in existing_declared["python"] and dep_name not in patch_declared["python"]:
                     unsupported.add(imported)
         elif suffix in JS_EXTS:
             for imported in extract_imports_from_text(added, suffix):
                 if imported.startswith(".") or imported.startswith("/"):
                     continue
                 local_alias = _js_alias_local(imported, files, contents)
-                if imported.lower() in workspace_names or local_alias is True:
+                pkg = _js_package_root(imported)
+                if pkg in workspace_names or local_alias is True:
                     continue
                 if local_alias is None:
-                    report.setdefault("uncertainties", []).append(f"js_alias_uncertain: {imported} could not be resolved safely")
+                    report.setdefault("uncertainties", []).append({"id": "js_alias_uncertain", "message": f"{imported} could not be resolved safely", "path": ch.path, "evidence": imported})
                     continue
-                pkg = imported.lower() if imported.startswith("@") and "/" in imported else imported.split("/", 1)[0].lower()
-                if pkg not in deps and pkg not in declared:
+                if pkg not in existing_declared["js"] and pkg not in patch_declared["js"]:
                     unsupported.add(pkg)
-    declared_only = {d for d in declared if d not in deps}
+    declared = patch_declared["python"] | patch_declared["js"]
+    existing_deps = existing_declared["python"] | existing_declared["js"]
+    declared_only = {d for d in declared if d not in existing_deps}
     binary_paths = []
     binary_blockers = []
     for line in patch_text.splitlines():
@@ -1536,9 +1611,16 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     baseline_names = {Path(f).name.lower() for f in files}
     patch_names = {Path(ch.path).name.lower() for ch in changes}
     if "cargo.toml" in baseline_names or "cargo.toml" in patch_names:
-        unsupported_ecosystems.append("unsupported_ecosystem: Cargo.toml detected, but Rust dependency validation is not implemented")
+        unsupported_ecosystems.append({"id": "unsupported_ecosystem", "message": "Cargo.toml detected, but Rust dependency validation is not implemented", "evidence": "Cargo.toml"})
     if unsupported_ecosystems:
-        report["uncertainties"] = sorted(set(report.get("uncertainties", []) + unsupported_ecosystems))
+        seen_uncertainty_ids = set()
+        merged_uncertainties = []
+        for uncertainty in report.get("uncertainties", []) + unsupported_ecosystems:
+            key = uncertainty.get("id") if isinstance(uncertainty, dict) else str(uncertainty)
+            if key not in seen_uncertainty_ids:
+                seen_uncertainty_ids.add(key)
+                merged_uncertainties.append(uncertainty)
+        report["uncertainties"] = merged_uncertainties
     report["unsupported_dependencies"] = sorted(unsupported)
     if declared_only:
         report.setdefault("warnings", []).append("Patch declares new dependencies that require review.")
@@ -1563,7 +1645,16 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
     for p in report.get("new_files", []): findings.append(normalized_finding("new_file", "warn", "review", f"{p} was created by the patch.", p))
     for p in report.get("deleted_files", []): findings.append(normalized_finding("deleted_file", "warn", "review", f"{p} was deleted by the patch.", p))
     for d in report.get("declared_dependencies", []): findings.append(normalized_finding("declared_dependency", "warn", "review", f"{d} was added to dependency files.", evidence=d))
-    for w in report.get("uncertainties", []): findings.append(normalized_finding(w, "warn", "uncertainty", f"{w}: SourcePack could not fully evaluate this change."))
+    for w in report.get("uncertainties", []):
+        if isinstance(w, dict):
+            fid = str(w.get("id") or "uncertainty")
+            message = str(w.get("message") or "SourcePack could not fully evaluate this change.")
+            findings.append(normalized_finding(fid, "warn", "uncertainty", message, w.get("path"), w.get("evidence"), w.get("suggestion")))
+        else:
+            fid, _, detail = str(w).partition(":")
+            fid = fid.strip() or "uncertainty"
+            message = detail.strip() or str(w)
+            findings.append(normalized_finding(fid, "warn", "uncertainty", message))
     return traffic_report(report.get("verdict", "PASS"), findings=findings, checked_categories=["file references", "Python imports", "JS/TS imports", "known project commands", "protected SourcePack artifacts"], report_path=report_path)
 
 

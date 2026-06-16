@@ -103,7 +103,7 @@ class GauntletTest(unittest.TestCase):
         cases = [
             ({"package.json": '{"dependencies": {}}', "app.js": "console.log(1)\n"}, "view.js", 'import React from "react"\n', True),
             ({"package.json": '{"dependencies": {"react":"latest", "@scope/pkg":"1.0.0"}}', "app.js": "console.log(1)\n"}, "view.js", 'import React from "react"\nimport x from "@scope/pkg"\n', False),
-            ({"package.json": '{"workspaces": ["packages/*"]}', "packages/core/package.json": '{"name":"@myorg/core"}', "app.js": "console.log(1)\n"}, "use.js", 'import { shared } from "@myorg/core"\n', False),
+            ({"package.json": '{"workspaces": ["packages/*"]}', "packages/core/package.json": '{"name":"@myorg/core"}', "app.js": "console.log(1)\n"}, "use.js", 'import { shared } from "@myorg/core/utils"\n', False),
             ({"package.json": '{}', "tsconfig.json": '{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}', "src/components/Button.ts": "export const Button = 1\n", "app.ts": "console.log(1)\n"}, "view.ts", 'import { Button } from "@/components/Button"\n', False),
         ]
         for files, changed, content, should_fail in cases:
@@ -113,6 +113,51 @@ class GauntletTest(unittest.TestCase):
                     (repo / changed).write_text(content, encoding="utf-8")
                     code, data = self.diff_json(repo)
                     self.assertEqual("unsupported_dependency" in self.ids(data), should_fail)
+
+    def test_same_patch_dependencies_are_ecosystem_scoped(self):
+        with TemporaryDirectory() as td:
+            repo = self.make_repo(Path(td), {"app.py": "def value(): return 1\n", "package.json": '{"dependencies":{}}\n'})
+            packet = repo / validate_baseline(repo)["packet_path"]
+            report = judge_patch_text(packet, """diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1 +1,2 @@
++import requests
+ def value(): return 1
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -1 +1,5 @@
+-{"dependencies":{}}
++{
++  "dependencies": {
++    "requests": "^1.0.0"
++  }
++}
+""")
+            self.assertEqual(report["verdict"], "FAIL")
+            self.assertIn("requests", report["unsupported_dependencies"])
+
+        with TemporaryDirectory() as td:
+            repo = self.make_repo(Path(td), {"app.js": "export const value = 1;\n", "pyproject.toml": '[project]\nname="demo"\ndependencies=[]\n'})
+            packet = repo / validate_baseline(repo)["packet_path"]
+            report = judge_patch_text(packet, """diff --git a/app.js b/app.js
+--- a/app.js
++++ b/app.js
+@@ -1 +1,2 @@
++import React from "react/jsx-runtime";
+ export const value = 1;
+diff --git a/pyproject.toml b/pyproject.toml
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,3 +1,3 @@
+ [project]
+ name="demo"
+-dependencies=[]
++dependencies=["react"]
+""")
+            self.assertEqual(report["verdict"], "FAIL")
+            self.assertIn("react", report["unsupported_dependencies"])
 
     def test_npm_and_compose_same_patch_support_exactness(self):
         with TemporaryDirectory() as td:
@@ -176,7 +221,7 @@ diff --git a/README.md b/README.md
             code, data = self.diff_json(repo)
             self.assertEqual(code, 0)
             self.assertEqual(data["verdict"], "WARN")
-            self.assertIn("unsupported_ecosystem: Cargo.toml detected, but Rust dependency validation is not implemented", self.ids(data))
+            self.assertIn("unsupported_ecosystem", self.ids(data))
         with TemporaryDirectory() as td:
             repo = self.make_repo(Path(td), {"app.py": "def value(): return 1\n"})
             (repo / "asset.bin").write_bytes(b"\x00\x01\x02")

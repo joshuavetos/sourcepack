@@ -54,9 +54,11 @@ sourcepack judge-patch /tmp/sourcepack_demo_packet examples/fake_ai_patch.diff -
 
 `sourcepack judge <packet> <answer.md> --out <report_folder>` evaluates prose answers. It reports unsupported file references, dependency claims, commands, and capabilities in `judgment_report.md` and `judgment_report.json`.
 
-`sourcepack judge-patch <packet> <patch.diff> --out <report_folder>` evaluates a standard unified diff, such as output from `git diff`. It reports modified missing files, new files, deleted files, unsupported imports, unsupported commands, and protected packet artifact edits in `patch_judgment_report.md` and `patch_judgment_report.json`.
+`sourcepack judge-patch <packet> <patch.diff> --out <report_folder>` evaluates standard git-style unified diffs, such as output from `git diff`. It reports modified missing files, new files, deleted files, unsupported imports, unsupported commands, and root-level protected packet artifact edits in `patch_judgment_report.md` and `patch_judgment_report.json`. It does not claim support for arbitrary patch formats, binary diffs, rename/copy semantics, full semantic patch analysis, or runtime validation.
 
-Patch judgment does not mutate packet artifacts. New files in a patch may be reported as new evidence, but they are not treated as part of the original packet reality.
+`sourcepack judge` and `sourcepack judge-patch` return success when report generation succeeds. Read the report verdict to determine whether the answer or patch passed grounding checks.
+
+Patch judgment does not mutate packet artifacts. New files in a patch may be reported as new evidence, but they are not treated as part of the original packet reality. Patch dependency detection is structural and heuristic. Unknown dependencies may require future expansion of the dependency inventory.
 
 ### Reality map only
 
@@ -103,7 +105,7 @@ The fake AI answer and fake AI patch are expected to produce FAIL verdicts becau
 - External service behavior.
 - All possible hallucinations.
 
-SourcePack does not execute the target application by default. Capability and patch detection are structural and heuristic. Absence of evidence means unknown, not impossible.
+SourcePack does not execute the target application by default. Capability, dependency, and patch detection are structural and heuristic. Dependency detection is bounded by current inventory logic. Absence of evidence means unknown, not impossible.
 
 ## Development
 

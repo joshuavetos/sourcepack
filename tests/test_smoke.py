@@ -1,8 +1,10 @@
 import json
 import unittest
+import os
+import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from sourcepack.cli import dependency_inventory, extract_imports_from_text, feature_inventory, load_manifest, run_cli
+from sourcepack.cli import dependency_inventory, extract_imports_from_text, feature_inventory, load_manifest, run_cli, traffic_report, normalized_finding, render_traffic
 
 
 class SourcePackSmokeTest(unittest.TestCase):
@@ -441,3 +443,122 @@ class SourcePackSchemaAndDemoTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class SourcePackLocalUsabilityTest(unittest.TestCase):
+    def _repo(self, tmp: Path) -> Path:
+        repo = tmp / "repo"; repo.mkdir()
+        (repo / "README.md").write_text("demo\n", encoding="utf-8")
+        (repo / "app.py").write_text("def main():\n    return True\n", encoding="utf-8")
+        return repo
+
+    def test_prompt_creates_storage_gitignore_and_prompt_files(self):
+        with TemporaryDirectory() as td:
+            repo = self._repo(Path(td))
+            (repo / ".gitignore").write_text("dist/\r\n", encoding="utf-8", newline="")
+            self.assertEqual(run_cli(["prompt", str(repo), "fix auth bug"]), 0)
+            self.assertTrue((repo / ".sourcepack" / "current").is_dir())
+            self.assertTrue((repo / ".sourcepack" / "reports").is_dir())
+            prompt = (repo / ".sourcepack" / "current" / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("fix auth bug", prompt)
+            self.assertIn("AI Grounding Instructions", prompt)
+            self.assertIn("Do not invent files, dependencies, commands, services, or capabilities.", prompt)
+            self.assertTrue((repo / ".sourcepack" / "current" / "reality_map.json").exists())
+            self.assertTrue((repo / ".sourcepack" / "current" / "ai_instructions.md").exists())
+            gitignore = (repo / ".gitignore").read_bytes()
+            self.assertIn(b"dist/\r\n.sourcepack/\r\n", gitignore)
+            self.assertEqual(run_cli(["prompt", str(repo), "task"]), 0)
+            self.assertEqual((repo / ".gitignore").read_text(encoding="utf-8").count(".sourcepack/"), 1)
+
+    def test_prompt_copy_fallback_and_json_status(self):
+        with TemporaryDirectory() as td:
+            repo = self._repo(Path(td))
+            old_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = ""
+            try:
+                self.assertEqual(run_cli(["prompt", str(repo), "task", "--copy"]), 0)
+            finally:
+                os.environ["PATH"] = old_path
+            report = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["verdict"], "WARN")
+            self.assertTrue((repo / ".sourcepack" / "current" / "prompt.md").exists())
+            self.assertEqual(run_cli(["status", str(repo), "--json"]), 0)
+
+    def test_traffic_light_renderer_shapes(self):
+        red = traffic_report("FAIL", findings=[normalized_finding("missing_file", "error", "missing_file", "tests/test_auth.py not found.")])
+        yellow = traffic_report("WARN", findings=[normalized_finding("new_file", "warn", "new_file", "src/auth.py was created by the patch.")])
+        green = traffic_report("PASS")
+        self.assertIn("RED LIGHT", render_traffic(red))
+        self.assertIn("missing_file", render_traffic(red))
+        self.assertIn("YELLOW LIGHT", render_traffic(yellow))
+        self.assertIn("new_file", render_traffic(yellow))
+        self.assertIn("GREEN LIGHT", render_traffic(green))
+        json.dumps(green)
+
+    def test_baseline_created_and_refreshed(self):
+        with TemporaryDirectory() as td:
+            repo = self._repo(Path(td))
+            self.assertEqual(run_cli(["baseline", str(repo)]), 0)
+            self.assertTrue((repo / ".sourcepack" / "current" / "packet" / "manifest.json").exists())
+            first = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text(encoding="utf-8"))
+            self.assertIn("created", first["headline"])
+            self.assertEqual(run_cli(["baseline", str(repo), "--refresh"]), 0)
+            second = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text(encoding="utf-8"))
+            self.assertIn("refreshed", second["headline"])
+
+    def test_diff_no_diff_new_file_fastapi_declared_and_outside_git(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); repo = self._repo(tmp)
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "a@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "A"], cwd=repo, check=True)
+            self.assertEqual(run_cli(["baseline", str(repo)]), 0)
+            subprocess.run(["git", "add", "README.md", "app.py", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            self.assertEqual(run_cli(["diff", str(repo)]), 0)
+            no_diff = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text())
+            self.assertEqual(no_diff["verdict"], "PASS")
+            (repo / "new.py").write_text("print('new')\n")
+            self.assertEqual(run_cli(["diff", str(repo)]), 0)
+            self.assertEqual(json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text())["verdict"], "WARN")
+            (repo / "api.py").write_text("from fastapi import FastAPI\n")
+            self.assertEqual(run_cli(["diff", str(repo)]), 1)
+            red = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text())
+            self.assertEqual(red["verdict"], "FAIL")
+            self.assertIn("unsupported_dependency", {f["id"] for f in red["findings"]})
+            (repo / "requirements.txt").write_text("fastapi\n")
+            self.assertEqual(run_cli(["diff", str(repo)]), 0)
+            self.assertEqual(json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text())["verdict"], "WARN")
+            self.assertTrue((repo / ".sourcepack" / "reports" / "latest.md").exists())
+            self.assertTrue(list((repo / ".sourcepack" / "reports" / "archive").glob("*_patch_judgment.json")))
+            self.assertEqual(run_cli(["diff", str(tmp)]), 1)
+
+    def test_diff_staged_commands_artifacts_import_edges_and_hooks(self):
+        with TemporaryDirectory() as td:
+            repo = self._repo(Path(td))
+            (repo / "localmod.py").write_text("x=1\n")
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "a@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "A"], cwd=repo, check=True)
+            self.assertEqual(run_cli(["baseline", str(repo)]), 0)
+            subprocess.run(["git", "add", "README.md", "app.py", "localmod.py", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            (repo / "app.py").write_text("import os\nfrom . import rel\nimport localmod\ndef main():\n    return True\n")
+            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True)
+            self.assertEqual(run_cli(["diff", str(repo), "--staged"]), 0)
+            (repo / "README.md").write_text("demo\ndocker compose up\n")
+            self.assertEqual(run_cli(["diff", str(repo)]), 1)
+            (repo / "receipt.json").write_text("{}\n")
+            self.assertEqual(run_cli(["diff", str(repo)]), 1)
+            (repo / "docs").mkdir(); (repo / "docs" / "receipt.json").write_text("{}\n")
+            # docs/receipt.json may warn as a new file, but should not be a protected artifact finding.
+            report = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text())
+            self.assertNotIn("docs/receipt.json", [f.get("path") for f in report["findings"] if f["id"] == "protected_artifact"])
+            (repo / "ui.ts").write_text("import x from '@scope/pkg'\n")
+            self.assertEqual(run_cli(["diff", str(repo)]), 1)
+            report = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text())
+            self.assertIn("@scope/pkg", [f.get("evidence") for f in report["findings"]])
+            self.assertEqual(run_cli(["install-hook", str(repo)]), 0)
+            hook = (repo / ".git" / "hooks" / "pre-commit").read_text()
+            self.assertIn("sourcepack diff . --staged", hook)
+            self.assertNotIn('exec "$0"', hook)
+            self.assertEqual(run_cli(["uninstall-hook", str(repo)]), 0)

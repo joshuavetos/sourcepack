@@ -17,7 +17,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable
 from xml.sax.saxutils import escape as xml_escape
 
@@ -821,6 +821,29 @@ class PatchFileChange:
     new_file: bool = False
     deleted_file: bool = False
     added_lines: list[str] | None = None
+    diff_lines: list[str] | None = None
+    unsafe_path: bool = False
+
+
+def _normalize_diff_path(path: str) -> tuple[str, bool]:
+    raw = path.strip().replace("\\", "/")
+    if raw.startswith("a/") or raw.startswith("b/"):
+        raw = raw[2:]
+    if raw.startswith("/") or re.match(r"^[A-Za-z]:/", raw):
+        return raw, True
+    parts: list[str] = []
+    unsafe = False
+    for part in PurePosixPath(raw).parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not parts:
+                unsafe = True
+            else:
+                parts.pop()
+            continue
+        parts.append(part)
+    return "/".join(parts), unsafe
 
 
 def parse_unified_diff(text: str) -> list[PatchFileChange]:
@@ -831,11 +854,11 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
     new_file = False
     deleted_file = False
 
-    def clean(path: str) -> str:
+    malformed = False
+
+    def clean(path: str) -> tuple[str, bool]:
         path = path.strip().split("\t", 1)[0]
-        if path.startswith("a/") or path.startswith("b/"):
-            path = path[2:]
-        return path
+        return _normalize_diff_path(path)
 
     def flush():
         nonlocal current
@@ -848,22 +871,42 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
             flush(); old_path = new_path = None; new_file = deleted_file = False
             parts = line.split()
             if len(parts) >= 4:
-                old_path = clean(parts[2]); new_path = clean(parts[3])
+                old_path, old_unsafe = clean(parts[2]); new_path, new_unsafe = clean(parts[3])
+                if old_unsafe or new_unsafe:
+                    malformed = True
+            else:
+                malformed = True
         elif line.startswith("new file mode"):
             new_file = True
         elif line.startswith("deleted file mode"):
             deleted_file = True
         elif line.startswith("--- "):
             val = line[4:].strip()
-            old_path = None if val == "/dev/null" else clean(val)
+            if val == "/dev/null":
+                old_path = None
+            else:
+                old_path, unsafe = clean(val)
+                malformed = malformed or unsafe
         elif line.startswith("+++ "):
             val = line[4:].strip()
-            new_path = None if val == "/dev/null" else clean(val)
+            if val == "/dev/null":
+                new_path = None
+                unsafe = False
+            else:
+                new_path, unsafe = clean(val)
+            malformed = malformed or unsafe
             path = new_path or old_path or ""
-            current = PatchFileChange(path=path, old_path=old_path, new_file=new_file or old_path is None, deleted_file=deleted_file or new_path is None, added_lines=[])
+            current = PatchFileChange(path=path, old_path=old_path, new_file=new_file or old_path is None, deleted_file=deleted_file or new_path is None, added_lines=[], diff_lines=[], unsafe_path=unsafe)
+        elif line.startswith("@@ ") and current is None:
+            malformed = True
         elif current is not None and line.startswith("+") and not line.startswith("+++"):
             current.added_lines.append(line[1:])
+            current.diff_lines.append(line)
+        elif current is not None and (line.startswith("-") or line.startswith(" ") or line.startswith("@@")):
+            current.diff_lines.append(line)
     flush()
+    if malformed:
+        changes.append(PatchFileChange(path="", old_path=None, added_lines=[], diff_lines=[], unsafe_path=True))
     return changes
 
 
@@ -901,6 +944,8 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
         "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [],
         "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [],
     }
+    if any(ch.unsafe_path for ch in changes):
+        report["path_escape"] = True
     all_added = []
     for ch in changes:
         report["modified_files"].append(ch.path)
@@ -927,7 +972,8 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
         evidence = docker_evidence(files)
         if compose_added:
             report["warnings"].append("Patch adds Docker Compose support used by commands; review the new support.")
-        elif "docker compose up" not in supported or not evidence["compose"]:
+            report.setdefault("declared_commands", []).append("docker compose up")
+        elif not evidence["compose"]:
             report["unsupported_commands"].append("docker compose up")
     patch_scripts = set()
     for ch in changes:
@@ -941,6 +987,7 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
             script = normalized.removeprefix("npm run ").strip()
             if script in patch_scripts:
                 report["warnings"].append(f"Patch adds npm script {script} used by commands; review the new support.")
+                report.setdefault("declared_commands", []).append(normalized)
             elif script not in scripts:
                 report["unsupported_commands"].append(normalized)
         elif normalized == "npm test" and "test" not in scripts:
@@ -951,8 +998,8 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
             report["unsupported_commands"].append("pytest")
     if report["new_files"]:
         report["warnings"].append("Patch creates new files that were not part of the original packet reality.")
-    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications"]
-    if any(report[k] for k in fail_keys):
+    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "path_escape"]
+    if any(report.get(k) for k in fail_keys):
         report["verdict"] = "FAIL"
     elif report["new_files"] or report["warnings"]:
         report["verdict"] = "WARN"
@@ -1471,6 +1518,183 @@ def _package_json_declared_deps_from_added_lines(lines: list[str]) -> set[str]:
     return deps
 
 
+def _apply_patch_change_to_text(original: str, change: PatchFileChange) -> str | None:
+    if change.deleted_file:
+        return ""
+    result = original.splitlines()
+    if result and result[0] == "":
+        result = result[1:]
+    out: list[str] = []
+    idx = 0
+    saw_hunk = False
+    for line in change.diff_lines or []:
+        if line.startswith("@@"):
+            m = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+            if not m:
+                return None
+            old_start = max(int(m.group(1)) - 1, 0)
+            if old_start < idx or old_start > len(result):
+                return None
+            out.extend(result[idx:old_start])
+            idx = old_start
+            saw_hunk = True
+        elif line.startswith(" "):
+            body = line[1:]
+            if idx >= len(result) or result[idx] != body:
+                return None
+            out.append(result[idx])
+            idx += 1
+        elif line.startswith("-"):
+            body = line[1:]
+            if idx >= len(result) or result[idx] != body:
+                return None
+            idx += 1
+        elif line.startswith("+"):
+            out.append(line[1:])
+    if not saw_hunk and not change.new_file:
+        return None
+    out.extend(result[idx:])
+    return "\n".join(out) + ("\n" if original.endswith("\n") or change.new_file else "")
+
+
+def _python_dependency_names_by_scope_from_pyproject(content: str) -> dict[str, set[str]]:
+    scopes = {"runtime": set(), "dev": set(), "optional": set()}
+    if tomllib is None:
+        return scopes
+    try:
+        data = tomllib.loads(content)
+    except tomllib.TOMLDecodeError:
+        return scopes
+
+    def add_req(target: set[str], req: object) -> None:
+        if isinstance(req, str):
+            name = re.split(r"[<>=!~;\[]", req.strip(), 1)[0]
+            if name:
+                target.add(_normalize_dependency_name(name))
+
+    project = data.get("project", {})
+    if isinstance(project, dict):
+        for req in project.get("dependencies", []) if isinstance(project.get("dependencies"), list) else []:
+            add_req(scopes["runtime"], req)
+        optional = project.get("optional-dependencies", {})
+        if isinstance(optional, dict):
+            for group in optional.values():
+                if isinstance(group, list):
+                    for req in group:
+                        add_req(scopes["optional"], req)
+    tool = data.get("tool", {})
+    if isinstance(tool, dict):
+        poetry = tool.get("poetry", {})
+        if isinstance(poetry, dict):
+            section = poetry.get("dependencies", {})
+            if isinstance(section, dict):
+                for dep in section:
+                    if dep.lower() != "python":
+                        scopes["runtime"].add(_normalize_dependency_name(dep))
+            for section_name in ("dev-dependencies",):
+                section = poetry.get(section_name, {})
+                if isinstance(section, dict):
+                    scopes["dev"].update(_normalize_dependency_name(dep) for dep in section)
+            group = poetry.get("group", {})
+            if isinstance(group, dict):
+                for group_data in group.values():
+                    if isinstance(group_data, dict):
+                        section = group_data.get("dependencies", {})
+                        if isinstance(section, dict):
+                            scopes["dev"].update(_normalize_dependency_name(dep) for dep in section)
+        for tool_name in ("pdm", "uv"):
+            tool_data = tool.get(tool_name, {})
+            if isinstance(tool_data, dict):
+                for key in ("dev-dependencies", "dependency-groups"):
+                    groups = tool_data.get(key, {})
+                    if isinstance(groups, dict):
+                        for group in groups.values():
+                            if isinstance(group, list):
+                                for req in group:
+                                    add_req(scopes["dev"], req)
+    dependency_groups = data.get("dependency-groups", {})
+    if isinstance(dependency_groups, dict):
+        for group in dependency_groups.values():
+            if isinstance(group, list):
+                for req in group:
+                    add_req(scopes["dev"], req)
+    return scopes
+
+
+def _declared_dependency_scopes_by_ecosystem(manifest: dict, packet: Path) -> dict[str, dict[str, set[str]]]:
+    contents = _packet_file_contents(packet)
+    scopes = {"python": {"runtime": set(), "dev": set(), "optional": set()}, "js": {"runtime": set(), "dev": set(), "optional": set()}}
+    for rel, content in contents.items():
+        name = Path(rel).name.lower()
+        if name == "pyproject.toml":
+            parsed = _python_dependency_names_by_scope_from_pyproject(content)
+            for key, values in parsed.items():
+                scopes["python"][key].update(values)
+        elif name == "requirements.txt":
+            scopes["python"]["runtime"].update(_python_dependency_names_from_requirement_lines(content))
+        elif name.startswith("requirements") and name.endswith(".txt"):
+            target = "dev" if any(x in name for x in ("dev", "test")) else "runtime"
+            scopes["python"][target].update(_python_dependency_names_from_requirement_lines(content))
+        elif name == "package.json":
+            try:
+                package = json.loads(content)
+            except json.JSONDecodeError:
+                package = {}
+            section_map = {"dependencies": "runtime", "peerDependencies": "runtime", "optionalDependencies": "optional", "devDependencies": "dev"}
+            for section, target in section_map.items():
+                section_deps = package.get(section)
+                if isinstance(section_deps, dict):
+                    scopes["js"][target].update(dep.lower() for dep in section_deps)
+    return scopes
+
+
+def _is_test_path(path: str) -> bool:
+    p = path.replace("\\", "/").lower()
+    name = PurePosixPath(p).name
+    return p.startswith(("tests/", "test/")) or "/__tests__/" in f"/{p}" or name.endswith("_test.py") or any(name.endswith(s) for s in (".test.js", ".test.ts", ".spec.js", ".spec.ts", ".test.jsx", ".test.tsx", ".spec.jsx", ".spec.tsx"))
+
+
+def _dependency_scope_status(dep: str, scopes: dict[str, set[str]], path: str) -> str:
+    dep = _normalize_dependency_name(dep)
+    if dep in scopes.get("runtime", set()):
+        return "supported"
+    if dep in scopes.get("dev", set()):
+        return "supported" if _is_test_path(path) else "scope_review"
+    if dep in scopes.get("optional", set()):
+        return "scope_review"
+    return "missing"
+
+
+def _declared_dependency_names_from_patch_by_ecosystem_structural(changes: list[PatchFileChange], contents: dict[str, str]) -> tuple[dict[str, set[str]], list[dict]]:
+    deps = {"python": set(), "js": set()}
+    uncertainties: list[dict] = []
+    for ch in changes:
+        name = Path(ch.path).name.lower()
+        if name not in {"package.json", "pyproject.toml"} and not (name.startswith("requirements") and name.endswith(".txt")):
+            continue
+        base = contents.get(ch.old_path or ch.path, "")
+        post = _apply_patch_change_to_text(base, ch)
+        if post is None:
+            uncertainties.append({"id": "dependency_manifest_uncertain", "message": f"Could not reconstruct {ch.path} safely", "path": ch.path})
+            continue
+        if name == "package.json":
+            try:
+                package = json.loads(post)
+            except json.JSONDecodeError:
+                uncertainties.append({"id": "dependency_manifest_uncertain", "message": f"Could not parse {ch.path} as JSON", "path": ch.path})
+                continue
+            for section in JS_DEP_SECTIONS:
+                section_deps = package.get(section)
+                if isinstance(section_deps, dict):
+                    deps["js"].update(dep.lower() for dep in section_deps)
+        elif name == "pyproject.toml":
+            parsed = _python_dependency_names_by_scope_from_pyproject(post)
+            deps["python"].update(set().union(*parsed.values()))
+        else:
+            deps["python"].update(_python_dependency_names_from_requirement_lines(post))
+    return deps, uncertainties
+
+
 def _declared_dependency_names_from_patch_by_ecosystem(changes: list[PatchFileChange]) -> dict[str, set[str]]:
     deps = {"python": set(), "js": set()}
     for ch in changes:
@@ -1580,13 +1804,22 @@ def _js_alias_local(imported: str, files: set[str], contents: dict[str, str]) ->
     return False
 
 def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
+    if re.search(r"(?m)^@@", patch_text) and "diff --git " not in patch_text:
+        return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
+    if re.search(r"(?m)^@@(?! -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)", patch_text):
+        return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     changes = parse_unified_diff(patch_text)
+    if any(ch.unsafe_path for ch in changes):
+        return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "path_escape": True}
     if patch_text.strip() and not changes and "Binary files " not in patch_text:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     report = analyze_patch(packet_path, patch_text, changes)
     packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest); contents = _packet_file_contents(packet)
     existing_declared = _declared_dependency_names_by_ecosystem(manifest, packet)
-    patch_declared = _declared_dependency_names_from_patch_by_ecosystem(changes)
+    scopes = _declared_dependency_scopes_by_ecosystem(manifest, packet)
+    patch_declared, manifest_uncertainties = _declared_dependency_names_from_patch_by_ecosystem_structural(changes, contents)
+    if manifest_uncertainties:
+        report.setdefault("uncertainties", []).extend(manifest_uncertainties)
     workspace_names = _workspace_package_names(packet)
     unsupported = set(report.get("unsupported_dependencies", []))
     for ch in changes:
@@ -1596,8 +1829,14 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
                 if imported in PY_STDLIB or imported.startswith(".") or _is_local_python_import(imported, ch.path, files):
                     continue
                 dep_name = _dependency_name_for_import(imported)
-                if dep_name not in existing_declared["python"] and dep_name not in patch_declared["python"]:
+                scope_status = _dependency_scope_status(dep_name, scopes["python"], ch.path)
+                if scope_status == "scope_review":
+                    report.setdefault("uncertainties", []).append({"id": "dependency_scope_review", "message": f"{dep_name} is declared outside the runtime dependency scope", "path": ch.path, "evidence": dep_name})
+                elif scope_status == "missing" and dep_name not in patch_declared["python"]:
                     unsupported.add(imported)
+                elif dep_name in patch_declared["python"]:
+                    unsupported.discard(imported)
+                    unsupported.discard(dep_name)
         elif suffix in JS_EXTS:
             for imported in extract_imports_from_text(added, suffix):
                 if imported.startswith(".") or imported.startswith("/"):
@@ -1609,8 +1848,13 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
                 if local_alias is None or (local_alias is False and _is_js_alias_specifier(imported)):
                     report.setdefault("uncertainties", []).append({"id": "js_alias_uncertain", "message": f"{imported} could not be resolved safely", "path": ch.path, "evidence": imported})
                     continue
-                if pkg not in existing_declared["js"] and pkg not in patch_declared["js"]:
+                scope_status = _dependency_scope_status(pkg, scopes["js"], ch.path)
+                if scope_status == "scope_review":
+                    report.setdefault("uncertainties", []).append({"id": "dependency_scope_review", "message": f"{pkg} is declared outside the runtime dependency scope", "path": ch.path, "evidence": pkg})
+                elif scope_status == "missing" and pkg not in patch_declared["js"]:
                     unsupported.add(pkg)
+                elif pkg in patch_declared["js"]:
+                    unsupported.discard(pkg)
     declared = patch_declared["python"] | patch_declared["js"]
     existing_deps = existing_declared["python"] | existing_declared["js"]
     declared_only = {d for d in declared if d not in existing_deps}
@@ -1645,7 +1889,7 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     if declared_only:
         report.setdefault("warnings", []).append("Patch declares new dependencies that require review.")
         report["declared_dependencies"] = sorted(declared_only)
-    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "binary_diff_blockers"]
+    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "binary_diff_blockers", "path_escape"]
     report["verdict"] = "FAIL" if any(report.get(k) for k in fail_keys) else "WARN" if (report.get("new_files") or report.get("deleted_files") or report.get("warnings") or declared_only or report.get("uncertainties") or report.get("binary_diffs")) else "PASS"
     return report
 
@@ -1657,6 +1901,8 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
     for c in report.get("unsupported_commands", []): findings.append(normalized_finding("unsupported_command", "error", "command", f"{c} is not supported by project evidence.", evidence=c, suggestion="Use a detected supported command or add the project file that defines this command."))
     if report.get("malformed_diff"):
         findings.append(normalized_finding("malformed_diff", "error", "diff", "SourcePack could not safely parse the diff artifact it was asked to judge."))
+    if report.get("path_escape"):
+        findings.append(normalized_finding("path_escape", "error", "diff", "Diff path escapes the repository root or is absolute."))
     for p in report.get("protected_artifact_modifications", []): findings.append(normalized_finding("protected_artifact", "error", "artifact", f"{p} is a protected SourcePack trust artifact.", p))
     for p in report.get("binary_diff_blockers", []): findings.append(normalized_finding("binary_diff", "error", "diff", f"Binary change at {p} crosses a SourcePack trust or high-risk control boundary.", p))
     for p in report.get("binary_diffs", []):
@@ -1665,6 +1911,7 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
     for p in report.get("new_files", []): findings.append(normalized_finding("new_file", "warn", "review", f"{p} was created by the patch.", p))
     for p in report.get("deleted_files", []): findings.append(normalized_finding("deleted_file", "warn", "review", f"{p} was deleted by the patch.", p))
     for d in report.get("declared_dependencies", []): findings.append(normalized_finding("declared_dependency", "warn", "review", f"{d} was added to dependency files.", evidence=d))
+    for c in report.get("declared_commands", []): findings.append(normalized_finding("declared_command", "warn", "review", f"{c} was added in the same patch.", evidence=c))
     for w in report.get("uncertainties", []):
         if isinstance(w, dict):
             fid = str(w.get("id") or "uncertainty")

@@ -117,3 +117,9 @@ sourcepack doctor
 python -m unittest
 sourcepack demo
 ```
+
+## Local trust semantics
+
+`sourcepack prompt` refreshes project reality from the current working tree before generating the prompt. `sourcepack baseline` accepts the current working tree as trusted reality, and `sourcepack baseline --refresh` intentionally replaces trusted project reality with the current working tree. `sourcepack diff` refuses to silently create a baseline when changes already exist; if no baseline exists and changes exist, explicitly decide whether to run `sourcepack baseline --refresh` before trusting that state.
+
+`sourcepack init . --auto` enables the first automatic local workflow by creating local `.sourcepack/` state, ensuring `.sourcepack/` is ignored, creating a safe baseline when possible, and installing the pre-commit diff gate when a git repository is available.

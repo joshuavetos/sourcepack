@@ -2,9 +2,11 @@ import json
 import unittest
 import os
 import subprocess
+import contextlib
+import io
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from sourcepack.cli import dependency_inventory, extract_imports_from_text, feature_inventory, load_manifest, run_cli, traffic_report, normalized_finding, render_traffic
+from sourcepack.cli import dependency_inventory, extract_imports_from_text, feature_inventory, load_manifest, run_cli, traffic_report, normalized_finding, render_traffic, judge_patch_text
 
 
 class SourcePackSmokeTest(unittest.TestCase):
@@ -408,6 +410,36 @@ new file mode 100644
             self.assertEqual(report["verdict"], "FAIL")
 
 
+
+    def test_package_json_declared_dependency_extraction_is_section_scoped(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); packet = self._packet(tmp)
+            report, _ = self._judge_patch(packet, tmp, """diff --git a/package.json b/package.json
+new file mode 100644
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,6 @@
++{
++  "scripts": {"dev": "vite"},
++  "name": "demo",
++  "version": "1.0.0"
++}
+""")
+            self.assertNotIn("scripts", report.get("declared_dependencies", []))
+            self.assertNotIn("dev", report.get("declared_dependencies", []))
+            report = judge_patch_text(packet, """diff --git a/package.json b/package.json
+new file mode 100644
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,5 @@
++{
++  "dependencies": {
++    "@scope/pkg": "^1.0.0"
++  }
++}
+""")
+            self.assertIn("@scope/pkg", report.get("declared_dependencies", []))
+
 class SourcePackSchemaAndDemoTest(unittest.TestCase):
     def test_generated_artifacts_required_fields(self):
         import json
@@ -631,6 +663,85 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             original.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
             chained = subprocess.run([str(original), "arg1"], cwd=repo, env={**env, "SOURCEPACK_FAKE": "green"}, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.assertEqual(chained.returncode, 7, chained.stdout + chained.stderr)
+
+
+    def _git_init_clean(self, repo: Path):
+        subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "config", "user.email", "a@example.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "A"], cwd=repo, check=True)
+        subprocess.run(["git", "add", "README.md", "app.py"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+
+    def test_init_auto_clean_idempotent_status_and_no_hook(self):
+        with TemporaryDirectory() as td:
+            repo = self._repo(Path(td)); self._git_init_clean(repo)
+            self.assertEqual(run_cli(["init", str(repo), "--auto"]), 0)
+            self.assertTrue((repo / ".sourcepack" / "current").is_dir())
+            self.assertTrue((repo / ".sourcepack" / "reports").is_dir())
+            self.assertTrue((repo / ".sourcepack" / "current" / "packet" / "manifest.json").exists())
+            self.assertIn(".sourcepack/", (repo / ".gitignore").read_text())
+            hook = repo / ".git" / "hooks" / "pre-commit"
+            self.assertTrue(hook.exists())
+            first_gitignore = (repo / ".gitignore").read_text().count(".sourcepack/")
+            first_hook_blocks = hook.read_text().count("# === SOURCEPACK BEGIN ===")
+            self.assertEqual(run_cli(["init", str(repo), "--auto"]), 0)
+            self.assertEqual((repo / ".gitignore").read_text().count(".sourcepack/"), first_gitignore)
+            self.assertEqual(hook.read_text().count("# === SOURCEPACK BEGIN ==="), first_hook_blocks)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf): self.assertEqual(run_cli(["status", str(repo)]), 0)
+            self.assertIn("Automatic mode: enabled", buf.getvalue())
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf): self.assertEqual(run_cli(["status", str(repo), "--json"]), 0)
+            self.assertTrue(json.loads(buf.getvalue())["automatic_mode_enabled"])
+            self.assertEqual(run_cli(["uninstall-hook", str(repo)]), 0)
+            self.assertTrue((repo / ".sourcepack" / "current").is_dir())
+            (Path(td) / "repo2").mkdir(); repo2 = self._repo(Path(td) / "repo2"); self._git_init_clean(repo2)
+            self.assertEqual(run_cli(["init", str(repo2), "--auto", "--no-hook"]), 0)
+            self.assertFalse((repo2 / ".git" / "hooks" / "pre-commit").exists())
+
+    def test_init_auto_dirty_baseline_policy_and_strict_hook(self):
+        with TemporaryDirectory() as td:
+            repo = self._repo(Path(td)); self._git_init_clean(repo)
+            (repo / "dirty.py").write_text("print('dirty')\n", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf): rc = run_cli(["init", str(repo), "--auto"])
+            self.assertEqual(rc, 0)
+            self.assertIn("YELLOW LIGHT", buf.getvalue())
+            self.assertFalse((repo / ".sourcepack" / "current" / "packet" / "manifest.json").exists())
+            self.assertEqual(run_cli(["init", str(repo), "--auto", "--refresh-baseline", "--strict"]), 0)
+            self.assertTrue((repo / ".sourcepack" / "current" / "packet" / "manifest.json").exists())
+            hook = (repo / ".git" / "hooks" / "pre-commit").read_text()
+            self.assertIn("strict mode blocks YELLOW LIGHT", hook)
+
+    def test_hook_chains_existing_hook_and_uninstall_restores(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); repo = self._repo(tmp); self._git_init_clean(repo)
+            hook = repo / ".git" / "hooks" / "pre-commit"
+            hook.write_text("#!/bin/sh\necho ORIGINAL_HOOK\nexit 7\n", encoding="utf-8"); hook.chmod(0o755)
+            self.assertEqual(run_cli(["install-hook", str(repo)]), 0)
+            installed = hook.read_text()
+            self.assertNotIn('exec "$0"', installed)
+            bindir = tmp / "bin"; bindir.mkdir()
+            fake = bindir / "sourcepack"
+            fake.write_text("#!/bin/sh\necho 'GREEN LIGHT: fake'\nexit 0\n", encoding="utf-8"); fake.chmod(0o755)
+            env = {**os.environ, "PATH": f"{bindir}{os.pathsep}" + os.environ.get("PATH", "")}
+            cp = subprocess.run([str(hook)], cwd=repo / "src" if (repo / "src").exists() else repo, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(cp.returncode, 7, cp.stdout + cp.stderr)
+            self.assertIn("GREEN LIGHT", cp.stdout)
+            self.assertIn("ORIGINAL_HOOK", cp.stdout)
+            self.assertEqual(run_cli(["uninstall-hook", str(repo)]), 0)
+            self.assertEqual(hook.read_text(), "#!/bin/sh\necho ORIGINAL_HOOK\nexit 7\n")
+            restored = subprocess.run([str(hook)], cwd=repo, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(restored.returncode, 7)
+
+    def test_diff_output_omits_legacy_patch_report_header(self):
+        with TemporaryDirectory() as td:
+            repo = self._repo(Path(td)); self._git_init_clean(repo)
+            self.assertEqual(run_cli(["baseline", str(repo)]), 0)
+            (repo / "new.py").write_text("print('new')\n", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf): self.assertEqual(run_cli(["diff", str(repo)]), 0)
+            self.assertNotIn("# SourcePack Patch Judgment Report", buf.getvalue())
 
 
 

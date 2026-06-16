@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SourcePack Judgment Report",
+  "type": "object",
+  "required": ["supported_files", "missing_files", "unsupported_dependencies", "unsupported_commands", "unsupported_capabilities"],
+  "properties": {
+    "supported_files": {"type": "array", "items": {"type": "string"}},
+    "missing_files": {"type": "array", "items": {"type": "string"}},
+    "unsupported_dependencies": {"type": "array", "items": {"type": "string"}},
+    "unsupported_commands": {"type": "array", "items": {"type": "string"}},
+    "unsupported_capabilities": {"type": "array", "items": {"type": "string"}}
+  }
+}

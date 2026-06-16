@@ -1,10 +1,10 @@
 # SourcePack
 
-SourcePack is a **Project Reality Compiler**.
+SourcePack is a **Project Reality Compiler** for AI-assisted software work.
 
-It scans a local repository and produces a verified reality map that tells an AI what actually exists before it builds. Its secondary mode judges whether an AI response stayed inside that reality map.
+It compiles a local project into a verified reality map so AI tools know what files, commands, dependencies, and capabilities actually exist before they generate code. It also judges whether AI answers and proposed patches stay inside that compiled project reality.
 
-SourcePack is local-first: it compiles structural evidence from files, manifests, dependency declarations, included/ignored records, and deterministic capability detection. It does not host a service or execute your application by default.
+SourcePack is local-first. It does not host a service, use a database, call external APIs, or execute your application by default.
 
 ## Install
 
@@ -12,13 +12,14 @@ SourcePack is local-first: it compiles structural evidence from files, manifests
 python -m pip install -e .
 ```
 
-## Build → reality map → AI instructions → judge
+## Build → verify → judge
 
 1. `sourcepack build` scans a local repo and writes a packet.
-2. The packet includes the original context artifacts plus `reality_map.json`.
+2. The packet includes `manifest.json`, source context artifacts, `receipt.json`, and `reality_map.json`.
 3. `ai_instructions.md` tells an AI how to stay grounded in that reality map.
-4. `sourcepack verify` checks packet artifact hashes through `receipt.json`.
+4. `sourcepack verify` checks packet artifact hashes through `receipt.json` and can compare source drift with `--against`.
 5. `sourcepack judge` checks an AI answer for unsupported file, dependency, command, and capability claims.
+6. `sourcepack judge-patch` checks a unified diff for unsupported patch assumptions.
 
 ## Packet outputs
 
@@ -46,7 +47,16 @@ sourcepack build examples/demo_repo --out /tmp/sourcepack_demo_packet --force
 sourcepack verify /tmp/sourcepack_demo_packet
 sourcepack verify /tmp/sourcepack_demo_packet --against examples/demo_repo
 sourcepack judge /tmp/sourcepack_demo_packet examples/fake_ai_answer.md --out /tmp/sourcepack_judgment
+sourcepack judge-patch /tmp/sourcepack_demo_packet examples/fake_ai_patch.diff --out /tmp/sourcepack_patch_judgment
 ```
+
+### Answer judgment versus patch judgment
+
+`sourcepack judge <packet> <answer.md> --out <report_folder>` evaluates prose answers. It reports unsupported file references, dependency claims, commands, and capabilities in `judgment_report.md` and `judgment_report.json`.
+
+`sourcepack judge-patch <packet> <patch.diff> --out <report_folder>` evaluates a standard unified diff, such as output from `git diff`. It reports modified missing files, new files, deleted files, unsupported imports, unsupported commands, and protected packet artifact edits in `patch_judgment_report.md` and `patch_judgment_report.json`.
+
+Patch judgment does not mutate packet artifacts. New files in a patch may be reported as new evidence, but they are not treated as part of the original packet reality.
 
 ### Reality map only
 
@@ -70,19 +80,38 @@ If `ai_instructions.md` exists, SourcePack prints it. If it is missing but `real
 sourcepack demo
 ```
 
-The demo builds `examples/demo_repo` into a temporary packet directory, verifies the packet, judges `examples/fake_ai_answer.md`, and prints the temporary output locations.
+The demo builds `examples/demo_repo` into a temporary packet directory, verifies the packet, judges `examples/fake_ai_answer.md`, and prints the temporary output locations. If `examples/fake_ai_patch.diff` exists, the demo also runs patch judgment.
 
-## What SourcePack does
+The fake AI answer and fake AI patch are expected to produce FAIL verdicts because they intentionally contain unsupported claims and assumptions. The demo command itself exits successfully when the SourcePack workflow runs correctly.
 
-- Compiles a local project into a verified reality map for AI tools.
-- Records included files, ignored files, source hashes, packet hashes, token estimates, and redactions.
-- Detects dependencies and capabilities from structural evidence rather than README claims alone.
-- Reports supported commands only when deterministic evidence exists, such as package scripts, Dockerfiles, compose files, or test structure.
-- Provides AI instructions that warn against inventing missing files, unsupported commands, dependencies, frameworks, services, or capabilities.
-- Judges AI answers against packet evidence for grounding failures.
+## What SourcePack checks
+
+- Files included in the packet and file references made by an AI answer or patch.
+- Dependencies detected from structural evidence such as imports and dependency manifests.
+- Commands supported by structural evidence, including package scripts, Docker/compose files, and Python test evidence.
+- Capabilities detected from structural project evidence.
+- Packet tampering through `receipt.json` artifact hashes.
+- Source drift with `sourcepack verify --against`.
+- Patch assumptions, including missing modified files, new files, deleted files, unsupported imports, unsupported commands, and protected packet artifact edits.
 
 ## What SourcePack does not prove
 
-SourcePack does not prove objective truth, semantic correctness, production readiness, security, or external service behavior.
+- Semantic correctness.
+- Runtime behavior.
+- Security.
+- Production readiness.
+- External service behavior.
+- All possible hallucinations.
 
-It also does not execute the application by default. Capability detection remains structural and heuristic, SourcePack can miss indirect unsupported claims, and absence of evidence means unknown, not impossible.
+SourcePack does not execute the target application by default. Capability and patch detection are structural and heuristic. Absence of evidence means unknown, not impossible.
+
+## Development
+
+Run the local checks with:
+
+```bash
+python -m pip install -e .
+sourcepack doctor
+python -m unittest
+sourcepack demo
+```

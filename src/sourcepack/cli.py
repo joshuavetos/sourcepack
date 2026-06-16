@@ -669,6 +669,193 @@ def feature_inventory(manifest: dict, packet: Path, deps: set[str] | None = None
     return features
 
 
+PROTECTED_PACKET_ARTIFACTS = {"manifest.json", "receipt.json", "reality_map.json", "ai_instructions.md"}
+
+
+def known_files(manifest: dict) -> set[str]:
+    return _included_paths(manifest)
+
+
+def supported_commands_inventory(reality_map: dict) -> set[str]:
+    return set(reality_map.get("supported_commands", []))
+
+
+def docker_evidence(files: set[str]) -> dict[str, bool]:
+    names = {Path(f).name.lower() for f in files}
+    return {
+        "dockerfile": "dockerfile" in names,
+        "compose": bool(names & {"docker-compose.yml", "compose.yaml", "compose.yml"}),
+    }
+
+
+def python_project_evidence(files: set[str], deps: set[str]) -> dict[str, bool]:
+    lower = {f.lower() for f in files}
+    return {
+        "python_project": "pyproject.toml" in lower or any(Path(f).name.lower().startswith("requirements") and f.endswith(".txt") for f in lower),
+        "tests": any(f == "tests" or f.startswith("tests/") for f in lower),
+        "pytest": "pytest" in deps,
+    }
+
+
+def node_project_evidence(files: set[str], scripts: dict[str, str]) -> dict[str, bool]:
+    return {"package_json": "package.json" in {f.lower() for f in files}, "scripts": bool(scripts)}
+
+
+def extract_imports_from_text(text: str, suffix: str = ".py") -> set[str]:
+    imports: set[str] = set()
+    if suffix == ".py":
+        imports |= set(re.findall(r"(?m)^\+\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", text))
+        imports |= set(re.findall(r"(?m)^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", text))
+    elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
+        imports |= {m.split("/", 1)[0] for m in re.findall(r"""(?:from\s+["']|import\s*\(\s*["']|require\s*\(\s*["'])(@?[A-Za-z0-9_.-]+)""", text)}
+    return {i.lower() for i in imports}
+
+
+@dataclass
+class PatchFileChange:
+    path: str
+    old_path: str | None
+    new_file: bool = False
+    deleted_file: bool = False
+    added_lines: list[str] | None = None
+
+
+def parse_unified_diff(text: str) -> list[PatchFileChange]:
+    changes: list[PatchFileChange] = []
+    current: PatchFileChange | None = None
+    old_path: str | None = None
+    new_path: str | None = None
+    new_file = False
+    deleted_file = False
+
+    def clean(path: str) -> str:
+        path = path.strip().split("\t", 1)[0]
+        if path.startswith("a/") or path.startswith("b/"):
+            path = path[2:]
+        return path
+
+    def flush():
+        nonlocal current
+        if current is not None:
+            changes.append(current)
+            current = None
+
+    for line in text.splitlines():
+        if line.startswith("diff --git "):
+            flush(); old_path = new_path = None; new_file = deleted_file = False
+            parts = line.split()
+            if len(parts) >= 4:
+                old_path = clean(parts[2]); new_path = clean(parts[3])
+        elif line.startswith("new file mode"):
+            new_file = True
+        elif line.startswith("deleted file mode"):
+            deleted_file = True
+        elif line.startswith("--- "):
+            val = line[4:].strip()
+            old_path = None if val == "/dev/null" else clean(val)
+        elif line.startswith("+++ "):
+            val = line[4:].strip()
+            new_path = None if val == "/dev/null" else clean(val)
+            path = new_path or old_path or ""
+            current = PatchFileChange(path=path, old_path=old_path, new_file=new_file or old_path is None, deleted_file=deleted_file or new_path is None, added_lines=[])
+        elif current is not None and line.startswith("+") and not line.startswith("+++"):
+            current.added_lines.append(line[1:])
+    flush()
+    return changes
+
+
+def _dependency_additions_from_patch(changes: list[PatchFileChange]) -> set[str]:
+    deps: set[str] = set()
+    for ch in changes:
+        name = Path(ch.path).name.lower()
+        added = "\n".join(ch.added_lines or [])
+        if name == "pyproject.toml":
+            for quoted in re.findall(r"""["']([A-Za-z0-9_.-]+)(?:[<>=!~;\[].*)?["']""", added):
+                _add_common_dependency(deps, quoted)
+        elif name.startswith("requirements") and name.endswith(".txt"):
+            for line in added.splitlines():
+                cleaned = line.split("#", 1)[0].strip()
+                if cleaned and not cleaned.startswith(("-", "--")):
+                    _add_common_dependency(deps, re.split(r"[<>=!~;\[]", cleaned, 1)[0])
+        elif name == "package.json":
+            for dep in COMMON_DEPENDENCIES:
+                if re.search(rf'"{re.escape(dep)}"\s*:', added, re.I):
+                    deps.add(dep)
+    return deps
+
+
+def judge_patch(packet_path: str | Path, patch_path: str | Path, out_dir: str | Path) -> dict:
+    packet = Path(packet_path)
+    manifest = load_manifest(packet)
+    reality = json.loads((packet / "reality_map.json").read_text(encoding="utf-8")) if (packet / "reality_map.json").exists() else generate_reality_map(manifest, packet)
+    files = known_files(manifest)
+    deps = dependency_inventory(manifest, packet)
+    scripts = _package_json_scripts(packet)
+    patch_text = Path(patch_path).read_text(encoding="utf-8")
+    changes = parse_unified_diff(patch_text)
+    patch_deps = _dependency_additions_from_patch(changes)
+    report = {
+        "patch_judgment_schema_version": "1.0",
+        "verdict": "PASS",
+        "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [],
+        "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [],
+    }
+    all_added = []
+    for ch in changes:
+        report["modified_files"].append(ch.path)
+        if ch.new_file:
+            report["new_files"].append(ch.path)
+        elif ch.path not in files:
+            report["missing_modified_files"].append(ch.path)
+        if ch.deleted_file:
+            report["deleted_files"].append(ch.path)
+        if Path(ch.path).name in PROTECTED_PACKET_ARTIFACTS:
+            report["protected_artifact_modifications"].append(ch.path)
+        added = "\n".join(ch.added_lines or [])
+        all_added.append(added)
+        for imported in extract_imports_from_text(added, Path(ch.path).suffix.lower()):
+            for dep in COMMON_DEPENDENCIES:
+                if _normalize_dependency_name(imported) == _normalize_dependency_name(dep) and dep not in deps and dep not in patch_deps:
+                    report["unsupported_dependencies"].append(dep)
+    added_text = "\n".join(all_added)
+    supported = supported_commands_inventory(reality)
+    if re.search(r"docker\s+compose\s+up", added_text, re.I):
+        evidence = docker_evidence(files)
+        if "docker compose up" not in supported or not evidence["compose"]:
+            report["unsupported_commands"].append("docker compose up")
+    for cmd in sorted(set(re.findall(r"npm\s+(?:run\s+)?[A-Za-z0-9:_-]+", added_text))):
+        normalized = cmd if cmd == "npm test" else cmd
+        if normalized.startswith("npm run "):
+            script = normalized.removeprefix("npm run ").strip()
+            if script not in scripts:
+                report["unsupported_commands"].append(normalized)
+        elif normalized == "npm test" and "test" not in scripts:
+            report["unsupported_commands"].append(normalized)
+    if re.search(r"\b(pytest|python\s+-m\s+pytest)\b", added_text, re.I):
+        py = python_project_evidence(files, deps)
+        if not (py["pytest"] or py["tests"] or "pytest" in supported):
+            report["unsupported_commands"].append("pytest")
+    if report["new_files"]:
+        report["warnings"].append("Patch creates new files that were not part of the original packet reality.")
+    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications"]
+    if any(report[k] for k in fail_keys):
+        report["verdict"] = "FAIL"
+    elif report["new_files"] or report["warnings"]:
+        report["verdict"] = "WARN"
+    for key in ["modified_files", "missing_modified_files", "new_files", "deleted_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "warnings"]:
+        report[key] = sorted(set(report[key]))
+    lines = ["# SourcePack Patch Judgment Report", "", f"Verdict: {report['verdict']}", ""]
+    sections = [("modified_files", "Modified Files"), ("missing_modified_files", "Missing Modified Files"), ("new_files", "New Files"), ("deleted_files", "Deleted Files"), ("unsupported_dependencies", "Unsupported Dependencies"), ("unsupported_commands", "Unsupported Commands"), ("protected_artifact_modifications", "Protected Packet Artifact Modifications"), ("warnings", "Warnings")]
+    for key, title in sections:
+        lines.extend([f"## {title}"])
+        lines.extend([f"- {item}" for item in report[key]] or ["None"])
+        lines.append("")
+    out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
+    (out / "patch_judgment_report.md").write_text("\n".join(lines), encoding="utf-8")
+    (out / "patch_judgment_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print("\n".join(lines))
+    return report
+
 def judge_ai_answer(packet_path: str | Path, ai_answer_path: str | Path, out_dir: str | Path | None = None) -> dict:
     packet = Path(packet_path)
     manifest = load_manifest(packet)
@@ -759,6 +946,10 @@ def run_cli(args_list=None):
     judge.add_argument("packet")
     judge.add_argument("ai_answer")
     judge.add_argument("--out")
+    judge_patch_cmd = subs.add_parser("judge-patch")
+    judge_patch_cmd.add_argument("packet")
+    judge_patch_cmd.add_argument("patch")
+    judge_patch_cmd.add_argument("--out", required=True)
     map_cmd = subs.add_parser("map")
     map_cmd.add_argument("input")
     map_cmd.add_argument("--out", required=True)
@@ -812,6 +1003,11 @@ def run_cli(args_list=None):
             PacketWriter(packet, SourceScanner(demo_repo).scan(), force=True).write_all()
             if not verify_packet(packet): return 1
             judge_ai_answer(packet, fake_answer, judgment)
+            fake_patch = Path("examples/fake_ai_patch.diff")
+            if fake_patch.exists():
+                patch_judgment = tmp / "patch_judgment"
+                judge_patch(packet, fake_patch, patch_judgment)
+                print(f"Demo patch judgment: {patch_judgment}")
             print(f"Demo packet: {packet}")
             print(f"Demo judgment: {judgment}")
             return 0
@@ -819,6 +1015,8 @@ def run_cli(args_list=None):
             return 0 if verify_packet(args.packet, args.against) else 1
         if args.command == "judge":
             judge_ai_answer(args.packet, args.ai_answer, args.out); return 0
+        if args.command == "judge-patch":
+            judge_patch(args.packet, args.patch, args.out); return 0
         parser.print_help(); return 1
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

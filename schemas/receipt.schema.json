@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SourcePack Receipt",
+  "type": "object",
+  "required": ["generated_at", "tool_version", "hashes"],
+  "properties": {
+    "generated_at": {"type": "string"},
+    "tool_version": {"type": "string"},
+    "hashes": {"type": "object", "additionalProperties": {"type": "string"}}
+  }
+}

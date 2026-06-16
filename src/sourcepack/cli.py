@@ -1006,13 +1006,24 @@ def traffic_report(verdict: str, headline: str | None = None, findings: list[dic
     blockers = [f for f in findings if f.get("severity") == "error"]
     warnings = [f for f in findings if f.get("severity") == "warn"]
     light = LIGHT_BY_VERDICT.get(verdict, "YELLOW LIGHT")
-    headline = headline or {"PASS": "good to continue.", "WARN": "review before continuing.", "FAIL": "stop before trusting this output."}.get(verdict, "review before continuing.")
-    next_action = next_action or ("ask the AI to revise using only files, dependencies, and commands confirmed by SourcePack." if verdict == "FAIL" else "review the listed items before continuing." if verdict == "WARN" else "continue.")
     if reason_type is None:
         reason_type = "blocker" if verdict == "FAIL" else "review" if warnings else "none"
         if any(f.get("category") in {"uncertainty", "tooling"} for f in warnings):
             reason_type = "uncertainty" if any(f.get("category") == "uncertainty" for f in warnings) else "tooling"
-    return {"verdict": verdict, "light": light, "headline": headline, "reason_type": reason_type, "blockers": blockers, "warnings": warnings, "checked_categories": checked_categories or [], "not_checked": not_checked or ["runtime behavior", "semantic correctness", "security", "external services"], "next_action": next_action, "report_path": report_path, "findings": findings}
+    if headline is None:
+        if verdict == "WARN" and reason_type == "uncertainty":
+            headline = "SourcePack could not fully evaluate this change."
+        elif verdict == "WARN" and reason_type == "tooling":
+            headline = "SourcePack tooling degraded."
+        else:
+            headline = {"PASS": "good to continue.", "WARN": "review before continuing.", "FAIL": "stop before trusting this output."}.get(verdict, "review before continuing.")
+    next_action = next_action or ("ask the AI to revise using only files, dependencies, and commands confirmed by SourcePack." if verdict == "FAIL" else "review the listed items before continuing." if verdict == "WARN" else "continue.")
+    commit_policy = None
+    if verdict == "WARN":
+        commit_policy = "allowed locally, blocked in strict mode."
+    elif verdict == "FAIL":
+        commit_policy = "blocked unless explicitly bypassed."
+    return {"verdict": verdict, "light": light, "headline": headline, "reason_type": reason_type, "commit_policy": commit_policy, "blockers": blockers, "warnings": warnings, "checked_categories": checked_categories or [], "not_checked": not_checked or ["runtime behavior", "semantic correctness", "security", "external services"], "next_action": next_action, "report_path": report_path, "findings": findings}
 
 
 def render_traffic(report: dict, verbose: bool = False) -> str:
@@ -1020,6 +1031,8 @@ def render_traffic(report: dict, verbose: bool = False) -> str:
     lines = [f"{report.get('light', LIGHT_BY_VERDICT.get(verdict, 'YELLOW LIGHT'))}: {report.get('headline', '')}", ""]
     if report.get("reason_type") and verdict != "PASS":
         lines.append(f"Reason type: {report.get('reason_type')}")
+        if report.get("commit_policy"):
+            lines.append(f"Commit policy: {report.get('commit_policy')}")
         lines.append("")
     if verdict == "PASS":
         info = [f for f in report.get("findings", []) if f.get("severity") == "info"]
@@ -1426,7 +1439,7 @@ if [ -z "$repo_root" ]; then
   exit 0
 fi
 cd "$repo_root" || exit 0
-if git diff --quiet && git diff --staged --quiet; then
+if git diff --quiet && git diff --staged --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
   sourcepack baseline . --refresh --quiet >/dev/null 2>&1 || echo 'YELLOW LIGHT: SourcePack post-commit baseline refresh failed.'
 else
   mkdir -p .sourcepack/state

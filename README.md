@@ -32,6 +32,16 @@ Then work normally. SourcePack checks staged AI changes before commit and refres
 sourcepack prompt . "your task" --copy
 ```
 
+
+## Prevention vs enforcement
+
+SourcePack separates prompt prevention from diff enforcement:
+
+- **Prompt prevention**: `sourcepack prompt` gives the AI grounded instructions and an answer contract. This reduces hallucinated output, but it cannot force model compliance.
+- **Diff enforcement**: `sourcepack diff` and the hooks inspect actual file changes. This is the enforceable layer.
+
+Prompt grounding is preventive and model-dependent. Diff gating is the enforceable check. A well-grounded prompt can still produce unsupported changes, and SourcePack is expected to catch those later.
+
 ## Build → verify → judge
 
 1. `sourcepack build` scans a local repo and writes a packet.
@@ -128,11 +138,25 @@ SourcePack does not execute the target application by default. Capability, depen
 ## Traffic lights and exit codes
 
 - GREEN exits `0`: checked scope found no blockers.
-- YELLOW exits `0` by default: review or uncertainty exists, but no clear blocker was found.
+- YELLOW exits `0` by default: review, uncertainty, or tooling degradation exists, but no clear blocker was found.
 - RED exits `1`: action is blocked unless the user explicitly bypasses the gate.
 - Hook strict mode blocks YELLOW as well as RED.
 
-YELLOW findings are classified internally as review, uncertainty, or tooling so the CLI can distinguish normal changes from incomplete judgment.
+YELLOW findings are surfaced by reason type so different risks do not collapse into one generic warning:
+
+- **YELLOW REVIEW**: allowed locally by default. This covers normal changes that need human review, such as new files, declared dependencies, and deleted files.
+- **YELLOW UNCERTAIN**: allowed locally by default, but louder. This means SourcePack could not fully evaluate the change, such as unsupported ecosystems, stale baselines, binary diffs, or parser limitations.
+- **YELLOW TOOLING**: visually separate from repo judgment. This covers degraded SourcePack tooling, such as unavailable clipboard integration, report archive failures, or incomplete metadata.
+
+Rendered output includes the reason type and commit policy, for example:
+
+```text
+YELLOW LIGHT: SourcePack could not fully evaluate this change.
+Reason type: uncertainty
+Commit policy: allowed locally, blocked in strict mode.
+```
+
+Local default policy allows GREEN, YELLOW REVIEW, YELLOW TOOLING when repository judgment succeeded, and YELLOW UNCERTAIN with stronger review language. RED blocks. Strict mode blocks every YELLOW and RED. Future CI policy can configure YELLOW REVIEW, should block YELLOW UNCERTAIN by default, and blocks RED.
 
 ## Development
 
@@ -155,3 +179,13 @@ SourcePack keeps two local realities separate:
 `sourcepack prompt` never refreshes the enforcement baseline. This prevents a dirty prompt run from silently accepting bad AI edits as trusted reality. `sourcepack baseline` accepts the current working tree as trusted reality, and `sourcepack baseline --refresh` intentionally replaces trusted project reality with the current working tree. `sourcepack diff` refuses to silently create a baseline when changes already exist; if no baseline exists and changes exist, explicitly decide whether to run `sourcepack baseline --refresh` before trusting that state.
 
 `sourcepack init . --auto` enables the first automatic local workflow by creating local `.sourcepack/` state, ensuring `.sourcepack/` is ignored, creating a safe baseline when possible, and installing pre-commit and post-commit hooks when a git repository is available. The pre-commit hook gates the staged diff. The post-commit hook refreshes the baseline only after clean commits; if uncommitted changes remain, it marks the baseline stale instead of accepting the dirty working tree.
+
+### Clean baseline refresh definition
+
+For automatic post-commit baseline refresh, clean means all three checks are empty:
+
+- `git diff`
+- `git diff --staged`
+- `git ls-files --others --exclude-standard`
+
+SourcePack treats untracked non-ignored files as dirty for baseline refresh purposes because baseline refresh scans the working tree. If tracked unstaged diff exists, staged diff exists, or untracked non-ignored files exist, the post-commit hook marks the baseline stale instead of refreshing it. Only when all three checks are empty does SourcePack refresh the trusted baseline automatically.

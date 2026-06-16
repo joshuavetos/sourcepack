@@ -116,5 +116,103 @@ class SourcePackSmokeTest(unittest.TestCase):
 
             self.assertIn("pdf", feature_inventory(load_manifest(packet), packet))
 
+
+class SourcePackRealityMapTest(unittest.TestCase):
+    def _build(self, repo: Path, packet: Path):
+        self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
+        return __import__("json").loads((packet / "reality_map.json").read_text())
+
+    def test_build_creates_reality_map_ai_instructions_and_receipt_hashes(self):
+        import json
+        with TemporaryDirectory() as td:
+            tmp = Path(td); repo = tmp / "repo"; repo.mkdir()
+            (repo / "pyproject.toml").write_text('[project]\nname="demo"\ndependencies=["pytest"]\n')
+            packet = tmp / "packet"
+            reality = self._build(repo, packet)
+            self.assertTrue((packet / "reality_map.json").exists())
+            self.assertTrue((packet / "ai_instructions.md").exists())
+            receipt = json.loads((packet / "receipt.json").read_text())
+            self.assertIn("reality_map.json", receipt["hashes"])
+            self.assertIn("ai_instructions.md", receipt["hashes"])
+            self.assertEqual(reality["reality_map_schema_version"], "1.0")
+            self.assertEqual(run_cli(["verify", str(packet)]), 0)
+
+    def test_tampered_new_artifacts_fail_verify(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); repo = tmp / "repo"; repo.mkdir()
+            (repo / "README.md").write_text("demo")
+            packet = tmp / "packet"
+            self._build(repo, packet)
+            (packet / "reality_map.json").write_text('{"tampered": true}')
+            self.assertEqual(run_cli(["verify", str(packet)]), 1)
+            self._build(repo, packet)
+            (packet / "ai_instructions.md").write_text("tampered")
+            self.assertEqual(run_cli(["verify", str(packet)]), 1)
+
+    def test_python_poetry_detection_rules(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); repo = tmp / "repo"; repo.mkdir()
+            (repo / "pyproject.toml").write_text('[project]\nname="demo"\n')
+            reality = self._build(repo, tmp / "packet")
+            self.assertIn("python", reality["project_types"])
+            self.assertNotIn("poetry", reality["package_managers"])
+            (repo / "pyproject.toml").write_text('[tool.poetry]\nname="demo"\n')
+            reality = self._build(repo, tmp / "packet2")
+            self.assertIn("poetry", reality["package_managers"])
+
+    def test_docker_and_compose_command_detection(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); repo = tmp / "repo"; repo.mkdir()
+            (repo / "README.md").write_text("No Docker setup")
+            reality = self._build(repo, tmp / "packet")
+            self.assertNotIn("docker build", reality["supported_commands"])
+            (repo / "Dockerfile").write_text("FROM python:3.12-slim\n")
+            reality = self._build(repo, tmp / "packet2")
+            self.assertIn("docker build", reality["supported_commands"])
+            self.assertNotIn("docker compose up", reality["supported_commands"])
+            (repo / "compose.yaml").write_text("services: {}\n")
+            reality = self._build(repo, tmp / "packet3")
+            self.assertIn("docker compose up", reality["supported_commands"])
+
+    def test_package_json_scripts_only(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); repo = tmp / "repo"; repo.mkdir()
+            (repo / "package.json").write_text('{"dependencies": {"react": "latest"}}')
+            reality = self._build(repo, tmp / "packet")
+            self.assertNotIn("npm test", reality["supported_commands"])
+            self.assertNotIn("npm run dev", reality["supported_commands"])
+            (repo / "package.json").write_text('{"scripts": {"test": "node test.js", "dev": "vite", "build": "vite build"}}')
+            reality = self._build(repo, tmp / "packet2")
+            self.assertIn("npm test", reality["supported_commands"])
+            self.assertIn("npm run dev", reality["supported_commands"])
+            self.assertIn("npm run build", reality["supported_commands"])
+
+    def test_ai_instructions_warnings_and_json_validity(self):
+        import json
+        with TemporaryDirectory() as td:
+            tmp = Path(td); repo = tmp / "repo"; repo.mkdir()
+            (repo / "README.md").write_text("demo")
+            packet = tmp / "packet"
+            self._build(repo, packet)
+            text = (packet / "ai_instructions.md").read_text()
+            self.assertIn("missing", text.lower())
+            self.assertIn("unsupported", text.lower())
+            for name in ["manifest.json", "receipt.json", "token_report.json", "redactions.json", "reality_map.json"]:
+                json.loads((packet / name).read_text())
+
+    def test_map_and_instructions_commands(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td); repo = tmp / "repo"; repo.mkdir()
+            (repo / "README.md").write_text("demo")
+            out = tmp / "reality_map.json"
+            self.assertEqual(run_cli(["map", str(repo), "--out", str(out)]), 0)
+            self.assertTrue(out.exists())
+            packet = tmp / "packet"
+            self._build(repo, packet)
+            (packet / "ai_instructions.md").unlink()
+            self.assertEqual(run_cli(["instructions", str(packet)]), 0)
+            self.assertTrue((packet / "ai_instructions.md").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

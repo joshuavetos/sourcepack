@@ -9,6 +9,7 @@ import platform
 import re
 import shutil
 import sys
+import tempfile
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -202,7 +203,7 @@ class SourceScanner:
 
 
 class PacketWriter:
-    OUTPUT_FILES = ["manifest.json", "context.md", "context.xml", "file_tree.txt", "ignored_files.txt", "token_report.json", "redactions.json"]
+    OUTPUT_FILES = ["manifest.json", "context.md", "context.xml", "file_tree.txt", "ignored_files.txt", "token_report.json", "redactions.json", "reality_map.json", "ai_instructions.md"]
 
     def __init__(self, out: str | Path, scanner: SourceScanner, force: bool = False):
         self.out = Path(out)
@@ -272,11 +273,180 @@ class PacketWriter:
         }
         (self.out / "token_report.json").write_text(json.dumps(token_report, indent=2), encoding="utf-8")
         (self.out / "redactions.json").write_text(json.dumps({"redactions": self.scanner.redactions}, indent=2), encoding="utf-8")
+        reality_map = generate_reality_map(manifest, self.out)
+        (self.out / "reality_map.json").write_text(json.dumps(reality_map, indent=2), encoding="utf-8")
+        (self.out / "ai_instructions.md").write_text(render_ai_instructions(reality_map), encoding="utf-8")
         hashes = {name: sha256_file(self.out / name) for name in self.OUTPUT_FILES if (self.out / name).exists()}
         receipt = {"generated_at": utc_now(), "tool_version": __version__, "hashes": hashes}
         (self.out / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
         return self.out
 
+
+
+def _included_paths(manifest: dict) -> set[str]:
+    return {rec.get("relative_path", "").replace("\\", "/") for rec in manifest.get("included_files", [])}
+
+
+def _package_json_scripts(packet: Path) -> dict[str, str]:
+    contents = _packet_file_contents(packet)
+    for rel, content in contents.items():
+        if Path(rel).name.lower() == "package.json":
+            try:
+                package = json.loads(content)
+            except json.JSONDecodeError:
+                return {}
+            scripts = package.get("scripts")
+            return scripts if isinstance(scripts, dict) else {}
+    return {}
+
+
+def _is_poetry_project(packet: Path) -> bool:
+    for rel, content in _packet_file_contents(packet).items():
+        if Path(rel).name.lower() == "pyproject.toml" and re.search(r"(?m)^\s*\[tool\.poetry\]\s*$", content):
+            return True
+    return False
+
+
+def _uses_unittest(packet: Path) -> bool:
+    for rel, content in _packet_file_contents(packet).items():
+        if Path(rel).suffix.lower() == ".py" and re.search(r"(?m)^\s*(import\s+unittest|from\s+unittest\s+import\s+)", content):
+            return True
+    return False
+
+
+def generate_reality_map(manifest: dict, packet: Path) -> dict:
+    files = _included_paths(manifest)
+    lower_files = {f.lower() for f in files}
+    deps = dependency_inventory(manifest, packet)
+    features = feature_inventory(manifest, packet, deps)
+    scripts = _package_json_scripts(packet)
+    project_types = []
+    package_managers = []
+    frameworks = []
+    supported_commands = []
+    test_commands = []
+    build_commands = []
+    run_commands = []
+    if "pyproject.toml" in lower_files:
+        project_types.append("python")
+    if any(Path(f).name.lower().startswith("requirements") and f.endswith(".txt") for f in lower_files):
+        project_types.append("python")
+        package_managers.append("pip")
+    if _is_poetry_project(packet):
+        package_managers.append("poetry")
+    if "package.json" in lower_files:
+        project_types.append("node")
+        package_managers.append("npm")
+        for name in sorted(scripts):
+            cmd = "npm test" if name == "test" else f"npm run {name}"
+            supported_commands.append(cmd)
+            if name == "test": test_commands.append(cmd)
+            elif name in {"build", "compile"}: build_commands.append(cmd)
+            elif name in {"start", "dev", "serve"}: run_commands.append(cmd)
+    if any(Path(f).name.lower() == "dockerfile" for f in files):
+        supported_commands.append("docker build")
+        build_commands.append("docker build")
+    if any(Path(f).name.lower() in {"docker-compose.yml", "compose.yaml", "compose.yml"} for f in files):
+        supported_commands.append("docker compose up")
+        run_commands.append("docker compose up")
+    if "pytest" in deps or any(f == "tests" or f.startswith("tests/") for f in lower_files):
+        supported_commands.append("pytest")
+        test_commands.append("pytest")
+    if _uses_unittest(packet):
+        supported_commands.append("python -m unittest")
+        test_commands.append("python -m unittest")
+    framework_map = {"fastapi": "FastAPI", "flask": "Flask", "django": "Django", "react": "React"}
+    for dep, label in framework_map.items():
+        if dep in deps or (dep == "react" and "react" in features):
+            frameworks.append(label)
+    ignored = manifest.get("ignored_files", [])
+    ignored_reasons = {}
+    for rec in ignored:
+        reason = rec.get("reason", "unknown")
+        ignored_reasons[reason] = ignored_reasons.get(reason, 0) + 1
+    included_count = len(manifest.get("included_files", []))
+    safe_claims = [
+        f"This packet includes {included_count} source files.",
+        f"SourcePack scanned input path: {manifest.get('input_path', '')}.",
+    ]
+    for name in ["pyproject.toml", "package.json", "Dockerfile"]:
+        present = name.lower() in {Path(f).name.lower() for f in files}
+        safe_claims.append(f"The project {'contains' if present else 'does not include'} {name}.")
+    if "react" not in deps and "react" not in features:
+        safe_claims.append("No React dependency was detected.")
+    if "pdf" not in features:
+        safe_claims.append("No PDF parsing capability was detected.")
+    if ignored:
+        safe_claims.append("The packet includes ignored file records for safety or relevance reasons.")
+    claim_boundaries = [
+        "SourcePack did not execute the application.",
+        "SourcePack did not prove semantic correctness.",
+        "SourcePack did not verify external services.",
+        "SourcePack did not prove security.",
+        "SourcePack did not prove production readiness.",
+        "Absence of evidence means unknown, not impossible.",
+        "Unsupported claims should be treated as ungrounded.",
+    ]
+    return {
+        "reality_map_schema_version": "1.0",
+        "tool_version": __version__,
+        "generated_at": utc_now(),
+        "input_path": manifest.get("input_path", ""),
+        "project_types": sorted(set(project_types)),
+        "package_managers": sorted(set(package_managers)),
+        "frameworks": sorted(set(frameworks)),
+        "entry_points": sorted(f for f in files if Path(f).name in {"main.py", "app.py", "server.py", "cli.py"}),
+        "test_commands": sorted(set(test_commands)),
+        "build_commands": sorted(set(build_commands)),
+        "run_commands": sorted(set(run_commands)),
+        "supported_commands": sorted(set(supported_commands)),
+        "detected_dependencies": sorted(deps),
+        "supported_capabilities": sorted(features),
+        "excluded_files_summary": {"total": len(ignored), "reasons": ignored_reasons, "records": ignored[:25]},
+        "included_file_count": included_count,
+        "ignored_file_count": len(ignored),
+        "safe_claims": safe_claims,
+        "unknowns": [
+            "Runtime behavior was not executed.",
+            "Semantic correctness was not proven.",
+            "External services were not verified.",
+            "Capabilities not present in structural evidence must be treated as unknown.",
+            "Missing files must not be invented.",
+        ],
+        "claim_boundaries": claim_boundaries,
+        "ai_constraints": [
+            "Use only the packet and reality map as project evidence.",
+            "Do not invent files, commands, dependencies, frameworks, services, or capabilities.",
+            "If a required file is missing, say it is missing.",
+            "If a command is unsupported by detected evidence, say it is unsupported.",
+            "If a capability is not in supported_capabilities, treat it as unknown or unsupported.",
+            "Cite file paths when making project-specific claims.",
+            "Do not claim SourcePack proves semantic truth.",
+            "Ask for missing files rather than hallucinating them.",
+        ],
+    }
+
+
+def render_ai_instructions(reality_map: dict) -> str:
+    lines = [
+        "# AI Instructions for This SourcePack Packet", "",
+        "Use only the packet and `reality_map.json` as project evidence.",
+        "Do not invent files, commands, dependencies, frameworks, services, or capabilities.",
+        "If a required file is missing, say it is missing and ask for it rather than hallucinating it.",
+        "If a command is unsupported by detected evidence, say it is unsupported.",
+        "If a capability is not listed in `supported_capabilities`, treat it as unknown or unsupported.",
+        "Cite file paths when making project-specific claims.",
+        "Do not claim SourcePack proves semantic truth, security, production readiness, or external service behavior.", "",
+        "## Supported Commands", "",
+    ]
+    cmds = reality_map.get("supported_commands", [])
+    lines.extend([f"- `{cmd}`" for cmd in cmds] or ["- None detected"])
+    lines.extend(["", "## Supported Capabilities", ""])
+    caps = reality_map.get("supported_capabilities", [])
+    lines.extend([f"- {cap}" for cap in caps] or ["- None detected"])
+    lines.extend(["", "## Claim Boundaries", ""])
+    lines.extend(f"- {boundary}" for boundary in reality_map.get("claim_boundaries", []))
+    return "\n".join(lines) + "\n"
 
 def load_manifest(packet: Path) -> dict:
     return json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
@@ -589,6 +759,12 @@ def run_cli(args_list=None):
     judge.add_argument("packet")
     judge.add_argument("ai_answer")
     judge.add_argument("--out")
+    map_cmd = subs.add_parser("map")
+    map_cmd.add_argument("input")
+    map_cmd.add_argument("--out", required=True)
+    instr = subs.add_parser("instructions")
+    instr.add_argument("packet")
+    subs.add_parser("demo")
     init = subs.add_parser("init")
     init.add_argument("path", nargs="?", default=".")
     subs.add_parser("doctor")
@@ -604,6 +780,41 @@ def run_cli(args_list=None):
             scanner = SourceScanner(args.input, max_file_size=args.max_file_size, include_hidden=args.include_hidden, redact=not args.no_redact).scan()
             out = PacketWriter(args.out, scanner, force=args.force).write_all()
             print(f"Packet built successfully at {out}"); return 0
+        if args.command == "map":
+            scanner = SourceScanner(args.input).scan()
+            with tempfile.TemporaryDirectory() as td:
+                packet = PacketWriter(td, scanner, force=True).write_all()
+                reality_map = json.loads((packet / "reality_map.json").read_text(encoding="utf-8"))
+            out_path = Path(args.out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps(reality_map, indent=2), encoding="utf-8")
+            print(f"Reality map written to {out_path}"); return 0
+        if args.command == "instructions":
+            packet = Path(args.packet)
+            instructions_path = packet / "ai_instructions.md"
+            if instructions_path.exists():
+                print(instructions_path.read_text(encoding="utf-8"), end=""); return 0
+            reality_path = packet / "reality_map.json"
+            if not reality_path.exists():
+                print("ERROR: missing ai_instructions.md and reality_map.json", file=sys.stderr); return 1
+            reality_map = json.loads(reality_path.read_text(encoding="utf-8"))
+            text = render_ai_instructions(reality_map)
+            instructions_path.write_text(text, encoding="utf-8")
+            print(text, end=""); return 0
+        if args.command == "demo":
+            demo_repo = Path("examples/demo_repo")
+            fake_answer = Path("examples/fake_ai_answer.md")
+            if not demo_repo.exists() or not fake_answer.exists():
+                print("ERROR: examples/demo_repo and examples/fake_ai_answer.md are required", file=sys.stderr); return 1
+            tmp = Path(tempfile.mkdtemp(prefix="sourcepack_demo_"))
+            packet = tmp / "packet"
+            judgment = tmp / "judgment"
+            PacketWriter(packet, SourceScanner(demo_repo).scan(), force=True).write_all()
+            if not verify_packet(packet): return 1
+            judge_ai_answer(packet, fake_answer, judgment)
+            print(f"Demo packet: {packet}")
+            print(f"Demo judgment: {judgment}")
+            return 0
         if args.command == "verify":
             return 0 if verify_packet(args.packet, args.against) else 1
         if args.command == "judge":

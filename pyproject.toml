@@ -7,7 +7,7 @@ name = "sourcepack"
 version = "1.9.8"
 description = "Verifiable AI context packets from source code."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 
 [project.scripts]
 sourcepack = "sourcepack.cli:run_cli"

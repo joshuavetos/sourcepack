@@ -6,11 +6,15 @@ import hashlib
 import json
 import os
 import platform
-import tomllib
 import re
 import shutil
 import subprocess
 import sys
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 import tempfile
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone

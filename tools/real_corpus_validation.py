@@ -116,14 +116,13 @@ def main() -> int:
     ok = True
     for url in repos:
         repo = ensure_repo(url, work)
-        deep_clean(repo)
-        base = run(sourcepack_cmd() + ["baseline", str(repo), "--refresh", "--quiet"], repo)
-        if base.returncode != 0:
-            rows.append({"repo": url, "scenario": "BASELINE", "ok": False, "stderr": base.stderr.strip()})
-            ok = False
-            continue
         for scenario in SCENARIOS:
             deep_clean(repo)
+            base = run(sourcepack_cmd() + ["baseline", str(repo), "--refresh", "--quiet"], repo)
+            if base.returncode != 0:
+                rows.append({"repo": url, "scenario": scenario, "ok": False, "stderr": base.stderr.strip()})
+                ok = False
+                continue
             apply_scenario(repo, scenario)
             cp = run(sourcepack_cmd() + ["diff", str(repo), "--json"], repo)
             try:

@@ -204,8 +204,39 @@ class SourceScanner:
         return self
 
 
+def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
+    included = {str(rec.get("relative_path", "")).replace("\\", "/") for rec in included_records}
+    files: list[dict] = []
+    source = "scanner_included_files"
+    try:
+        cp = subprocess.run(["git", "ls-files", "-z"], cwd=root, text=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except (OSError, ValueError):
+        cp = None
+    if cp is not None and cp.returncode == 0:
+        raw_paths = [p.decode("utf-8", "surrogateescape") for p in cp.stdout.split(b"\0") if p]
+        source = "git_ls_files" if raw_paths else "scanner_included_files"
+        if not raw_paths:
+            raw_paths = sorted(included)
+    else:
+        raw_paths = sorted(included)
+    for raw in raw_paths:
+        rel = raw.replace("\\", "/")
+        path = root / rel
+        rec = {"relative_path": rel, "included_in_prompt_context": rel in included, "source": source}
+        try:
+            if path.exists() and path.is_file():
+                rec["sha256"] = sha256_file(path)
+                rec["file_type"] = "binary" if is_probably_binary(path) else "text"
+            else:
+                rec["file_type"] = "missing"
+        except OSError:
+            rec["file_type"] = "unreadable"
+        files.append(rec)
+    return {"schema_version": "sourcepack.file_inventory.v1", "generated_at": utc_now(), "source": source, "files": files}
+
+
 class PacketWriter:
-    OUTPUT_FILES = ["manifest.json", "context.md", "context.xml", "file_tree.txt", "ignored_files.txt", "token_report.json", "redactions.json", "reality_map.json", "ai_instructions.md"]
+    OUTPUT_FILES = ["manifest.json", "context.md", "context.xml", "file_tree.txt", "ignored_files.txt", "token_report.json", "redactions.json", "reality_map.json", "ai_instructions.md", "file_inventory.json"]
 
     def __init__(self, out: str | Path, scanner: SourceScanner, force: bool = False):
         self.out = Path(out)
@@ -246,6 +277,7 @@ class PacketWriter:
             "ignored_files": ignored_records,
         }
         (self.out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        (self.out / "file_inventory.json").write_text(json.dumps(_tracked_file_inventory(self.scanner.input_path, included_records), indent=2), encoding="utf-8")
         md_parts = ["# SourcePack Context Packet", "", "## Source Manifest Summary", "", f"Input path: {manifest['input_path']}", f"Generated at: {manifest['generated_at']}", f"Files included: {len(included_records)}", f"Estimated tokens: {total_tokens}", ""]
         for f in self.scanner.included_files:
             md_parts.extend([
@@ -795,7 +827,48 @@ PROTECTED_PACKET_ARTIFACTS = {"manifest.json", "receipt.json", "reality_map.json
 PY_IMPORT_ALIASES = {"yaml": "pyyaml", "pil": "pillow", "bs4": "beautifulsoup4", "cv2": "opencv-python", "sklearn": "scikit-learn", "dotenv": "python-dotenv", "jwt": "pyjwt", "dateutil": "python-dateutil"}
 
 
-def known_files(manifest: dict) -> set[str]:
+def _normalize_inventory_path(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    rel, unsafe = _normalize_diff_path(value)
+    if unsafe or not rel:
+        return None
+    return rel
+
+
+def _baseline_inventory_from_packet(packet: str | Path, manifest: dict | None = None) -> tuple[set[str], bool]:
+    """Return authoritative enforcement baseline paths when a packet has them.
+
+    Prompt context manifests may be selective, so diff enforcement must prefer the
+    baseline file inventory artifact when it exists. The boolean is True only
+    when a full inventory artifact was loaded successfully.
+    """
+    packet = Path(packet)
+    for name in ("file_inventory.json", "inventory.json", "baseline_inventory.json"):
+        path = packet / name
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        raw_files = data.get("files") if isinstance(data, dict) else data
+        if not isinstance(raw_files, list):
+            continue
+        files: set[str] = set()
+        for item in raw_files:
+            raw_path = item.get("relative_path") if isinstance(item, dict) else item
+            rel = _normalize_inventory_path(raw_path)
+            if rel:
+                files.add(rel)
+        return files, True
+    return _included_paths(manifest or load_manifest(packet)), False
+
+
+def known_files(manifest: dict, packet_path: str | Path | None = None) -> set[str]:
+    if packet_path is not None:
+        files, _ = _baseline_inventory_from_packet(packet_path, manifest)
+        return files
     return _included_paths(manifest)
 
 
@@ -950,7 +1023,7 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
     packet = Path(packet_path)
     manifest = load_manifest(packet)
     reality = json.loads((packet / "reality_map.json").read_text(encoding="utf-8")) if (packet / "reality_map.json").exists() else generate_reality_map(manifest, packet)
-    files = known_files(manifest)
+    files, baseline_inventory_loaded = _baseline_inventory_from_packet(packet, manifest)
     deps = dependency_inventory(manifest, packet)
     scripts = _package_json_scripts(packet)
     if changes is None:
@@ -1028,6 +1101,10 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
         py = python_project_evidence(files, deps)
         if not (py["pytest"] or py["tests"] or "pytest" in supported):
             report["unsupported_commands"].append("pytest")
+    if not baseline_inventory_loaded:
+        outside_context = sorted({ch.path for ch in changes if not ch.new_file and not ch.deleted_file and ch.path not in _included_paths(manifest) and ch.path not in report["missing_modified_files"]})
+        if outside_context:
+            report.setdefault("uncertainties", []).append({"id": "baseline_inventory_missing", "message": "Baseline packet lacks full file inventory; modified files outside prompt context were judged conservatively.", "evidence": ", ".join(outside_context)})
     if report["new_files"]:
         report["warnings"].append("Patch creates new files that were not part of the original packet reality.")
     fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "path_escape"]
@@ -1909,7 +1986,7 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     if patch_text.strip() and not changes and "Binary files " not in patch_text:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     report = analyze_patch(packet_path, patch_text, changes)
-    packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest); contents = _packet_file_contents(packet)
+    packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest, packet); contents = _packet_file_contents(packet)
     existing_declared = _declared_dependency_names_by_ecosystem(manifest, packet)
     scopes = _declared_dependency_scopes_by_ecosystem(manifest, packet)
     patch_declared, manifest_uncertainties = _declared_dependency_names_from_patch_by_ecosystem_structural(changes, contents)

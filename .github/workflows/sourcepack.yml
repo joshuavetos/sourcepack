@@ -8,14 +8,28 @@ jobs:
   sourcepack:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.11'
       - name: Install editable package
         run: python -m pip install -e .
+      - name: Install test dependencies
+        run: python -m pip install pytest
+      - name: Run python -m py_compile src/sourcepack/cli.py
+        run: python -m py_compile src/sourcepack/cli.py
+      - name: Run python -m py_compile tools/real_corpus_validation.py
+        run: python -m py_compile tools/real_corpus_validation.py
       - name: Run python -m unittest
         run: python -m unittest
+      - name: Run pytest -q tests/test_simulation_harness.py
+        run: pytest -q tests/test_simulation_harness.py
+      - name: Run pytest -q tests/test_gauntlet.py tests/test_smoke.py
+        run: pytest -q tests/test_gauntlet.py tests/test_smoke.py
+      - name: Run pytest -q
+        run: pytest -q
       - name: Run sourcepack doctor
         run: sourcepack doctor
       - name: Run sourcepack demo

@@ -2103,6 +2103,27 @@ def _is_high_risk_binary_path(rel: str) -> bool:
     high_risk_names = {"pyproject.toml", "package.json", "package-lock.json", "uv.lock", "poetry.lock"}
     return normalized.startswith(high_risk_prefixes) or Path(normalized).name in high_risk_names
 
+
+UNSUPPORTED_ECOSYSTEM_MARKERS = {
+    "cargo.toml": ("Cargo.toml", "Rust dependency validation is not implemented"),
+    "go.mod": ("go.mod", "Go module dependency validation is not implemented"),
+    "pom.xml": ("pom.xml", "Maven dependency validation is not implemented"),
+    "build.gradle": ("build.gradle", "Gradle dependency validation is not implemented"),
+    "build.gradle.kts": ("build.gradle.kts", "Gradle dependency validation is not implemented"),
+    "settings.gradle": ("settings.gradle", "Gradle workspace validation is not implemented"),
+    "settings.gradle.kts": ("settings.gradle.kts", "Gradle workspace validation is not implemented"),
+}
+
+
+def _unsupported_ecosystem_uncertainties(files: set[str], changes: list[PatchFileChange]) -> list[dict]:
+    names = {Path(f).name.lower() for f in files}
+    names.update(Path(ch.path).name.lower() for ch in changes)
+    uncertainties = []
+    for marker, (evidence, message) in sorted(UNSUPPORTED_ECOSYSTEM_MARKERS.items()):
+        if marker in names:
+            uncertainties.append({"id": "unsupported_ecosystem", "message": f"{evidence} detected, but {message}", "evidence": evidence})
+    return uncertainties
+
 def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     if re.search(r"(?m)^@@", patch_text) and "diff --git " not in patch_text:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
@@ -2172,11 +2193,7 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
         report["binary_diffs"] = sorted(set(binary_paths))
     if binary_blockers:
         report["binary_diff_blockers"] = sorted(set(binary_blockers))
-    unsupported_ecosystems = []
-    baseline_names = {Path(f).name.lower() for f in files}
-    patch_names = {Path(ch.path).name.lower() for ch in changes}
-    if "cargo.toml" in baseline_names or "cargo.toml" in patch_names:
-        unsupported_ecosystems.append({"id": "unsupported_ecosystem", "message": "Cargo.toml detected, but Rust dependency validation is not implemented", "evidence": "Cargo.toml"})
+    unsupported_ecosystems = _unsupported_ecosystem_uncertainties(files, changes)
     if unsupported_ecosystems:
         seen_uncertainty_ids = set()
         merged_uncertainties = []

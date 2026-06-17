@@ -26,12 +26,36 @@ uv tool install sourcepack
 sourcepack init . --auto
 ```
 
-Then work normally. SourcePack checks staged AI changes before commit and refreshes its trusted baseline after clean commits. For AI prompts, use:
+Optional prompt grounding before the AI edits files:
 
 ```bash
 sourcepack prompt . "your task" --copy
 ```
 
+Then apply the AI change and inspect it locally:
+
+```bash
+sourcepack diff .
+```
+
+The automatic git workflow is:
+
+1. `sourcepack init . --auto` creates local `.sourcepack/` state, ignores it in git, creates a trusted baseline when safe, and installs hooks when this is a git repo.
+2. Optional: `sourcepack prompt . "task" --copy` writes non-authoritative prompt context for the AI.
+3. The AI applies changes.
+4. `sourcepack diff .` checks actual repo changes against the trusted baseline.
+5. The pre-commit hook runs `sourcepack diff . --staged`.
+6. The post-commit hook refreshes the trusted baseline only when the working tree is clean.
+
+
+
+## Trust model
+
+- `.sourcepack/baseline/` is the authoritative enforcement state.
+- `.sourcepack/prompt/` is non-authoritative prompt context.
+- Prompt context may be selective and must not define repo truth.
+- Diff gating enforces against actual repo changes.
+- Prompt grounding is probabilistic; diff judgment is the guardrail.
 
 ## Prevention vs enforcement
 
@@ -42,7 +66,7 @@ SourcePack separates prompt prevention from diff enforcement:
 
 Prompt grounding is preventive and model-dependent. Diff gating is the enforceable check. A well-grounded prompt can still produce unsupported changes, and SourcePack is expected to catch those later.
 
-## Build → verify → judge
+## Build, verify, judge
 
 1. `sourcepack build` scans a local repo and writes a packet.
 2. The packet includes `manifest.json`, source context artifacts, `receipt.json`, and `reality_map.json`.
@@ -137,10 +161,10 @@ SourcePack does not execute the target application by default. Capability, depen
 
 ## Traffic lights and exit codes
 
-- GREEN exits `0`: checked scope found no blockers.
-- YELLOW exits `0` by default: review, uncertainty, or tooling degradation exists, but no clear blocker was found.
-- RED exits `1`: action is blocked unless the user explicitly bypasses the gate.
-- Hook strict mode blocks YELLOW as well as RED.
+- GREEN/PASS exits `0`: no checked category triggered. It does not prove correctness.
+- YELLOW/WARN exits `0` by default: review, uncertainty, or tooling degradation exists. It is allowed locally unless strict mode is enabled.
+- RED/FAIL exits `1`: action is blocked unless the user explicitly bypasses the gate.
+- Hook strict mode blocks YELLOW/WARN as well as RED/FAIL.
 
 YELLOW findings are surfaced by reason type so different risks do not collapse into one generic warning:
 
@@ -189,3 +213,9 @@ For automatic post-commit baseline refresh, clean means all three checks are emp
 - `git ls-files --others --exclude-standard`
 
 SourcePack treats untracked non-ignored files as dirty for baseline refresh purposes because baseline refresh scans the working tree. If tracked unstaged diff exists, staged diff exists, or untracked non-ignored files exist, the post-commit hook marks the baseline stale instead of refreshing it. Only when all three checks are empty does SourcePack refresh the trusted baseline automatically.
+
+## Optional real-corpus validation
+
+The external Colab 10-repo corpus validation is not part of default pytest and is not reproduced by this checkout. The repository does not currently include enough executable inputs to recreate it safely: the 10 target repo URLs or revisions, scenario definitions per repo, generated packet locations, and Colab output artifacts are not present.
+
+A future optional harness should only be added when those inputs are available. It must clone or reuse the 10 target repos, regenerate fresh packets with the current SourcePack code, deep-clean each repo with `git reset --hard` and `git clean -ffdx` between scenarios, preserve reason codes and uncertainty codes, and use these calibrated expectations: README_EDIT accepts PASS, README_EDIT accepts WARN only for expected uncertainty codes such as `unsupported_ecosystem`, README_EDIT rejects FAIL, NEW_FILE expects WARN, and IMPORT_FAIL expects FAIL.

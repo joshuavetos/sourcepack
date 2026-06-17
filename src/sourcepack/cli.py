@@ -1367,7 +1367,7 @@ def traffic_report(verdict: str, headline: str | None = None, findings: list[dic
 
 def render_traffic(report: dict, verbose: bool = False) -> str:
     verdict = report.get("verdict", "WARN")
-    lines = [f"{report.get('light', LIGHT_BY_VERDICT.get(verdict, 'YELLOW LIGHT'))}: {report.get('headline', '')}", ""]
+    lines = [f"Verdict: {verdict}", f"{report.get('light', LIGHT_BY_VERDICT.get(verdict, 'YELLOW LIGHT'))}: {report.get('headline', '')}", ""]
     if report.get("reason_type") and verdict != "PASS":
         lines.append(f"Reason type: {report.get('reason_type')}")
         if report.get("commit_policy"):
@@ -1383,16 +1383,28 @@ def render_traffic(report: dict, verbose: bool = False) -> str:
             lines.extend(["", "Not checked:", ""])
             lines.extend(f"- {item}" for item in report.get("not_checked", []))
     elif verdict == "WARN":
-        lines.append("SourcePack found new or uncertain items, but no clear unsupported blocker.")
-        lines.extend(["", "Warnings:", ""])
-        shown = report.get("warnings", []) if verbose else report.get("warnings", [])[:3]
-        lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
+        lines.append("SourcePack found review or uncertainty items, but no clear unsupported blocker.")
+        review = [f for f in report.get("warnings", []) if f.get("category") != "uncertainty"]
+        uncertain = [f for f in report.get("warnings", []) if f.get("category") == "uncertainty"]
+        if review:
+            lines.extend(["", "Review warnings:", ""])
+            shown = review if verbose else review[:3]
+            lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
+        if uncertain:
+            lines.extend(["", "Uncertainties:", ""])
+            shown = uncertain if verbose else uncertain[:3]
+            lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
         lines.extend(["", f"Next action: {report.get('next_action')}"])
     else:
         lines.append("SourcePack found missing files, unsupported dependencies, unsupported commands, or unsupported capabilities.")
-        lines.extend(["", "Blockers:", ""])
-        shown = report.get("blockers", []) if verbose else report.get("blockers", [])[:3]
-        lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
+        if report.get("blockers"):
+            lines.extend(["", "Failures:", ""])
+            shown = report.get("blockers", []) if verbose else report.get("blockers", [])[:3]
+            lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
+        if report.get("warnings"):
+            lines.extend(["", "Warnings and uncertainties:", ""])
+            shown = report.get("warnings", []) if verbose else report.get("warnings", [])[:3]
+            lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
         lines.extend(["", f"Next action: {report.get('next_action')}"])
     lines.extend(["", f"Report: {report.get('report_path', '.sourcepack/reports/latest.json')}"])
     return "\n".join(lines) + "\n"
@@ -2594,7 +2606,7 @@ def doctor() -> bool:
 
 
 def run_cli(args_list=None):
-    parser = argparse.ArgumentParser(prog="sourcepack")
+    parser = argparse.ArgumentParser(prog="sourcepack", description="Local guardrail for AI-assisted repo changes.")
     parser.add_argument("--version", action="store_true")
     subs = parser.add_subparsers(dest="command")
     build = subs.add_parser("build")
@@ -2611,7 +2623,7 @@ def run_cli(args_list=None):
     judge.add_argument("packet")
     judge.add_argument("ai_answer")
     judge.add_argument("--out")
-    judge_patch_cmd = subs.add_parser("judge-patch")
+    judge_patch_cmd = subs.add_parser("judge-patch", help="judge a unified diff against a packet", description="Judge a git-style unified diff against SourcePack packet evidence. Writes patch_judgment_report.md and patch_judgment_report.json.")
     judge_patch_cmd.add_argument("packet")
     judge_patch_cmd.add_argument("patch")
     judge_patch_cmd.add_argument("--out", required=True)
@@ -2621,7 +2633,7 @@ def run_cli(args_list=None):
     instr = subs.add_parser("instructions")
     instr.add_argument("packet")
     subs.add_parser("demo")
-    init = subs.add_parser("init")
+    init = subs.add_parser("init", help="initialize local SourcePack state", description="Initialize .sourcepack state. With --auto, create a safe baseline when possible and install git hooks.")
     init.add_argument("path", nargs="?", default=".")
     init.add_argument("--auto", action="store_true")
     init.add_argument("--strict", action="store_true")
@@ -2630,7 +2642,7 @@ def run_cli(args_list=None):
     init.add_argument("--install-hygiene-hooks", action="store_true")
     init.add_argument("--json", action="store_true")
     subs.add_parser("doctor")
-    prompt_cmd = subs.add_parser("prompt")
+    prompt_cmd = subs.add_parser("prompt", help="write non-authoritative AI prompt context", description="Generate prompt context for an AI task. This does not refresh the trusted enforcement baseline.")
     prompt_cmd.add_argument("repo")
     prompt_cmd.add_argument("task", nargs="?")
     prompt_cmd.add_argument("--copy", action="store_true")
@@ -2642,7 +2654,7 @@ def run_cli(args_list=None):
     baseline_cmd.add_argument("--verbose", action="store_true")
     baseline_cmd.add_argument("--json", action="store_true")
     baseline_cmd.add_argument("--quiet", action="store_true")
-    diff_cmd = subs.add_parser("diff")
+    diff_cmd = subs.add_parser("diff", help="check repo changes against trusted baseline", description="Judge working-tree or staged changes against .sourcepack/baseline. PASS is green, WARN needs review, FAIL blocks.")
     diff_cmd.add_argument("repo")
     diff_cmd.add_argument("--staged", action="store_true")
     diff_cmd.add_argument("--verbose", action="store_true")

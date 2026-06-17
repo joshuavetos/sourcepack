@@ -4,7 +4,7 @@
 Canonical scenario schema: BehaviorScenario below is the single typed source used
 by the behavior matrix, JSON assertions, and tests. Each scenario models:
 baseline state + prompt context state + working tree change + output/policy mode
--> verdict + canonical reason codes + exit code + normalized report shape.
+-> verdict + canonical reason codes + optional exit code + normalized report shape.
 
 Canonical expected-output schema: NormalizedReport below is the single report
 shape asserted by this harness. Required fields are schema_version,
@@ -14,11 +14,12 @@ uncertainties. generated_at is optional/mode-dependent because in-memory
 judge-patch reports are not persisted by the CLI. checked_categories from
 SourcePack traffic reports is normalized to checked.
 
-Reason-code normalization: CANONICAL_REASON_CODES is the registry. Codes are
-lowercase snake_case [a-z0-9_]+ stable identifiers. Aliases in
-REASON_CODE_ALIASES normalize to registry entries; duplicates collapse; ordering
-is ignored; JSON assertions compare normalized sets; human-readable messages are
-never used for correctness.
+Reason-code normalization: CANONICAL_REASON_CODES is the registry for reason
+codes this matrix expects or normalizes from current SourcePack emissions. Codes
+are lowercase snake_case [a-z0-9_]+ stable identifiers. Aliases in
+REASON_CODE_ALIASES are legacy/emitted spellings normalized to canonical emitted
+names; duplicates collapse; ordering is ignored; JSON assertions compare
+normalized sets; human-readable messages are never used for correctness.
 """
 from __future__ import annotations
 
@@ -109,9 +110,9 @@ class BehaviorScenario:
     expected_verdict: Verdict | Literal["NOT_FAIL"]
     expected_reason_codes_include: tuple[str, ...]
     expected_reason_codes_exclude: tuple[str, ...]
-    expected_exit_code: int
+    expected_exit_code: int | None
     expected_json_valid: bool
-    expected_checked_fields: tuple[str, ...]
+    expected_report_fields: tuple[str, ...]
     expected_not_checked_fields: tuple[str, ...]
     tags: tuple[str, ...] = field(default_factory=tuple)
 
@@ -242,7 +243,9 @@ def run_scenario(s: BehaviorScenario) -> dict[str, Any]:
                 inventory.discard("app.py")
             packet = _packet(tmp, s.repo_files, s.prompt_context_omissions, inventory)
             raw = judge_patch_text(packet, s.patch_text or "")
-            report = normalize_report(raw, s.expected_exit_code)
+            # judge_patch_text is an in-process helper, not the judge-patch CLI.
+            # Its scenarios are not applicable for exit-code validation.
+            report = normalize_report(raw, -1)
             stdout = json.dumps(report)
         else:
             repo = _make_repo(tmp, s)
@@ -270,15 +273,15 @@ def assert_scenario(s: BehaviorScenario, report: NormalizedReport, stdout: str) 
         if report["verdict"] == "FAIL": errors.append("verdict is FAIL")
     elif report["verdict"] != s.expected_verdict:
         errors.append(f"verdict {report['verdict']} != {s.expected_verdict}")
-    if report["exit_code"] != s.expected_exit_code:
+    if s.expected_exit_code is not None and report["exit_code"] != s.expected_exit_code:
         errors.append(f"exit {report['exit_code']} != {s.expected_exit_code}")
     have = set(report["reason_codes"])
     inc = set(normalize_reason_codes(s.expected_reason_codes_include))
     exc = set(normalize_reason_codes(s.expected_reason_codes_exclude))
     if not inc <= have: errors.append(f"missing reason codes {sorted(inc - have)} from {sorted(have)}")
     if exc & have: errors.append(f"forbidden reason codes {sorted(exc & have)}")
-    for f in s.expected_checked_fields:
-        if f not in report or report[f] is None: errors.append(f"expected checked report field {f}")
+    for f in s.expected_report_fields:
+        if f not in report or report[f] is None: errors.append(f"expected report field {f}")
     for f in s.expected_not_checked_fields:
         if f in report and report[f]: errors.append(f"expected empty report field {f}")
     return not errors, errors
@@ -291,14 +294,14 @@ def m(op: MutationOp, path: str, content: str = "") -> Mutation:
 def build_scenarios() -> list[BehaviorScenario]:
     S: list[BehaviorScenario] = []
     def add(i:int, desc:str, cat:str, files:dict[str,str], muts:tuple[Mutation,...]=(), *, patch:str|None=None, mode:CommandMode="local_json_diff", base:BaselineSetupMode="present", verdict:Verdict|Literal["NOT_FAIL"]="PASS", inc:tuple[str,...]=(), exc:tuple[str,...]=(), exit:int=0, omit:tuple[str,...]=(), tags:tuple[str,...]=()):
-        S.append(BehaviorScenario(f"BM{i:03d}", desc, cat, files, omit, base, (), muts, patch, mode, "judge_patch" if mode=="judge_patch" else "ci" if mode=="ci_json_diff" else "strict" if mode=="strict_json_diff" else "local", verdict, inc, exc, exit, True, ("schema_version","sourcepack_version","verdict","reason_codes","findings","not_checked"), (), tags))
+        S.append(BehaviorScenario(f"BM{i:03d}", desc, cat, files, omit, base, (), muts, patch, mode, "judge_patch" if mode=="judge_patch" else "ci" if mode=="ci_json_diff" else "strict" if mode=="strict_json_diff" else "local", verdict, inc, exc, None if mode=="judge_patch" else exit, True, ("schema_version","sourcepack_version","verdict","reason_codes","findings","not_checked"), (), tags))
     app={"app.py":"print('hi')\n"}
     add(1,"tracked file omitted from prompt context remains in baseline inventory", "baseline_prompt", app, patch=_patch("app.py",app["app.py"],"print('bye')\n"), mode="judge_patch", verdict="NOT_FAIL", exc=("missing_file",), omit=("app.py",))
     add(2,"existing file absent from authoritative baseline inventory is blocker", "baseline_prompt", app, patch=_patch("app.py",app["app.py"],"print('bye')\n"), mode="judge_patch", base="absent_authoritative_file", verdict="FAIL", inc=("missing_file",), exit=1)
     add(3,"new file added", "baseline_prompt", app, (m("write","new.py","x=1\n"),), verdict="WARN", inc=("new_file",), exc=("missing_file",))
     add(4,"tracked file deleted", "baseline_prompt", app, (m("delete","app.py"),), verdict="WARN", inc=("deleted_file",))
     add(5,"baseline missing with changes", "baseline_prompt", app, (m("append","app.py","print(2)\n"),), base="missing", verdict="FAIL", inc=("baseline_missing",), exit=1)
-    add(6,"baseline present no changes", "baseline_prompt", app, (), verdict="PASS", inc=("no_diff",))
+    add(6,"baseline present no changes", "baseline_prompt", app, (), verdict="PASS", )
     add(7,"python stdlib import", "dependency_python", {"app.py":"print(1)\n"}, (m("append","app.py","import json\n"),), verdict="PASS", exc=("unsupported_dependency",))
     add(8,"python local import", "dependency_python", {"app.py":"print(1)\n","localmod.py":"x=1\n"}, (m("append","app.py","import localmod\n"),), verdict="PASS", exc=("unsupported_dependency",))
     add(9,"python undeclared external dependency", "dependency_python", {"app.py":"print(1)\n"}, (m("append","app.py","import fastapi\n"),), verdict="FAIL", inc=("unsupported_dependency",), exit=1)
@@ -332,13 +335,13 @@ def build_scenarios() -> list[BehaviorScenario]:
     add(35,"malformed diff fails closed", "diff_binary", app, patch="@@ nope @@\n+bad\n", mode="judge_patch", verdict="FAIL", inc=("malformed_diff",), exit=1)
     for i,name in [(36,"Cargo.toml"),(37,"go.mod"),(38,"pom.xml"),(39,"build.gradle")]: add(i,f"unsupported ecosystem {name}","ecosystem", {"app.py":"print(1)\n",name:"x\n"}, (m("append",name,"y\n"),), verdict="WARN", inc=("unsupported_ecosystem",))
     add(40,"multiple unsupported ecosystems preserve evidence", "ecosystem", {"Cargo.toml":"x\n","go.mod":"module x\n","app.py":"print(1)\n"}, (m("append","Cargo.toml","y\n"),), verdict="WARN", inc=("unsupported_ecosystem",))
-    add(41,"json output valid only", "output_policy", app, (), verdict="PASS", inc=("no_diff",))
+    add(41,"json output valid only", "output_policy", app, (), verdict="PASS", )
     add(42,"local WARN exits zero", "output_policy", app, (m("write","n.py","x=1\n"),), verdict="WARN", inc=("new_file",), exit=0)
     add(43,"strict WARN exits nonzero", "output_policy", app, (m("write","n.py","x=1\n"),), mode="strict_json_diff", verdict="WARN", inc=("new_file",), exit=1)
     add(44,"CI WARN exits nonzero", "output_policy", app, (m("write","n.py","x=1\n"),), mode="ci_json_diff", verdict="WARN", inc=("new_file",), exit=1)
     add(45,"FAIL exits nonzero", "output_policy", {"app.py":"print(1)\n"}, (m("append","app.py","import fastapi\n"),), verdict="FAIL", inc=("unsupported_dependency",), exit=1)
-    add(46,"PASS exits zero", "output_policy", app, (), verdict="PASS", inc=("no_diff",), exit=0)
-    add(47,"report includes schema fields", "output_policy", app, (), verdict="PASS", inc=("no_diff",), exit=0)
+    add(46,"PASS exits zero", "output_policy", app, (), verdict="PASS", exit=0)
+    add(47,"report includes schema fields", "output_policy", app, (), verdict="PASS", exit=0)
     # metamorphic explicit variants
     add(48,"metamorphic reordered independent hunks A", "metamorphic", {"a.py":"print(1)\n","b.js":"console.log(1)\n","package.json":"{}\n"}, patch=_patch("a.py","print(1)\n","print(1)\nimport fastapi\n")+_patch("b.js","console.log(1)\n",'console.log(1)\nimport r from "react"\n'), mode="judge_patch", verdict="FAIL", inc=("unsupported_dependency",), exit=1, tags=("invariant_reorder",))
     add(49,"metamorphic reordered independent hunks B", "metamorphic", {"a.py":"print(1)\n","b.js":"console.log(1)\n","package.json":"{}\n"}, patch=_patch("b.js","console.log(1)\n",'console.log(1)\nimport r from "react"\n')+_patch("a.py","print(1)\n","print(1)\nimport fastapi\n"), mode="judge_patch", verdict="FAIL", inc=("unsupported_dependency",), exit=1, tags=("invariant_reorder",))

@@ -1128,12 +1128,12 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
 def render_patch_judgment_report(report: dict) -> str:
     traffic = report.get("traffic") if isinstance(report.get("traffic"), dict) else patch_report_to_traffic(report, "patch_judgment_report.json")
     lines = ["# SourcePack Patch Judgment Report", "", f"Verdict: {traffic.get('verdict', report.get('verdict', 'WARN'))}", f"Report: {report.get('report_path', 'patch_judgment_report.json')}", "", f"Next action: {traffic.get('next_action')}", ""]
-    grouped = [("blockers", "Blockers"), ("warnings", "Warnings"), ("uncertainties", "Uncertainties")]
+    grouped = [("blockers", "Blockers"), ("warnings", "Review warnings"), ("uncertainties", "Uncertainties")]
     for key, title in grouped:
         lines.extend([f"## {title}", ""])
         lines.extend([f"- {f.get('id')}: {f.get('message')}" for f in report.get(key, [])] or ["None"])
         lines.append("")
-    for key, title in [("checked_categories", "Checked Categories"), ("not_checked", "Not Checked Categories")]:
+    for key, title in [("checked_categories", "Checked"), ("not_checked", "Not checked")]:
         lines.extend([f"## {title}", ""])
         lines.extend([f"- {item}" for item in report.get(key, [])] or ["None"])
         lines.append("")
@@ -1160,6 +1160,12 @@ def judge_patch(packet_path: str | Path, patch_path: str | Path, out_dir: str | 
     enriched = dict(report)
     enriched["legacy_warnings"] = list(report.get("warnings", []))
     enriched.update({
+        "schema_version": "patch_judgment_report.v1",
+        "sourcepack_version": __version__,
+        "generated_at": utc_now(),
+        "light": traffic.get("light"),
+        "reason_type": traffic.get("reason_type"),
+        "commit_policy": traffic.get("commit_policy"),
         "findings": traffic.get("findings", []),
         "blockers": traffic.get("blockers", []),
         "warnings": [f for f in traffic.get("warnings", []) if f.get("category") != "uncertainty"],
@@ -1389,17 +1395,16 @@ def traffic_report(verdict: str, headline: str | None = None, findings: list[dic
         commit_policy = "allowed locally, blocked in strict mode."
     elif verdict == "FAIL":
         commit_policy = "blocked unless explicitly bypassed."
-    return {"verdict": verdict, "light": light, "headline": headline, "reason_type": reason_type, "commit_policy": commit_policy, "blockers": blockers, "warnings": warnings, "checked_categories": checked_categories or [], "not_checked": not_checked or ["runtime behavior", "semantic correctness", "security", "external services"], "next_action": next_action, "report_path": report_path, "findings": findings}
+    return {"schema_version": "traffic_report.v1", "sourcepack_version": __version__, "verdict": verdict, "light": light, "headline": headline, "reason_type": reason_type, "commit_policy": commit_policy, "blockers": blockers, "warnings": warnings, "uncertainties": [f for f in warnings if f.get("category") == "uncertainty"], "checked_categories": checked_categories or [], "not_checked": not_checked or ["runtime behavior", "semantic correctness", "security", "external services"], "next_action": next_action, "report_path": report_path, "findings": findings}
 
 
 def render_traffic(report: dict, verbose: bool = False) -> str:
     verdict = report.get("verdict", "WARN")
     lines = [f"Verdict: {verdict}", f"{report.get('light', LIGHT_BY_VERDICT.get(verdict, 'YELLOW LIGHT'))}: {report.get('headline', '')}", ""]
-    if report.get("reason_type") and verdict != "PASS":
+    if report.get("reason_type"):
         lines.append(f"Reason type: {report.get('reason_type')}")
-        if report.get("commit_policy"):
-            lines.append(f"Commit policy: {report.get('commit_policy')}")
-        lines.append("")
+    lines.append(f"Commit policy: {report.get('commit_policy') or 'allowed.'}")
+    lines.append("")
     if verdict == "PASS":
         info = [f for f in report.get("findings", []) if f.get("severity") == "info"]
         lines.append(info[0]["message"] if info else "No unsupported project claims or patch assumptions detected.")
@@ -1425,15 +1430,22 @@ def render_traffic(report: dict, verbose: bool = False) -> str:
     else:
         lines.append("SourcePack found missing files, unsupported dependencies, unsupported commands, or unsupported capabilities.")
         if report.get("blockers"):
-            lines.extend(["", "Failures:", ""])
+            lines.extend(["", "Blockers:", ""])
             shown = report.get("blockers", []) if verbose else report.get("blockers", [])[:3]
             lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
         if report.get("warnings"):
-            lines.extend(["", "Warnings and uncertainties:", ""])
+            lines.extend(["", "Review warnings:", ""])
             shown = report.get("warnings", []) if verbose else report.get("warnings", [])[:3]
             lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
         lines.extend(["", f"Next action: {report.get('next_action')}"])
-    lines.extend(["", f"Report: {report.get('report_path', '.sourcepack/reports/latest.json')}"])
+    if verdict != "PASS":
+        if report.get("checked_categories"):
+            lines.extend(["", "Checked:", ""])
+            lines.extend(f"- {item}" for item in report.get("checked_categories", []))
+        if report.get("not_checked"):
+            lines.extend(["", "Not checked:", ""])
+            lines.extend(f"- {item}" for item in report.get("not_checked", []))
+    lines.extend(["", f"Report path: {report.get('report_path', '.sourcepack/reports/latest.json')}"])
     return "\n".join(lines) + "\n"
 
 
@@ -1444,14 +1456,38 @@ def write_user_report(repo: str | Path, report: dict, stem: str = "report") -> N
     full.setdefault("schema_version", "traffic_report.v1")
     full["generated_at"] = utc_now()
     paths["latest_json"].write_text(json.dumps(full, indent=2), encoding="utf-8")
-    paths["latest_md"].write_text(render_traffic(report, verbose=True), encoding="utf-8")
+    paths["latest_md"].write_text(render_traffic(full, verbose=True), encoding="utf-8")
     typed = paths.get(f"latest_{stem}_json")
     if typed is not None:
         typed.write_text(json.dumps(full, indent=2), encoding="utf-8")
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     (paths["archive"] / f"{ts}_{stem}.json").write_text(json.dumps(full, indent=2), encoding="utf-8")
-    (paths["archive"] / f"{ts}_{stem}.md").write_text(render_traffic(report, verbose=True), encoding="utf-8")
+    (paths["archive"] / f"{ts}_{stem}.md").write_text(render_traffic(full, verbose=True), encoding="utf-8")
 
+
+
+def finalize_diff_report(repo: str | Path | None, report: dict, args, stem: str = "diff") -> dict:
+    full = dict(report)
+    if getattr(args, "ci", False):
+        full["ci"] = True
+    if repo is not None:
+        write_user_report(repo, full, stem)
+    return full
+
+def emit_diff_report(report: dict, args, added: bool = False, note: str | None = None) -> int:
+    if getattr(args, "ci", False):
+        args.json = True
+        report["ci"] = True
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2))
+    else:
+        if added:
+            print("Added .sourcepack/ to .gitignore.")
+        if note:
+            print(note)
+        print(render_traffic(report, getattr(args, "verbose", False)), end="")
+    verdict = report.get("verdict")
+    return 0 if (verdict == "PASS" or (verdict == "WARN" and not (getattr(args, "strict", False) or getattr(args, "ci", False)))) else 1
 
 def git_metadata(repo: str | Path) -> dict:
     root = Path(repo)
@@ -2022,6 +2058,13 @@ def _js_alias_local(imported: str, files: set[str], contents: dict[str, str]) ->
             return None
     return False
 
+
+def _is_high_risk_binary_path(rel: str) -> bool:
+    normalized = rel.replace("\\", "/").lstrip("/")
+    high_risk_prefixes = (".sourcepack/", ".git/", ".github/workflows/")
+    high_risk_names = {"pyproject.toml", "package.json", "package-lock.json", "uv.lock", "poetry.lock"}
+    return normalized.startswith(high_risk_prefixes) or Path(normalized).name in high_risk_names
+
 def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     if re.search(r"(?m)^@@", patch_text) and "diff --git " not in patch_text:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
@@ -2264,54 +2307,91 @@ def cli_baseline(args) -> int:
         rep=traffic_report("FAIL","could not create baseline.",[normalized_finding("baseline_failed","error","baseline",f"Baseline verification failed: {exc}")]); write_user_report(repo, rep, "baseline")
         print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
 
+
+def untracked_files_as_diff(repo: str | Path) -> str:
+    repo = Path(repo)
+    cp = run_git(repo, ["ls-files", "--others", "--exclude-standard"])
+    if cp.returncode != 0:
+        return ""
+    chunks = []
+    for rel in [line.strip() for line in cp.stdout.splitlines() if line.strip()]:
+        path = repo / rel
+        if rel == ".gitignore":
+            try:
+                ignore_lines = {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+            except OSError:
+                ignore_lines = set()
+            if ignore_lines <= {".sourcepack", ".sourcepack/"}:
+                continue
+        safe_rel = rel.replace("\\", "/")
+        chunks.extend([f"diff --git a/{safe_rel} b/{safe_rel}", "new file mode 100644", "--- /dev/null", f"+++ b/{safe_rel}"])
+        if is_probably_binary(path):
+            chunks.append(f"Binary files /dev/null and b/{safe_rel} differ")
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            chunks.append(f"Binary files /dev/null and b/{safe_rel} differ")
+            continue
+        except OSError:
+            continue
+        lines = text.splitlines()
+        chunks.append(f"@@ -0,0 +1,{len(lines)} @@")
+        chunks.extend(f"+{line}" for line in lines)
+    return "\n".join(chunks) + ("\n" if chunks else "")
+
 def cli_diff(args) -> int:
+    if getattr(args, "ci", False):
+        args.json = True
     repo_arg = Path(args.repo).resolve(); cp = run_git(repo_arg, ["rev-parse", "--show-toplevel"])
     if cp.returncode != 0:
         message = "Git executable not found." if cp.returncode == 127 else "No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use."
-        rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("git_unavailable" if cp.returncode == 127 else "no_git_repo","error","git",message)])
-        print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
+        rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable" if cp.returncode == 127 else "no_git_repo", "error", "git", message)])
+        return emit_diff_report(rep, args)
     git_root = Path(cp.stdout.strip()).resolve()
-    candidate_paths = sourcepack_paths(repo_arg)
     repo = repo_arg if validate_baseline(repo_arg).get("state") in {"present", "stale", "corrupt"} else git_root
     paths = ensure_sourcepack_dirs(repo); note = None; added, err = ensure_gitignore_entry(repo)
     if err:
-        rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("gitignore_unwritable","error","git",f"Cannot write .gitignore: {err}")]); print(render_traffic(rep,args.verbose), end=""); return 1
+        rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("gitignore_unwritable", "error", "git", f"Cannot write .gitignore: {err}")])
+        return emit_diff_report(rep, args)
     diff_args = ["diff", "--staged"] if args.staged else ["diff"]
-    if 'git_root' in locals() and repo != git_root:
+    if repo != git_root:
         diff_args.append("--relative")
     cp = run_git(repo, diff_args); diff_text = cp.stdout
     if cp.returncode == 127:
-        rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("git_unavailable","error","git","Git executable not found.")]); print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
+        rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable", "error", "git", "Git executable not found.")])
+        return emit_diff_report(rep, args)
     if not args.staged:
         extra = untracked_files_as_diff(repo)
-        if extra:
+        if extra and not (added and _only_sourcepack_gitignore_change(repo)):
             diff_text = (diff_text + "\n" + extra).strip() + "\n"
     baseline_status = validate_baseline(repo)
     if baseline_status["state"] == "corrupt":
         rep = traffic_report("FAIL", "trusted baseline is corrupt.", [normalized_finding("baseline_corrupt", "error", "baseline", baseline_status["message"])], ["baseline", "diff"], "Recreate the baseline only after verifying the current repo state should be trusted.")
         rep.update(baseline_report_fields(baseline_status))
-        write_user_report(repo, rep, "diff")
-        print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
+        rep = finalize_diff_report(repo, rep, args)
+        return emit_diff_report(rep, args)
     if baseline_status["state"] == "missing":
         dirty_now, dirty_state_now = git_worktree_dirty(repo)
         if diff_text.strip() or (dirty_now and not _only_sourcepack_gitignore_change(repo)):
-            rep=traffic_report("FAIL","baseline missing while changes are present.",[normalized_finding("baseline_missing","error","baseline","No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
+            rep = traffic_report("FAIL", "baseline missing while changes are present.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
             rep.update(baseline_report_fields(baseline_status))
-            write_user_report(repo, rep, "diff")
-            print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
+            rep = finalize_diff_report(repo, rep, args)
+            return emit_diff_report(rep, args)
         try:
             build_current_baseline(repo, quiet=True); note = "Created SourcePack baseline because none existed and no diff was present."; baseline_status = validate_baseline(repo)
         except BaselineLockError as exc:
-            rep=traffic_report("WARN","baseline writer is locked.",[normalized_finding("baseline_locked","warn","tooling",str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")
-            print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1 if (getattr(args, "strict", False) or getattr(args, "ci", False)) else 0
+            rep = traffic_report("WARN", "baseline writer is locked.", [normalized_finding("baseline_locked", "warn", "tooling", str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")
+            return emit_diff_report(rep, args)
         except Exception as exc:
-            rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("baseline_failed","error","baseline",f"Baseline verification failed: {exc}")]); print(render_traffic(rep,args.verbose), end=""); return 1
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("baseline_failed", "error", "baseline", f"Baseline verification failed: {exc}")])
+            return emit_diff_report(rep, args)
     stale_findings = []
     if baseline_status["state"] == "stale":
         stale_findings.append(normalized_finding("baseline_stale", "warn", "uncertainty", "Trusted SourcePack baseline may not match current repo state."))
     if not diff_text.strip():
         verdict = "WARN" if stale_findings else "PASS"
-        rep=traffic_report(verdict,"SourcePack could not fully evaluate this change." if stale_findings else "good to continue.",[normalized_finding("no_diff","info","diff","No uncommitted changes detected."), *stale_findings], ["diff", "baseline freshness"])
+        rep = traffic_report(verdict, "SourcePack could not fully evaluate this change." if stale_findings else "good to continue.", [normalized_finding("no_diff", "info", "diff", "No uncommitted changes detected."), *stale_findings], ["diff", "baseline freshness"])
     else:
         raw = judge_patch_text(repo / baseline_status["packet_path"], diff_text); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
         if stale_findings and rep["verdict"] != "FAIL":
@@ -2327,47 +2407,8 @@ def cli_diff(args) -> int:
         except Exception:
             pass
     rep["current_git"] = git_metadata(repo)
-    write_user_report(repo, rep, "diff")
-    if getattr(args, "ci", False):
-        args.json = True
-        rep["ci"] = True
-    if args.json: print(json.dumps(rep, indent=2)); return 0 if (rep["verdict"] == "PASS" or (rep["verdict"] == "WARN" and not (getattr(args, "strict", False) or getattr(args, "ci", False)))) else 1
-    if added: print("Added .sourcepack/ to .gitignore.")
-    if note: print(note)
-    print(render_traffic(rep, args.verbose), end="")
-    return 0 if (rep["verdict"] == "PASS" or (rep["verdict"] == "WARN" and not (getattr(args, "strict", False) or getattr(args, "ci", False)))) else 1
-
-
-
-def _is_high_risk_binary_path(rel: str) -> bool:
-    name = Path(rel).name.lower()
-    return rel.startswith(".sourcepack/baseline/") or rel.startswith(".sourcepack/state/") or name in {"requirements.txt", "pyproject.toml", "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"}
-
-
-def untracked_files_as_diff(repo: Path) -> str:
-    cp = run_git(repo, ["ls-files", "--others", "--exclude-standard"]); parts=[]
-    if cp.returncode != 0: return ""
-    for rel in cp.stdout.splitlines():
-        path = repo / rel
-        if rel == ".gitignore":
-            try:
-                lines = {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
-                if lines <= {".sourcepack", ".sourcepack/"}:
-                    continue
-            except Exception:
-                pass
-        if not path.is_file():
-            continue
-        if is_probably_binary(path):
-            lines = [f"diff --git a/{rel} b/{rel}", "new file mode 100644", f"Binary files /dev/null and b/{rel} differ"]
-            parts.append("\n".join(lines))
-            continue
-        try: content = path.read_text(encoding="utf-8")
-        except Exception: continue
-        lines = [f"diff --git a/{rel} b/{rel}", "new file mode 100644", "--- /dev/null", f"+++ b/{rel}", f"@@ -0,0 +1,{len(content.splitlines())} @@"]
-        lines.extend("+" + line for line in content.splitlines())
-        parts.append("\n".join(lines))
-    return "\n".join(parts)
+    rep = finalize_diff_report(repo, rep, args)
+    return emit_diff_report(rep, args, added, note)
 
 def hook_text(strict: bool) -> str:
     strict_block = """
@@ -2527,7 +2568,7 @@ def cli_status(args) -> int:
     stale_data = (baseline_status.get("details") or {}).get("stale_details")
     prompt_exists = paths["prompt"].exists()
     automatic = current and baseline and hook_installed and post_hook_installed and ignored
-    data={"automatic_mode_enabled":automatic,"local_storage_exists":current,"baseline_exists":baseline,"prompt_context_exists":prompt_exists,"pre_commit_hook_installed":hook_installed,"post_commit_hook_installed":post_hook_installed,"hook_strict_mode":strict,"hook_policy":"RED blocks, YELLOW blocks" if strict else "RED blocks, YELLOW warns","sourcepack_gitignored":ignored,"last_report_verdict":last_report,"last_report_light":last_light,"dirty_worktree":dirty if dirty_state is None else None,"git_repo":git_repo,"last_baseline_update":last}
+    data={"schema_version":"sourcepack_status.v1","sourcepack_version":__version__,"generated_at":utc_now(),"automatic_mode_enabled":automatic,"local_storage_exists":current,"baseline_exists":baseline,"prompt_context_exists":prompt_exists,"pre_commit_hook_installed":hook_installed,"post_commit_hook_installed":post_hook_installed,"hook_strict_mode":strict,"hook_policy":"RED blocks, YELLOW blocks" if strict else "RED blocks, YELLOW warns","sourcepack_gitignored":ignored,"last_report_verdict":last_report,"last_report_light":last_light,"dirty_worktree":dirty if dirty_state is None else None,"git_repo":git_repo,"last_baseline_update":last}
     data.update(baseline_report_fields(baseline_status))
     if args.json: print(json.dumps(data, indent=2)); return 0
     print(f"SourcePack status for {repo}\n")

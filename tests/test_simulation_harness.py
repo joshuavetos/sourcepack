@@ -195,6 +195,41 @@ def test_legacy_packet_without_inventory_still_reds_unsupported_import_outside_c
     assert "unsupported_dependency" in ids
     assert "missing_file" not in ids
 
+
+def test_multiple_unsupported_ecosystem_markers_preserve_evidence(tmp_path: Path) -> None:
+    packet = write_packet(tmp_path, {"README.md": "demo\n", "go.mod": "module demo\n", "pom.xml": "<project/>\n"})
+    report = judge_patch_text(packet, unified_patch("README.md", "demo\n", "updated\n"))
+    assert report["verdict"] == "WARN"
+    evidences = [item.get("evidence") for item in report.get("uncertainties", []) if item.get("id") == "unsupported_ecosystem"]
+    assert "go.mod" in evidences
+    assert "pom.xml" in evidences
+
+
+def test_path_normalization_inside_repo_and_protected_targets(tmp_path: Path) -> None:
+    packet = write_packet(tmp_path, {"README.md": "old\n", ".sourcepack/baseline/active.json": "{}\n", ".git/config": "[core]\n"})
+    inside = judge_patch_text(packet, unified_patch("src/../README.md", "old\n", "new\n"))
+    assert inside["verdict"] != "FAIL"
+    assert "README.md" in inside.get("modified_files", [])
+
+    protected = judge_patch_text(packet, unified_patch("src/../.sourcepack/baseline/active.json", "{}\n", "{\"x\":true}\n"))
+    assert_expectation(Scenario("normalized_protected", {}, "", MUST_RED, "protected_artifact"), protected)
+
+    git_path = judge_patch_text(packet, unified_patch("src/../.git/config", "[core]\n", "[core]\nrepositoryformatversion = 0\n"))
+    assert_expectation(Scenario("normalized_git", {}, "", MUST_RED, "git_path_modification"), git_path)
+
+
+def test_raw_patch_markdown_exposes_extended_sections(tmp_path: Path) -> None:
+    packet = write_packet(tmp_path, {"package.json": "{}\n"})
+    patch = "diff --git a/package.json b/package.json\nBinary files a/package.json and b/package.json differ\n"
+    out = tmp_path / "out"
+    patch_file = tmp_path / "patch.diff"
+    patch_file.write_text(patch, encoding="utf-8")
+    judge_patch(packet, patch_file, out)
+    text = (out / "patch_judgment_report.md").read_text(encoding="utf-8")
+    for section in ["Git Path Modifications", "Binary Diffs", "Binary Diff Blockers", "Declared Dependencies", "Declared Commands"]:
+        assert f"### {section}" in text
+    assert "package.json" in text
+
 def test_simulation_count() -> None:
     assert len(SCENARIOS) >= 100
 

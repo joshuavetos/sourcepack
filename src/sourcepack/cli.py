@@ -1170,7 +1170,7 @@ def render_patch_judgment_report(report: dict) -> str:
         lines.extend([f"- {item}" for item in report.get(key, [])] or ["None"])
         lines.append("")
     lines.extend(["## Raw Patch Sections", ""])
-    sections = [("modified_files", "Modified Files"), ("missing_modified_files", "Missing Modified Files"), ("new_files", "New Files"), ("deleted_files", "Deleted Files"), ("unsupported_dependencies", "Unsupported Dependencies"), ("unsupported_commands", "Unsupported Commands"), ("protected_artifact_modifications", "Protected Packet Artifact Modifications"), ("warnings_text", "Legacy Warnings")]
+    sections = [("modified_files", "Modified Files"), ("missing_modified_files", "Missing Modified Files"), ("new_files", "New Files"), ("deleted_files", "Deleted Files"), ("unsupported_dependencies", "Unsupported Dependencies"), ("unsupported_commands", "Unsupported Commands"), ("protected_artifact_modifications", "Protected Packet Artifact Modifications"), ("git_path_modifications", "Git Path Modifications"), ("binary_diffs", "Binary Diffs"), ("binary_diff_blockers", "Binary Diff Blockers"), ("declared_dependencies", "Declared Dependencies"), ("declared_commands", "Declared Commands"), ("warnings_text", "Legacy Warnings")]
     legacy = dict(report); legacy["warnings_text"] = report.get("legacy_warnings", report.get("warnings", []))
     for key, title in sections:
         lines.extend([f"### {title}"])
@@ -2195,12 +2195,15 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
         report["binary_diff_blockers"] = sorted(set(binary_blockers))
     unsupported_ecosystems = _unsupported_ecosystem_uncertainties(files, changes)
     if unsupported_ecosystems:
-        seen_uncertainty_ids = set()
+        seen_uncertainties = set()
         merged_uncertainties = []
         for uncertainty in report.get("uncertainties", []) + unsupported_ecosystems:
-            key = uncertainty.get("id") if isinstance(uncertainty, dict) else str(uncertainty)
-            if key not in seen_uncertainty_ids:
-                seen_uncertainty_ids.add(key)
+            if isinstance(uncertainty, dict):
+                key = (uncertainty.get("id"), uncertainty.get("message"), uncertainty.get("evidence"), uncertainty.get("path"))
+            else:
+                key = (str(uncertainty),)
+            if key not in seen_uncertainties:
+                seen_uncertainties.add(key)
                 merged_uncertainties.append(uncertainty)
         report["uncertainties"] = merged_uncertainties
     report["unsupported_dependencies"] = sorted(unsupported)

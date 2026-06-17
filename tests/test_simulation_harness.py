@@ -101,12 +101,19 @@ def scenario_cases() -> list[Scenario]:
         cases.append(Scenario(f"normal_{path}", {path: "{}\n"}, unified_patch(path, "{}\n", '{"x":true}\n'), MUST_NOT_RED, forbidden_ids={"protected_artifact"}, repo_shape="normal paths", summary=path))
     for path in ["../outside.txt", "docs/../../.sourcepack/state/baseline.lock", "/tmp/file.txt"]:
         cases.append(Scenario(f"escape_{path}", {"app.py": "VALUE = 1\n"}, unified_patch(path, "old\n", "new\n"), MUST_FAIL_CLOSED, "path_escape", repo_shape="path escape", summary=path))
+    cases.append(Scenario("escape_windows_mixed", {"app.py": "VALUE = 1\n"}, unified_patch("docs\\..\\..\\outside.txt", "old\n", "new\n"), MUST_FAIL_CLOSED, "path_escape", repo_shape="path escape", summary="windows traversal"))
+    cases.append(Scenario("protected_sourcepack_root", {".sourcepack/config.json": "{}\n"}, unified_patch(".sourcepack/config.json", "{}\n", "{\"x\":true}\n"), MUST_RED, "protected_artifact", repo_shape="protected paths", summary="sourcepack root"))
+    cases.append(Scenario("protected_git_path", {".git/config": "[core]\n"}, unified_patch(".git/config", "[core]\n", "[core]\nrepositoryformatversion = 0\n"), MUST_RED, "git_path_modification", repo_shape="protected paths", summary="git internal"))
+    cases.append(Scenario("workflow_change_warn", {".github/workflows/ci.yml": "name: ci\n"}, unified_patch(".github/workflows/ci.yml", "name: ci\n", "name: ci\non: push\n"), MUST_YELLOW, "workflow_change", repo_shape="automation", summary="workflow review"))
 
     malformed = ["not a unified diff\n", "@@ -1 +1 @@\n+x\n", "diff --git a/a.py b/a.py\n", "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ nope\n+x\n"]
     for i, patch in enumerate(malformed):
         cases.append(Scenario(f"malformed_{i}", {"a.py": "x\n"}, patch, MUST_FAIL_CLOSED, "malformed_diff", repo_shape="malformed", summary=str(i)))
     cases.append(Scenario("binary_ordinary", {"a.py": "x\n"}, "diff --git a/img.png b/img.png\nBinary files a/img.png and b/img.png differ\n", MUST_YELLOW, "binary_diff", repo_shape="binary", summary="ordinary binary"))
     cases.append(Scenario("binary_high_risk", {"a.py": "x\n"}, "diff --git a/.sourcepack/baseline/active.json b/.sourcepack/baseline/active.json\nBinary files a/.sourcepack/baseline/active.json and b/.sourcepack/baseline/active.json differ\n", MUST_RED, "binary_diff", repo_shape="binary", summary="trust binary"))
+    cases.append(Scenario("binary_manifest_review", {"package.json": "{}\n"}, "diff --git a/package.json b/package.json\nBinary files a/package.json and b/package.json differ\n", MUST_RED, "binary_diff", repo_shape="binary", summary="manifest binary"))
+    cases.append(Scenario("rename_unsupported_warn", {"old.py": "VALUE = 1\n"}, "diff --git a/old.py b/new.py\nsimilarity index 100%\nrename from old.py\nrename to new.py\n", MUST_YELLOW, "unsupported_rename_copy", repo_shape="rename", summary="rename unsupported"))
+    cases.append(Scenario("copy_protected_fail", {"README.md": "demo\n"}, "diff --git a/README.md b/.sourcepack/baseline/active.json\ncopy from README.md\ncopy to .sourcepack/baseline/active.json\n", MUST_RED, "protected_artifact", repo_shape="copy", summary="copy to protected"))
     cases.append(Scenario("new_file", {"a.py": "x\n"}, unified_patch("new.py", "", "import os\n", new_file=True), MUST_YELLOW, "new_file", repo_shape="edge", summary="new file"))
     cases.append(Scenario("deleted_file", {"a.py": "x\n"}, unified_patch("a.py", "x\n", "", deleted=True), MUST_YELLOW, "deleted_file", repo_shape="edge", summary="deleted file"))
     for i, mod in enumerate(["csv", "hashlib", "collections", "itertools", "functools", "typing", "unittest", "subprocess", "re", "math", "decimal", "sqlite3", "http", "email"]):

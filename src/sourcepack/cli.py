@@ -928,12 +928,15 @@ class PatchFileChange:
     added_lines: list[str] | None = None
     diff_lines: list[str] | None = None
     unsafe_path: bool = False
+    operation: str = "modify"
 
 
 def _normalize_diff_path(path: str) -> tuple[str, bool]:
     raw = path.strip().replace("\\", "/")
     if raw.startswith("a/") or raw.startswith("b/"):
         raw = raw[2:]
+    if not raw or raw in {"a/", "b/"}:
+        return raw, True
     if raw.startswith("/") or re.match(r"^[A-Za-z]:/", raw):
         return raw, True
     parts: list[str] = []
@@ -958,6 +961,7 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
     new_path: str | None = None
     new_file = False
     deleted_file = False
+    operation = "modify"
 
     malformed = False
 
@@ -973,7 +977,7 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
 
     for line in text.splitlines():
         if line.startswith("diff --git "):
-            flush(); old_path = new_path = None; new_file = deleted_file = False
+            flush(); old_path = new_path = None; new_file = deleted_file = False; operation = "modify"
             parts = line.split()
             if len(parts) >= 4:
                 old_path, old_unsafe = clean(parts[2]); new_path, new_unsafe = clean(parts[3])
@@ -985,6 +989,24 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
             new_file = True
         elif line.startswith("deleted file mode"):
             deleted_file = True
+        elif line.startswith("rename from "):
+            old_path, unsafe = clean(line.removeprefix("rename from "))
+            operation = "rename"
+            malformed = malformed or unsafe
+        elif line.startswith("rename to "):
+            new_path, unsafe = clean(line.removeprefix("rename to "))
+            operation = "rename"
+            malformed = malformed or unsafe
+            current = PatchFileChange(path=new_path or old_path or "", old_path=old_path, new_file=False, deleted_file=False, added_lines=[], diff_lines=[], unsafe_path=unsafe, operation=operation)
+        elif line.startswith("copy from "):
+            old_path, unsafe = clean(line.removeprefix("copy from "))
+            operation = "copy"
+            malformed = malformed or unsafe
+        elif line.startswith("copy to "):
+            new_path, unsafe = clean(line.removeprefix("copy to "))
+            operation = "copy"
+            malformed = malformed or unsafe
+            current = PatchFileChange(path=new_path or old_path or "", old_path=old_path, new_file=True, deleted_file=False, added_lines=[], diff_lines=[], unsafe_path=unsafe, operation=operation)
         elif line.startswith("--- "):
             val = line[4:].strip()
             if val == "/dev/null":
@@ -1001,7 +1023,7 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
                 new_path, unsafe = clean(val)
             malformed = malformed or unsafe
             path = new_path or old_path or ""
-            current = PatchFileChange(path=path, old_path=old_path, new_file=new_file or old_path is None, deleted_file=deleted_file or new_path is None, added_lines=[], diff_lines=[], unsafe_path=unsafe)
+            current = PatchFileChange(path=path, old_path=old_path, new_file=new_file or old_path is None, deleted_file=deleted_file or new_path is None, added_lines=[], diff_lines=[], unsafe_path=unsafe, operation=operation)
         elif line.startswith("@@ ") and current is None:
             malformed = True
         elif current is not None and line.startswith("+") and not line.startswith("+++"):
@@ -1033,7 +1055,7 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
         "patch_judgment_schema_version": "1.0",
         "verdict": "PASS",
         "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [],
-        "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [],
+        "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "git_path_modifications": [], "warnings": [],
     }
     if any(ch.unsafe_path for ch in changes):
         report["path_escape"] = True
@@ -1042,6 +1064,8 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
         report["modified_files"].append(ch.path)
         if ch.new_file:
             report["new_files"].append(ch.path)
+        elif ch.operation in {"rename", "copy"}:
+            pass
         elif ch.path not in files:
             if baseline_inventory_loaded or ch.path in _included_paths(manifest):
                 report["missing_modified_files"].append(ch.path)
@@ -1049,9 +1073,17 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
                 report.setdefault("uncertain_modified_files", []).append(ch.path)
         if ch.deleted_file:
             report["deleted_files"].append(ch.path)
-        protected = ch.path.startswith(".sourcepack/baseline/") or ch.path.startswith(".sourcepack/state/")
+        protected = ch.path.startswith(".sourcepack/")
+        git_internal = ch.path == ".git" or ch.path.startswith(".git/")
+        workflow = ch.path.startswith(".github/workflows/")
         if protected:
             report["protected_artifact_modifications"].append(ch.path)
+        if git_internal:
+            report.setdefault("git_path_modifications", []).append(ch.path)
+        if workflow:
+            report.setdefault("uncertainties", []).append({"id": "workflow_change", "message": f"{ch.path} changes repository automation and requires review", "path": ch.path, "evidence": ch.path})
+        if ch.operation in {"rename", "copy"}:
+            report.setdefault("uncertainties", []).append({"id": "unsupported_rename_copy", "message": f"{ch.operation} semantics for {ch.path} require review", "path": ch.path, "evidence": ch.old_path or ch.path})
         added = "\n".join(ch.added_lines or [])
         all_added.append(added)
         for imported in extract_imports_from_text(added, Path(ch.path).suffix.lower()):
@@ -1115,12 +1147,12 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
             report.setdefault("uncertainties", []).append({"id": "baseline_inventory_missing", "message": "Baseline packet lacks full file inventory; modified files outside prompt context could not be checked against tracked repo inventory.", "evidence": ", ".join(outside_context)})
     if report["new_files"]:
         report["warnings"].append("Patch creates new files that were not part of the original packet reality.")
-    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "path_escape"]
+    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "git_path_modifications", "path_escape"]
     if any(report.get(k) for k in fail_keys):
         report["verdict"] = "FAIL"
     elif report["new_files"] or report["warnings"] or report.get("uncertainties"):
         report["verdict"] = "WARN"
-    for key in ["modified_files", "missing_modified_files", "new_files", "deleted_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "warnings"]:
+    for key in ["modified_files", "missing_modified_files", "new_files", "deleted_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "git_path_modifications", "warnings"]:
         report[key] = sorted(set(report[key]))
     return report
 
@@ -2077,8 +2109,9 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     if re.search(r"(?m)^@@(?! -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)", patch_text):
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     changes = parse_unified_diff(patch_text)
+    unsafe_paths = sorted({ch.path for ch in changes if ch.unsafe_path and ch.path})
     if any(ch.unsafe_path for ch in changes):
-        return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "path_escape": True}
+        return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "path_escape": True, "path_escape_paths": unsafe_paths}
     if patch_text.strip() and not changes and "Binary files " not in patch_text:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     report = analyze_patch(packet_path, patch_text, changes)
@@ -2157,7 +2190,7 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     if declared_only:
         report.setdefault("warnings", []).append("Patch declares new dependencies that require review.")
         report["declared_dependencies"] = sorted(declared_only)
-    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "binary_diff_blockers", "path_escape"]
+    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "git_path_modifications", "binary_diff_blockers", "path_escape"]
     report["verdict"] = "FAIL" if any(report.get(k) for k in fail_keys) else "WARN" if (report.get("new_files") or report.get("deleted_files") or report.get("warnings") or declared_only or report.get("uncertainties") or report.get("binary_diffs")) else "PASS"
     return report
 
@@ -2170,12 +2203,18 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
     if report.get("malformed_diff"):
         findings.append(normalized_finding("malformed_diff", "error", "diff", "SourcePack could not safely parse the diff artifact it was asked to judge."))
     if report.get("path_escape"):
-        findings.append(normalized_finding("path_escape", "error", "diff", "Diff path escapes the repository root or is absolute."))
-    for p in report.get("protected_artifact_modifications", []): findings.append(normalized_finding("protected_artifact", "error", "artifact", f"{p} is a protected SourcePack trust artifact.", p))
-    for p in report.get("binary_diff_blockers", []): findings.append(normalized_finding("binary_diff", "error", "diff", f"Binary change at {p} crosses a SourcePack trust or high-risk control boundary.", p))
+        paths = report.get("path_escape_paths") or []
+        if paths:
+            for p in paths:
+                findings.append(normalized_finding("path_escape", "error", "diff", "Diff path escapes the repository root or is absolute.", p, evidence=p))
+        else:
+            findings.append(normalized_finding("path_escape", "error", "diff", "Diff path escapes the repository root or is absolute."))
+    for p in report.get("protected_artifact_modifications", []): findings.append(normalized_finding("protected_artifact", "error", "artifact", f"{p} is a protected SourcePack trust artifact.", p, evidence=p))
+    for p in report.get("git_path_modifications", []): findings.append(normalized_finding("git_path_modification", "error", "artifact", f"{p} modifies Git internal state and is not safe to judge as a normal repository file.", p, evidence=p))
+    for p in report.get("binary_diff_blockers", []): findings.append(normalized_finding("binary_diff", "error", "diff", f"Binary change at {p} crosses a SourcePack trust or high-risk control boundary.", p, evidence=p))
     for p in report.get("binary_diffs", []):
         if p not in set(report.get("binary_diff_blockers", [])):
-            findings.append(normalized_finding("binary_diff", "warn", "uncertainty", f"Binary content was detected at {p} and was not semantically evaluated.", p))
+            findings.append(normalized_finding("binary_diff", "warn", "uncertainty", f"Binary content was detected at {p} and was not semantically evaluated.", p, evidence=p))
     for p in report.get("new_files", []): findings.append(normalized_finding("new_file", "warn", "review", f"{p} was created by the patch.", p))
     for p in report.get("deleted_files", []): findings.append(normalized_finding("deleted_file", "warn", "review", f"{p} was deleted by the patch.", p))
     for d in report.get("declared_dependencies", []): findings.append(normalized_finding("declared_dependency", "warn", "review", f"{d} was added to dependency files.", evidence=d))

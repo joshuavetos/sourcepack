@@ -42,16 +42,22 @@ def multi_patch(parts: list[tuple[str, str, str]]) -> str:
     return "".join(unified_patch(path, old, new) for path, old, new in parts)
 
 
-def write_packet(tmp_path: Path, files: dict[str, str]) -> Path:
+def write_packet(tmp_path: Path, files: dict[str, str], context_files: set[str] | None = None, inventory_files: set[str] | None = None) -> Path:
     packet = tmp_path / "packet"
     packet.mkdir()
     included = []
     context = ["# SourcePack Context", ""]
+    context_names = set(files) if context_files is None else context_files
+    inventory_names = set(files) if inventory_files is None else inventory_files
     for rel, content in sorted(files.items()):
+        if rel not in context_names:
+            continue
         included.append({"relative_path": rel, "sha256": sha256_text(content), "extension": Path(rel).suffix})
         context.extend([f"## File: {rel}", "", "Content:", content.rstrip("\n"), "---", ""])
     manifest = {"included_files": included}
+    inventory = {"schema_version": "sourcepack.file_inventory.v1", "source": "test", "files": [{"relative_path": rel, "included_in_prompt_context": rel in context_names, "source": "test"} for rel in sorted(inventory_names)]}
     (packet / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (packet / "file_inventory.json").write_text(json.dumps(inventory), encoding="utf-8")
     (packet / "context.md").write_text("\n".join(context), encoding="utf-8")
     (packet / "reality_map.json").write_text(json.dumps({"supported_commands": []}), encoding="utf-8")
     (packet / "receipt.json").write_text(json.dumps({"hashes": {}}), encoding="utf-8")

@@ -127,6 +127,42 @@ def test_patch_simulation_scenarios(tmp_path: Path, scenario: Scenario) -> None:
     assert_expectation(scenario, report)
 
 
+def test_real_repo_failure_regression_readme_outside_prompt_context(tmp_path: Path) -> None:
+    packet = write_packet(tmp_path, {"README.md": "old docs\n", "app.py": "VALUE = 1\n"}, context_files={"app.py"}, inventory_files={"README.md", "app.py"})
+    report = judge_patch_text(packet, unified_patch("README.md", "old docs\n", "updated docs\n"))
+    assert report["verdict"] != "FAIL"
+    assert report["missing_modified_files"] == []
+    assert summarize(report)["finding_ids"].isdisjoint({"missing_file"})
+
+
+def test_real_repo_failure_regression_new_file_yellow(tmp_path: Path) -> None:
+    packet = write_packet(tmp_path, {"README.md": "old docs\n"}, context_files=set(), inventory_files={"README.md"})
+    report = judge_patch_text(packet, unified_patch("NEW_NOTES.md", "", "notes\n", new_file=True))
+    assert report["verdict"] == "WARN"
+    assert "NEW_NOTES.md" in report["new_files"]
+    assert "new_file" in summarize(report)["finding_ids"]
+    assert report["missing_modified_files"] == []
+
+
+def test_real_repo_failure_regression_missing_existing_file_red(tmp_path: Path) -> None:
+    packet = write_packet(tmp_path, {"README.md": "old docs\n"}, context_files={"README.md"}, inventory_files={"README.md"})
+    report = judge_patch_text(packet, unified_patch("ghost.py", "VALUE = 1\n", "VALUE = 2\n"))
+    assert report["verdict"] == "FAIL"
+    assert "ghost.py" in report["missing_modified_files"]
+    assert "missing_file" in summarize(report)["finding_ids"]
+
+
+def test_real_repo_failure_regression_unsupported_import_outside_prompt_context(tmp_path: Path) -> None:
+    packet = write_packet(tmp_path, {"app.py": "VALUE = 1\n"}, context_files=set(), inventory_files={"app.py"})
+    report = judge_patch_text(packet, unified_patch("app.py", "VALUE = 1\n", "import fastapi\nVALUE = 1\n"))
+    ids = summarize(report)["finding_ids"]
+    assert report["verdict"] == "FAIL"
+    assert "fastapi" in report["unsupported_dependencies"]
+    assert "unsupported_dependency" in ids
+    assert "missing_file" not in ids
+    assert report["missing_modified_files"] == []
+
+
 def test_simulation_count() -> None:
     assert len(SCENARIOS) >= 100
 

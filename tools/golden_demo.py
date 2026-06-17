@@ -50,8 +50,16 @@ def init_repo(repo: Path, package_json: bool = False) -> None:
     run(["git", "add", "."], repo)
     run(["git", "commit", "-q", "-m", "initial trusted repo"], repo)
     run(SOURCEPACK + ["init", ".", "--auto", "--no-hook"], repo)
-    run(["git", "add", ".gitignore", ".sourcepackignore", "sourcepack.config.json"], repo)
-    run(["git", "commit", "-q", "-m", "accept sourcepack local config"], repo)
+    local_config_files = [
+        name
+        for name in (".gitignore", ".sourcepackignore", "sourcepack.config.json")
+        if (repo / name).exists()
+    ]
+    if local_config_files:
+        run(["git", "add", *local_config_files], repo)
+        staged = run(["git", "diff", "--cached", "--quiet"], repo, check=False)
+        if staged.returncode != 0:
+            run(["git", "commit", "-q", "-m", "accept sourcepack local config"], repo)
     run(SOURCEPACK + ["baseline", ".", "--refresh", "--quiet"], repo)
 
 

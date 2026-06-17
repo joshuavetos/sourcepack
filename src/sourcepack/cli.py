@@ -1433,9 +1433,15 @@ def render_traffic(report: dict, verbose: bool = False) -> str:
             lines.extend(["", "Blockers:", ""])
             shown = report.get("blockers", []) if verbose else report.get("blockers", [])[:3]
             lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
-        if report.get("warnings"):
+        review = [f for f in report.get("warnings", []) if f.get("category") != "uncertainty"]
+        uncertain = [f for f in report.get("warnings", []) if f.get("category") == "uncertainty"]
+        if review:
             lines.extend(["", "Review warnings:", ""])
-            shown = report.get("warnings", []) if verbose else report.get("warnings", [])[:3]
+            shown = review if verbose else review[:3]
+            lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
+        if uncertain:
+            lines.extend(["", "Uncertainties:", ""])
+            shown = uncertain if verbose else uncertain[:3]
             lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
         lines.extend(["", f"Next action: {report.get('next_action')}"])
     if verdict != "PASS":
@@ -2373,6 +2379,11 @@ def cli_diff(args) -> int:
         return emit_diff_report(rep, args)
     if baseline_status["state"] == "missing":
         dirty_now, dirty_state_now = git_worktree_dirty(repo)
+        if getattr(args, "ci", False):
+            rep = traffic_report("FAIL", "trusted baseline is missing in CI.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists; CI must not establish trust.")], ["baseline", "diff"], "create the baseline locally only after deciding the current repo state should be trusted.")
+            rep.update(baseline_report_fields(baseline_status))
+            rep = finalize_diff_report(repo, rep, args)
+            return emit_diff_report(rep, args)
         if diff_text.strip() or (dirty_now and not _only_sourcepack_gitignore_change(repo)):
             rep = traffic_report("FAIL", "baseline missing while changes are present.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
             rep.update(baseline_report_fields(baseline_status))

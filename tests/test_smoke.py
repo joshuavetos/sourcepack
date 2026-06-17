@@ -675,6 +675,49 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
         subprocess.run(["git", "add", "README.md", "app.py"], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
 
+
+    def test_diff_ci_missing_baseline_clean_repo_is_json_fail_without_creating_baseline(self):
+        with TemporaryDirectory() as td:
+            repo = self._repo(Path(td)); self._git_init_clean(repo)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(run_cli(["diff", str(repo), "--ci"]), 1)
+            data = json.loads(buf.getvalue())
+            self.assertEqual(data["verdict"], "FAIL")
+            self.assertTrue(data["ci"])
+            self.assertEqual(data["baseline_state"], "missing")
+            self.assertIn("baseline_missing", {f["id"] for f in data["blockers"]})
+            self.assertFalse((repo / ".sourcepack" / "baseline" / "active.json").exists())
+
+    def test_diff_ci_missing_baseline_dirty_repo_is_json_fail_without_creating_baseline(self):
+        with TemporaryDirectory() as td:
+            repo = self._repo(Path(td)); self._git_init_clean(repo)
+            (repo / "app.py").write_text("def main():\n    return False\n", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(run_cli(["diff", str(repo), "--ci"]), 1)
+            data = json.loads(buf.getvalue())
+            self.assertEqual(data["verdict"], "FAIL")
+            self.assertTrue(data["ci"])
+            self.assertEqual(data["baseline_state"], "missing")
+            self.assertFalse((repo / ".sourcepack" / "baseline" / "active.json").exists())
+
+    def test_fail_rendering_splits_blockers_review_warnings_and_uncertainties(self):
+        rep = traffic_report(
+            "FAIL",
+            findings=[
+                normalized_finding("missing_file", "error", "file", "app.py not found", "app.py"),
+                normalized_finding("new_file", "warn", "review", "new.py was created", "new.py"),
+                normalized_finding("baseline_inventory_missing", "warn", "uncertainty", "inventory was missing"),
+            ],
+        )
+        rendered = render_traffic(rep, verbose=True)
+        self.assertIn("Blockers:", rendered)
+        self.assertIn("Review warnings:", rendered)
+        self.assertIn("Uncertainties:", rendered)
+        self.assertLess(rendered.index("Blockers:"), rendered.index("Review warnings:"))
+        self.assertLess(rendered.index("Review warnings:"), rendered.index("Uncertainties:"))
+
     def test_init_auto_clean_idempotent_status_and_no_hook(self):
         with TemporaryDirectory() as td:
             repo = self._repo(Path(td)); self._git_init_clean(repo)

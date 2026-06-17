@@ -72,6 +72,27 @@ def test_baseline_module_does_not_import_judgment() -> None:
     assert "judgment" not in source
 
 
+def test_baseline_module_owns_baseline_engine() -> None:
+    baseline_source = (ROOT / "src/sourcepack/baseline.py").read_text(encoding="utf-8")
+    judgment_source = (ROOT / "src/sourcepack/judgment.py").read_text(encoding="utf-8")
+    required = [
+        "class BaselineLockError",
+        "def baseline_corrupt_result",
+        "def resolve_active_baseline",
+        "def _validate_packet_artifacts",
+        "def validate_baseline",
+        "def acquire_baseline_lock",
+        "def release_baseline_lock",
+        "def _write_json_atomic",
+        "def _unique_build_id",
+        "def build_current_baseline",
+        "def baseline_report_fields",
+    ]
+    assert [token for token in required if token not in baseline_source] == []
+    forbidden = ["def validate_baseline", "def build_current_baseline", "def resolve_active_baseline"]
+    assert [token for token in forbidden if token in judgment_source] == []
+
+
 def test_cli_diff_delegates_to_judge_repo_change() -> None:
     source = (ROOT / "src/sourcepack/cli.py").read_text(encoding="utf-8")
     tree = ast.parse(source)

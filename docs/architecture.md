@@ -37,3 +37,19 @@ Report data is normalized before rendering. JSON is the machine contract, Markdo
 ## Known limitations
 
 SourcePack does not prove semantic correctness, find vulnerabilities, scan secrets, or fully model every ecosystem. Unsupported or uncertain ecosystems should WARN rather than silently PASS as understood.
+
+## Public-alpha engine boundary
+
+The public-alpha core exposes `sourcepack.judgment.judge_repo_change(repo_path, *, staged=False, patch_text=None, policy_mode=PolicyMode.LOCAL) -> Judgment`. The CLI `sourcepack diff` now delegates repo judgment to that API, while keeping rendering, report persistence, and process exit behavior in the CLI layer.
+
+The intended flow is:
+
+1. CLI parses command-line arguments.
+2. Git/diff acquisition resolves the repository root and obtains staged, unstaged, untracked, or supplied patch text.
+3. Baseline loading validates `.sourcepack/baseline/` before trust is used.
+4. Diff parsing extracts changed paths and added evidence.
+5. The judgment engine creates report-ready findings from canonical reason codes.
+6. Policy mode maps PASS/WARN/FAIL to local, strict, or CI exit behavior.
+7. Report renderers write JSON, Markdown, and HTML without changing the verdict.
+
+Prompt context is intentionally outside this enforcement evidence path.

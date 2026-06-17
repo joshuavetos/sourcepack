@@ -1976,6 +1976,10 @@ def _is_high_risk_binary_path(rel: str) -> bool:
 
 
 UNSUPPORTED_ECOSYSTEM_MARKERS = {
+    "gemfile": ("Gemfile", "Ruby/Bundler dependency validation is not implemented"),
+    "composer.json": ("composer.json", "PHP/Composer dependency validation is not implemented"),
+    "main.tf": ("main.tf", "Terraform module/provider validation is not implemented"),
+    "flake.nix": ("flake.nix", "Nix flake validation is not implemented"),
     "cargo.toml": ("Cargo.toml", "Rust dependency validation is not implemented"),
     "go.mod": ("go.mod", "Go module dependency validation is not implemented"),
     "pom.xml": ("pom.xml", "Maven dependency validation is not implemented"),
@@ -1983,12 +1987,16 @@ UNSUPPORTED_ECOSYSTEM_MARKERS = {
     "build.gradle.kts": ("build.gradle.kts", "Gradle dependency validation is not implemented"),
     "settings.gradle": ("settings.gradle", "Gradle workspace validation is not implemented"),
     "settings.gradle.kts": ("settings.gradle.kts", "Gradle workspace validation is not implemented"),
+    "*.csproj": ("*.csproj", ".NET/NuGet dependency validation is not implemented"),
 }
 
 
 def _unsupported_ecosystem_uncertainties(files: set[str], changes: list[PatchFileChange]) -> list[dict]:
     names = {Path(f).name.lower() for f in files}
     names.update(Path(ch.path).name.lower() for ch in changes)
+    for ch in changes:
+        if ch.path.lower().endswith(".csproj"):
+            names.add("*.csproj")
     uncertainties = []
     for marker, (evidence, message) in sorted(UNSUPPORTED_ECOSYSTEM_MARKERS.items()):
         if marker in names:
@@ -2276,57 +2284,52 @@ def untracked_files_as_diff(repo: str | Path) -> str:
         chunks.extend(f"+{line}" for line in lines)
     return "\n".join(chunks) + ("\n" if chunks else "")
 
-def cli_diff(args) -> int:
-    if getattr(args, "ci", False):
-        args.json = True
-    repo_arg = Path(args.repo).resolve(); cp = run_git(repo_arg, ["rev-parse", "--show-toplevel"])
+def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, ci: bool = False) -> dict:
+    repo_arg = Path(repo_path).resolve(); cp = run_git(repo_arg, ["rev-parse", "--show-toplevel"])
     if cp.returncode != 0:
         message = "Git executable not found." if cp.returncode == 127 else "No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use."
-        rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable" if cp.returncode == 127 else "no_git_repo", "error", "git", message)])
-        return emit_diff_report(rep, args)
+        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable" if cp.returncode == 127 else "no_git_repo", "error", "git", message)])
     git_root = Path(cp.stdout.strip()).resolve()
     repo = repo_arg if validate_baseline(repo_arg).get("state") in {"present", "stale", "corrupt"} else git_root
-    paths = ensure_sourcepack_dirs(repo); note = None; added, err = ensure_gitignore_entry(repo)
+    paths = ensure_sourcepack_dirs(repo); added, err = ensure_gitignore_entry(repo)
+    if added:
+        paths.setdefault("gitignore_added", True)
     if err:
-        rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("gitignore_unwritable", "error", "git", f"Cannot write .gitignore: {err}")])
-        return emit_diff_report(rep, args)
-    diff_args = ["diff", "--staged"] if args.staged else ["diff"]
-    if repo != git_root:
-        diff_args.append("--relative")
-    cp = run_git(repo, diff_args); diff_text = cp.stdout
-    if cp.returncode == 127:
-        rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable", "error", "git", "Git executable not found.")])
-        return emit_diff_report(rep, args)
-    if not args.staged:
-        extra = untracked_files_as_diff(repo)
-        if extra and not (added and _only_sourcepack_gitignore_change(repo)):
-            diff_text = (diff_text + "\n" + extra).strip() + "\n"
+        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("gitignore_unwritable", "error", "git", f"Cannot write .gitignore: {err}")])
+    if patch_text is None:
+        diff_args = ["diff", "--staged"] if staged else ["diff"]
+        if repo != git_root:
+            diff_args.append("--relative")
+        cp = run_git(repo, diff_args); diff_text = cp.stdout
+        if cp.returncode == 127:
+            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable", "error", "git", "Git executable not found.")])
+        if not staged:
+            extra = untracked_files_as_diff(repo)
+            if extra and not (added and _only_sourcepack_gitignore_change(repo)):
+                diff_text = (diff_text + "\n" + extra).strip() + "\n"
+    else:
+        diff_text = patch_text
     baseline_status = validate_baseline(repo)
     if baseline_status["state"] == "corrupt":
         rep = traffic_report("FAIL", "trusted baseline is corrupt.", [normalized_finding("baseline_corrupt", "error", "baseline", baseline_status["message"])], ["baseline", "diff"], "Recreate the baseline only after verifying the current repo state should be trusted.")
-        rep.update(baseline_report_fields(baseline_status))
-        rep = finalize_diff_report(repo, rep, args)
-        return emit_diff_report(rep, args)
+        rep.update(baseline_report_fields(baseline_status)); return rep
     if baseline_status["state"] == "missing":
         dirty_now, dirty_state_now = git_worktree_dirty(repo)
-        if getattr(args, "ci", False):
+        if ci:
             rep = traffic_report("FAIL", "trusted baseline is missing in CI.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists; CI must not establish trust.")], ["baseline", "diff"], "create the baseline locally only after deciding the current repo state should be trusted.")
-            rep.update(baseline_report_fields(baseline_status))
-            rep = finalize_diff_report(repo, rep, args)
-            return emit_diff_report(rep, args)
+            rep.update(baseline_report_fields(baseline_status)); return rep
         if diff_text.strip() or (dirty_now and not _only_sourcepack_gitignore_change(repo)):
             rep = traffic_report("FAIL", "baseline missing while changes are present.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
-            rep.update(baseline_report_fields(baseline_status))
-            rep = finalize_diff_report(repo, rep, args)
-            return emit_diff_report(rep, args)
+            rep.update(baseline_report_fields(baseline_status)); return rep
         try:
-            build_current_baseline(repo, quiet=True); note = "Created SourcePack baseline because none existed and no diff was present."; baseline_status = validate_baseline(repo)
+            build_current_baseline(repo, quiet=True); baseline_status = validate_baseline(repo)
+            rep_note = "Created SourcePack baseline because none existed and no diff was present."
         except BaselineLockError as exc:
-            rep = traffic_report("WARN", "baseline writer is locked.", [normalized_finding("baseline_locked", "warn", "tooling", str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")
-            return emit_diff_report(rep, args)
+            return traffic_report("WARN", "baseline writer is locked.", [normalized_finding("baseline_locked", "warn", "tooling", str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")
         except Exception as exc:
-            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("baseline_failed", "error", "baseline", f"Baseline verification failed: {exc}")])
-            return emit_diff_report(rep, args)
+            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("baseline_failed", "error", "baseline", f"Baseline verification failed: {exc}")])
+    else:
+        rep_note = None
     stale_findings = []
     if baseline_status["state"] == "stale":
         stale_findings.append(normalized_finding("baseline_stale", "warn", "uncertainty", "Trusted SourcePack baseline may not match current repo state."))
@@ -2336,11 +2339,9 @@ def cli_diff(args) -> int:
     else:
         raw = judge_patch_text(repo / baseline_status["packet_path"], diff_text); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
         if stale_findings and rep["verdict"] != "FAIL":
-            rep = traffic_report("WARN", "SourcePack could not fully evaluate this change.", rep.get("findings", []) + stale_findings, rep.get("checked_categories", []), rep.get("next_action"), reason_type="uncertainty")
-            rep["raw_patch_judgment"] = raw
+            rep = traffic_report("WARN", "SourcePack could not fully evaluate this change.", rep.get("findings", []) + stale_findings, rep.get("checked_categories", []), rep.get("next_action"), reason_type="uncertainty"); rep["raw_patch_judgment"] = raw
         elif stale_findings:
-            rep = traffic_report("FAIL", rep.get("headline"), rep.get("findings", []) + stale_findings, rep.get("checked_categories", []), rep.get("next_action"))
-            rep["raw_patch_judgment"] = raw
+            rep = traffic_report("FAIL", rep.get("headline"), rep.get("findings", []) + stale_findings, rep.get("checked_categories", []), rep.get("next_action")); rep["raw_patch_judgment"] = raw
     rep.update(baseline_report_fields(baseline_status))
     if baseline_status.get("metadata_path"):
         try:
@@ -2348,8 +2349,21 @@ def cli_diff(args) -> int:
         except Exception:
             pass
     rep["current_git"] = git_metadata(repo)
-    rep = finalize_diff_report(repo, rep, args)
-    return emit_diff_report(rep, args, added, note)
+    if rep_note:
+        rep["note"] = rep_note
+    rep["repo_path"] = str(repo)
+    return rep
+
+
+def cli_diff(args) -> int:
+    from .judgment import judge_repo_change
+    from .policy import PolicyMode
+    if getattr(args, "ci", False):
+        args.json = True
+    mode = PolicyMode.CI if getattr(args, "ci", False) else PolicyMode.STRICT if getattr(args, "strict", False) else PolicyMode.LOCAL
+    judgment = judge_repo_change(args.repo, staged=args.staged, policy_mode=mode)
+    report = finalize_diff_report(Path(judgment.report.get("repo_path", args.repo)), judgment.report, args)
+    return emit_diff_report(report, args, note=report.get("note"))
 
 def hook_text(strict: bool) -> str:
     strict_block = """

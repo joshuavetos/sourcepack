@@ -136,3 +136,7 @@ SourcePack reason codes explain why a repo-state transition is PASS, WARN, or FA
 - **Common cause:** Rust, Go, Maven, or Gradle markers appear in the repo or change.
 - **Likely fix:** Treat the result as needing review and rely on ecosystem-specific tests until support is implemented.
 - **Example message:** `Cargo.toml detected, but Rust dependency validation is not implemented.`
+
+## Vocabulary enforcement
+
+`src/sourcepack/reason_codes.py` is the source of truth for emitted reason-code IDs. Runtime report construction normalizes IDs to lowercase snake_case and refuses unknown WARN/FAIL finding IDs. Positive evidence such as dependency declarations is represented as review evidence (`declared_dependency`) rather than as proof that prompt context can enforce trust.

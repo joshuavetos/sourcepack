@@ -11,3 +11,7 @@ SourcePack intentionally has a narrow local-first scope.
 - SourcePack does not prove code correctness.
 - SourcePack does not detect vulnerabilities or replace dependency, secret, or supply-chain scanning tools.
 - Docker build semantics beyond obvious command and file evidence are limited.
+
+## Public-alpha unsupported ecosystem handling
+
+SourcePack now warns with `unsupported_ecosystem` for recognized but not fully modeled ecosystem markers including Cargo, Go modules, Maven, Gradle, Ruby/Bundler, PHP/Composer, .NET project files, Terraform, and Nix flakes. This is uncertainty evidence, not semantic validation of those ecosystems.

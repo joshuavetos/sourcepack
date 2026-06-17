@@ -9,6 +9,7 @@ from sourcepack import __version__
 from sourcepack.paths import ensure_sourcepack_dirs
 from sourcepack.reports.html import render_report_html
 from sourcepack.reports.markdown import LIGHT_BY_VERDICT, render_traffic
+from sourcepack.reason_codes import normalize_reason_code, is_canonical_reason_code
 
 SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
 
@@ -17,7 +18,10 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 def normalized_finding(fid: str, severity: str, category: str, message: str, path: str | None = None, evidence: str | None = None, suggestion: str | None = None) -> dict:
-    return {"id": fid, "severity": severity, "category": category, "path": path, "message": message, "evidence": evidence, "suggestion": suggestion}
+    code = normalize_reason_code(fid)
+    if severity in {"error", "warn"} and not is_canonical_reason_code(code):
+        raise ValueError(f"unknown SourcePack reason code: {fid}")
+    return {"id": code, "severity": severity, "category": category, "path": path, "message": message, "evidence": evidence, "suggestion": suggestion}
 
 
 def traffic_report(verdict: str, headline: str | None = None, findings: list[dict] | None = None, checked_categories: list[str] | None = None, next_action: str | None = None, report_path: str = ".sourcepack/reports/latest.json", reason_type: str | None = None, not_checked: list[str] | None = None) -> dict:

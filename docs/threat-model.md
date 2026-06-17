@@ -23,3 +23,7 @@ SourcePack is trust-boundary-adjacent, but it is not a security scanner.
 ## Reporting trust-boundary issues
 
 Please report bypasses, false negatives, baseline trust-boundary failures, or prompt-laundering issues privately using the process in `SECURITY.md` when available.
+
+## Public-alpha trust-boundary hardening
+
+Prompt context remains non-authoritative: enforcement uses the trusted baseline, diff evidence, and declared dependency or command manifests, not AI prompt claims. Changes under `.sourcepack/baseline/` and `.git/` fail closed as protected or Git-internal artifact modifications. CI mode does not create new trust from a changed or missing baseline; baseline changes are treated as protected artifacts until reviewed locally.

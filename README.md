@@ -204,3 +204,19 @@ The primary proof unit is a repo-state transition, not a random repository.
 ## Status
 
 v1.10.0-alpha: local-first alpha. Core judgment behavior is validated. Packaging, reports, demos, and UX polish are active areas.
+
+## Public-alpha checklist
+
+Before public alpha, verify:
+
+- Install works from a clean environment.
+- `sourcepack --version` works.
+- `sourcepack doctor` works.
+- `sourcepack demo` works.
+- `sourcepack init . --auto` works.
+- `sourcepack diff .` works.
+- `sourcepack report open` or `sourcepack report path` works.
+- Behavior matrix passes.
+- Golden demos pass.
+- Known limitations are documented.
+- Do not claim PyPI publication unless SourcePack is actually published there.

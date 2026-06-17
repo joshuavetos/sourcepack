@@ -22,14 +22,20 @@ jobs:
         run: python -m py_compile src/sourcepack/cli.py
       - name: Run python -m py_compile tools/real_corpus_validation.py
         run: python -m py_compile tools/real_corpus_validation.py
+      - name: Run python -m py_compile tools/behavior_matrix.py
+        run: python -m py_compile tools/behavior_matrix.py
       - name: Run python -m unittest
         run: python -m unittest
+      - name: Run pytest -q tests/test_behavior_matrix.py
+        run: pytest -q tests/test_behavior_matrix.py
       - name: Run pytest -q tests/test_simulation_harness.py
         run: pytest -q tests/test_simulation_harness.py
       - name: Run pytest -q tests/test_gauntlet.py tests/test_smoke.py
         run: pytest -q tests/test_gauntlet.py tests/test_smoke.py
       - name: Run pytest -q
         run: pytest -q
+      - name: Run behavior matrix
+        run: python tools/behavior_matrix.py
       - name: Run sourcepack doctor
         run: sourcepack doctor
       - name: Run sourcepack demo

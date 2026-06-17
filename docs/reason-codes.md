@@ -11,6 +11,24 @@ SourcePack reason codes explain why a repo-state transition is PASS, WARN, or FA
 - **Likely fix:** Review the repo state, then run `sourcepack baseline .` or `sourcepack init . --auto` only when that state should be trusted.
 - **Example message:** `No trusted SourcePack baseline exists while changes are present.`
 
+## baseline_stale
+
+- **Meaning:** The trusted baseline exists, but SourcePack detected evidence that it may not match the current trusted repo state.
+- **Local behavior:** WARN; the repo needs review before the current state becomes trusted.
+- **Strict/CI behavior:** Nonzero because WARN is blocked by `--strict` and `--ci`.
+- **Common cause:** The working tree changed after the last trusted baseline refresh, or SourcePack stale-state metadata is present.
+- **Likely fix:** Review the current repo state, commit intended changes, then refresh the baseline only after accepting that state as trusted.
+- **Example message:** `Trusted SourcePack baseline may not match current repo state.`
+
+## baseline_corrupt
+
+- **Meaning:** SourcePack found the trusted baseline packet, pointer, metadata, or receipt corrupt or unverifiable.
+- **Local behavior:** FAIL.
+- **Strict/CI behavior:** FAIL.
+- **Common cause:** `.sourcepack/baseline/` artifacts were edited, deleted, moved, or their recorded hashes no longer match.
+- **Likely fix:** Treat the baseline as untrusted; recreate it only after verifying the current repo state should be trusted.
+- **Example message:** `Trusted SourcePack baseline is corrupt or unverifiable.`
+
 ## missing_file
 
 - **Meaning:** A patch modifies a path that was not present in the trusted baseline.

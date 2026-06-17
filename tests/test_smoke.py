@@ -6,7 +6,7 @@ import contextlib
 import io
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from sourcepack.cli import dependency_inventory, extract_imports_from_text, feature_inventory, load_manifest, run_cli, traffic_report, normalized_finding, render_traffic, judge_patch_text
+from sourcepack.cli import dependency_inventory, extract_imports_from_text, feature_inventory, load_manifest, run_cli, traffic_report, normalized_finding, render_traffic, judge_patch_text, write_user_report
 
 
 class SourcePackSmokeTest(unittest.TestCase):
@@ -896,6 +896,51 @@ new file mode 100644
             self.assertNotIn("# SourcePack Patch Judgment Report", buf.getvalue())
 
 
+
+class SourcePackReportUiTest(unittest.TestCase):
+    def test_diff_writes_local_html_report(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td)
+            repo = tmp / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            (repo / "README.md").write_text("demo\n")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            self.assertEqual(run_cli(["baseline", str(repo), "--quiet"]), 0)
+            (repo / "README.md").write_text("demo changed\n")
+            self.assertEqual(run_cli(["diff", str(repo)]), 0)
+
+            html_path = repo / ".sourcepack" / "reports" / "latest.html"
+            self.assertTrue(html_path.exists())
+            html = html_path.read_text(encoding="utf-8")
+            self.assertIn("SourcePack local report", html)
+            self.assertIn("Reason codes", html)
+            self.assertIn("Affected files", html)
+            self.assertIn("Baseline and prompt trust", html)
+            self.assertIn(".sourcepack/reports/latest.json", html)
+
+    def test_report_open_generates_html_and_invokes_browser(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td)
+            repo = tmp / "repo"
+            repo.mkdir()
+            report = traffic_report("PASS", checked_categories=["diff"], report_path=".sourcepack/reports/latest.json")
+            write_user_report(repo, report, "diff")
+            calls = []
+            import sourcepack.cli as cli
+            original = cli.webbrowser.open
+            try:
+                cli.webbrowser.open = lambda uri: calls.append(uri) or True
+                self.assertEqual(run_cli(["report", "open", str(repo)]), 0)
+            finally:
+                cli.webbrowser.open = original
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(calls[0].startswith("file:"))
+            self.assertTrue((repo / ".sourcepack" / "reports" / "latest.html").exists())
 
 if __name__ == "__main__":
     unittest.main()

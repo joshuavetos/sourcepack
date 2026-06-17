@@ -27,6 +27,7 @@ def scenario_cases() -> list[Scenario]:
         cases.append(Scenario(f"py_stdlib_{mod}", {"app.py": "VALUE = 1\n"}, py_import_patch("app.py", f"import {mod}"), MUST_NOT_RED, forbidden_ids={"unsupported_dependency"}, repo_shape="python no deps", summary="stdlib import"))
     for local, files in [("localmod", {"app.py": "VALUE = 1\n", "localmod.py": "X=1\n"}), ("localpkg", {"app.py": "VALUE = 1\n", "src/localpkg/__init__.py": "X=1\n"})]:
         cases.append(Scenario(f"py_local_{local}", files, py_import_patch("app.py", f"import {local}"), MUST_NOT_RED, forbidden_ids={"unsupported_dependency"}, repo_shape="python local", summary="local import"))
+    cases.append(Scenario("py_relative_import", {"pkg/app.py": "VALUE = 1\n", "pkg/helper.py": "VALUE = 2\n"}, py_import_patch("pkg/app.py", "from . import helper"), MUST_NOT_RED, forbidden_ids={"unsupported_dependency"}, repo_shape="python local", summary="relative import"))
     for dep, line in [("requests", "import requests"), ("yaml", "import yaml"), ("bs4", "from bs4 import BeautifulSoup")]:
         cases.append(Scenario(f"py_declared_{dep}", py_base, py_import_patch("app.py", line), MUST_NOT_RED, forbidden_ids={"unsupported_dependency"}, repo_shape="requirements runtime", summary="declared import"))
     for dep in ["fastapi", "flask", "django", "sqlalchemy", "boto3", "pydantic", "typer", "click", "dotenv"]:
@@ -60,6 +61,7 @@ def scenario_cases() -> list[Scenario]:
     cases.append(Scenario("py_wrong_ecosystem_js_dep", {"app.py": "VALUE = 1\n", "package.json": "{}\n"}, multi_patch([("app.py", "VALUE = 1\n", "import requests\nVALUE = 1\n"), ("package.json", "{}\n", '{"dependencies":{"requests":"1"}}\n')]), MUST_RED, "unsupported_dependency", repo_shape="wrong ecosystem", summary="js dep cannot support python"))
 
     js_runtime = {"index.js": "export const value = 1;\n", "package.json": '{"dependencies":{"react":"18","@scope/pkg":"1"},"devDependencies":{"vite":"1"}}\n'}
+    cases.append(Scenario("js_local_relative", {"index.js": "export const value = 1;\n", "helper.js": "export const helper = 1;\n", "package.json": "{}\n"}, js_import_patch("index.js", 'import { helper } from "./helper";'), MUST_NOT_RED, forbidden_ids={"unsupported_dependency"}, repo_shape="package local", summary="local relative import"))
     for spec in ["react", "react/jsx-runtime", "@scope/pkg", "@scope/pkg/sub"]:
         cases.append(Scenario(f"js_declared_{spec.replace('/', '_')}", js_runtime, js_import_patch("index.js", f'import x from "{spec}";'), MUST_NOT_RED, forbidden_ids={"unsupported_dependency"}, repo_shape="package runtime", summary="declared js import"))
     for spec in ["vue", "@missing/pkg", "@missing/pkg/sub"]:

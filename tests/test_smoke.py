@@ -739,6 +739,54 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             restored = subprocess.run([str(hook)], cwd=repo, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.assertEqual(restored.returncode, 7)
 
+
+    def test_diff_strict_and_ci_block_warn(self):
+        with TemporaryDirectory() as td:
+            repo = Path(td)
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            (repo / "README.md").write_text("base\n")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(run_cli(["baseline", str(repo), "--quiet"]), 0)
+            (repo / "new.txt").write_text("new\n")
+            self.assertEqual(run_cli(["diff", str(repo)]), 0)
+            self.assertEqual(run_cli(["diff", str(repo), "--strict"]), 1)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(run_cli(["diff", str(repo), "--ci"]), 1)
+            data = json.loads(buf.getvalue())
+            self.assertEqual(data["verdict"], "WARN")
+            self.assertTrue(data["ci"])
+            self.assertIn("report_path", data)
+
+    def test_judge_patch_report_has_traffic_sections(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td)
+            repo = tmp / "repo"
+            repo.mkdir()
+            (repo / "app.py").write_text("print('ok')\n")
+            packet = tmp / "packet"
+            self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
+            patch = tmp / "change.diff"
+            patch.write_text("""diff --git a/new.py b/new.py
+new file mode 100644
+--- /dev/null
++++ b/new.py
+@@ -0,0 +1,1 @@
++print('new')
+""")
+            out = tmp / "out"
+            self.assertEqual(run_cli(["judge-patch", str(packet), str(patch), "--out", str(out)]), 0)
+            report = json.loads((out / "patch_judgment_report.json").read_text())
+            for key in ["verdict", "findings", "blockers", "warnings", "uncertainties", "checked_categories", "not_checked", "next_action", "report_path"]:
+                self.assertIn(key, report)
+            md = (out / "patch_judgment_report.md").read_text()
+            self.assertIn("## Blockers", md)
+            self.assertIn("## Warnings", md)
+            self.assertIn("## Uncertainties", md)
+
     def test_diff_output_omits_legacy_patch_report_header(self):
         with TemporaryDirectory() as td:
             repo = self._repo(Path(td)); self._git_init_clean(repo)

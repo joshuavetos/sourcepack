@@ -140,3 +140,129 @@ SourcePack reason codes explain why a repo-state transition is PASS, WARN, or FA
 ## Vocabulary enforcement
 
 `src/sourcepack/reason_codes.py` is the source of truth for emitted reason-code IDs. Runtime report construction normalizes IDs to lowercase snake_case and refuses unknown WARN/FAIL finding IDs. Positive evidence such as dependency declarations is represented as review evidence (`declared_dependency`) rather than as proof that prompt context can enforce trust.
+
+
+## baseline_failed
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## baseline_inventory_missing
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## baseline_locked
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## clipboard_unavailable
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## command_manifest_uncertain
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## declared_command
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## dependency_manifest_uncertain
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## dependency_scope_review
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## dirty_worktree
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## git_unavailable
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## gitignore_unwritable
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## hook_install_failed
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## hygiene_hooks_deferred
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## js_alias_uncertain
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## no_diff
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## no_git_repo
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## path_escape
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## prompt_context_failed
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## repo_not_directory
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## unsupported_rename_copy
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
+## workflow_change
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.

@@ -1,4 +1,4 @@
-# SourcePack
+<img width="1800" height="620" alt="sourcepack-hero" src="https://github.com/user-attachments/assets/9b4af0df-1cfc-4aa8-8eb1-f673e6eb2e52" />
 
 Catch unsupported AI repo assumptions before commit.
 

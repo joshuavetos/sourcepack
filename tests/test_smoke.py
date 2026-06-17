@@ -942,5 +942,69 @@ class SourcePackReportUiTest(unittest.TestCase):
             self.assertTrue(calls[0].startswith("file:"))
             self.assertTrue((repo / ".sourcepack" / "reports" / "latest.html").exists())
 
+
+    def test_report_path_prints_latest_html_path(self):
+        with TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(run_cli(["report", "path", str(repo)]), 0)
+            self.assertEqual(Path(buf.getvalue().strip()), repo.resolve() / ".sourcepack" / "reports" / "latest.html")
+
+    def test_report_open_missing_report_fails_gracefully(self):
+        with TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(run_cli(["report", "open", str(repo)]), 1)
+            self.assertIn("no SourcePack report found", err.getvalue())
+
+    def test_diff_json_stdout_remains_json_after_html_report_exists(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td)
+            repo = tmp / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            (repo / "README.md").write_text("demo\n")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertEqual(run_cli(["baseline", str(repo), "--quiet"]), 0)
+            (repo / "README.md").write_text("demo changed\n")
+            self.assertEqual(run_cli(["diff", str(repo)]), 0)
+            self.assertTrue((repo / ".sourcepack" / "reports" / "latest.html").exists())
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(run_cli(["diff", str(repo), "--json"]), 0)
+            data = json.loads(buf.getvalue())
+            self.assertIn(data["verdict"], {"PASS", "WARN"})
+            self.assertNotIn("Report HTML:", buf.getvalue())
+
+    def test_diff_verdict_survives_html_report_write_failure(self):
+        with TemporaryDirectory() as td:
+            tmp = Path(td)
+            repo = tmp / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            (repo / "README.md").write_text("demo\n")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertEqual(run_cli(["baseline", str(repo), "--quiet"]), 0)
+            (repo / "new.py").write_text("print(1)\n")
+            import sourcepack.cli as cli
+            original = cli.render_report_html
+            try:
+                cli.render_report_html = lambda report: (_ for _ in ()).throw(RuntimeError("html boom"))
+                self.assertEqual(run_cli(["diff", str(repo)]), 0)
+            finally:
+                cli.render_report_html = original
+            report = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["verdict"], "WARN")
+
 if __name__ == "__main__":
     unittest.main()

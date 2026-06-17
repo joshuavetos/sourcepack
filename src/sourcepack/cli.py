@@ -1574,14 +1574,34 @@ code {{ color:#bfdbfe; }} .muted {{ color:var(--muted); }} .severity.error {{ co
 </main></body></html>"""
 
 
+def _latest_report_html_path(repo: str | Path) -> Path:
+    return ensure_sourcepack_dirs(repo)["latest_html"]
+
+
+def _write_optional_report_file(path: Path, content: str) -> None:
+    try:
+        path.write_text(content, encoding="utf-8")
+    except Exception as exc:
+        print(f"WARNING: could not write SourcePack report artifact {path}: {exc}", file=sys.stderr)
+
+
+def cli_report_path(args) -> int:
+    print(_latest_report_html_path(Path(args.repo).resolve()))
+    return 0
+
+
 def cli_report_open(args) -> int:
     repo = Path(args.repo).resolve()
     paths = ensure_sourcepack_dirs(repo)
     if not paths["latest_json"].exists():
         print(f"ERROR: no SourcePack report found at {paths['latest_json']}", file=sys.stderr)
         return 1
-    report = json.loads(paths["latest_json"].read_text(encoding="utf-8"))
-    paths["latest_html"].write_text(render_report_html(report), encoding="utf-8")
+    try:
+        report = json.loads(paths["latest_json"].read_text(encoding="utf-8"))
+        paths["latest_html"].write_text(render_report_html(report), encoding="utf-8")
+    except Exception as exc:
+        print(f"ERROR: could not prepare SourcePack HTML report at {paths['latest_html']}: {exc}", file=sys.stderr)
+        return 1
     uri = paths["latest_html"].resolve().as_uri()
     opened = webbrowser.open(uri)
     print(f"Report HTML: {paths['latest_html']}")
@@ -1595,15 +1615,22 @@ def write_user_report(repo: str | Path, report: dict, stem: str = "report") -> N
     full.setdefault("sourcepack_version", __version__)
     full.setdefault("schema_version", "traffic_report.v1")
     full["generated_at"] = utc_now()
-    paths["latest_json"].write_text(json.dumps(full, indent=2), encoding="utf-8")
-    paths["latest_md"].write_text(render_traffic(full, verbose=True), encoding="utf-8")
-    paths["latest_html"].write_text(render_report_html(full), encoding="utf-8")
+    json_text = json.dumps(full, indent=2)
+    md_text = render_traffic(full, verbose=True)
+    paths["latest_json"].write_text(json_text, encoding="utf-8")
+    _write_optional_report_file(paths["latest_md"], md_text)
+    try:
+        html_text = render_report_html(full)
+    except Exception as exc:
+        print(f"WARNING: could not render SourcePack HTML report: {exc}", file=sys.stderr)
+    else:
+        _write_optional_report_file(paths["latest_html"], html_text)
     typed = paths.get(f"latest_{stem}_json")
     if typed is not None:
-        typed.write_text(json.dumps(full, indent=2), encoding="utf-8")
+        _write_optional_report_file(typed, json_text)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    (paths["archive"] / f"{ts}_{stem}.json").write_text(json.dumps(full, indent=2), encoding="utf-8")
-    (paths["archive"] / f"{ts}_{stem}.md").write_text(render_traffic(full, verbose=True), encoding="utf-8")
+    _write_optional_report_file(paths["archive"] / f"{ts}_{stem}.json", json_text)
+    _write_optional_report_file(paths["archive"] / f"{ts}_{stem}.md", md_text)
 
 
 
@@ -1612,7 +1639,10 @@ def finalize_diff_report(repo: str | Path | None, report: dict, args, stem: str 
     if getattr(args, "ci", False):
         full["ci"] = True
     if repo is not None:
-        write_user_report(repo, full, stem)
+        try:
+            write_user_report(repo, full, stem)
+        except Exception as exc:
+            print(f"WARNING: could not write SourcePack report artifacts: {exc}", file=sys.stderr)
     return full
 
 def emit_diff_report(report: dict, args, added: bool = False, note: str | None = None) -> int:
@@ -2917,6 +2947,8 @@ def run_cli(args_list=None):
     report_subs = report_cmd.add_subparsers(dest="report_command")
     report_open = report_subs.add_parser("open", help="open .sourcepack/reports/latest.html")
     report_open.add_argument("repo", nargs="?", default=".")
+    report_path = report_subs.add_parser("path", help="print .sourcepack/reports/latest.html")
+    report_path.add_argument("repo", nargs="?", default=".")
     args = parser.parse_args(args_list)
     if args.version:
         print(__version__); return 0
@@ -2940,6 +2972,8 @@ def run_cli(args_list=None):
         if args.command == "report":
             if args.report_command == "open":
                 return cli_report_open(args)
+            if args.report_command == "path":
+                return cli_report_path(args)
             parser.parse_args(["report", "--help"])
             return 1
         if args.command == "build":

@@ -192,7 +192,7 @@ Reason type: uncertainty
 Commit policy: allowed locally, blocked in strict mode.
 ```
 
-Local default policy allows GREEN, YELLOW REVIEW, YELLOW TOOLING when repository judgment succeeded, and YELLOW UNCERTAIN with stronger review language. RED blocks. Strict mode blocks every YELLOW and RED. Future CI policy can configure YELLOW REVIEW, should block YELLOW UNCERTAIN by default, and blocks RED.
+Local default policy allows GREEN and YELLOW findings, with stronger review language for YELLOW UNCERTAIN. RED blocks. Strict mode and CI mode block every YELLOW and RED.
 
 ## Development
 
@@ -230,4 +230,4 @@ SourcePack treats untracked non-ignored files as dirty for baseline refresh purp
 
 The external Colab 10-repo corpus validation is not part of default pytest and is not reproduced by this checkout. The repository does not currently include enough executable inputs to recreate it safely: the 10 target repo URLs or revisions, scenario definitions per repo, generated packet locations, and Colab output artifacts are not present.
 
-A future optional harness should only be added when those inputs are available. It must clone or reuse the 10 target repos, regenerate fresh packets with the current SourcePack code, deep-clean each repo with `git reset --hard` and `git clean -ffdx` between scenarios, preserve reason codes and uncertainty codes, and use these calibrated expectations: README_EDIT accepts PASS, README_EDIT accepts WARN only for expected uncertainty codes such as `unsupported_ecosystem`, README_EDIT rejects FAIL, NEW_FILE expects WARN, and IMPORT_FAIL expects FAIL.
+`tools/real_corpus_validation.py` exists as an optional harness and is not run by default pytest. It accepts caller-provided repositories with `--repo` or `--repo-list`, deep-cleans repositories between scenarios with `git reset --hard` and `git clean -ffdx`, rebuilds a current SourcePack baseline, and runs `README_EDIT`, `NEW_FILE`, and `IMPORT_FAIL`. It preserves verdicts, reason codes, report paths, and ok/fail status, and exits nonzero when calibrated expectations fail. It does not embed or reproduce the prior external Colab corpus unless the exact corpus inputs are supplied and run.

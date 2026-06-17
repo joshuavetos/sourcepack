@@ -761,6 +761,47 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             self.assertTrue(data["ci"])
             self.assertIn("report_path", data)
 
+    def test_diff_ci_missing_baseline_with_changes_is_json_fail(self):
+        with TemporaryDirectory() as td:
+            repo = Path(td)
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            (repo / "README.md").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            (repo / "README.md").write_text("changed\n", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(run_cli(["diff", str(repo), "--ci"]), 1)
+            data = json.loads(buf.getvalue())
+            self.assertEqual(data["verdict"], "FAIL")
+            self.assertTrue(data["ci"])
+            self.assertEqual(data["baseline_state"], "missing")
+
+    def test_diff_ci_corrupt_baseline_is_json_fail(self):
+        with TemporaryDirectory() as td:
+            repo = Path(td)
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            (repo / "README.md").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(run_cli(["baseline", str(repo), "--quiet"]), 0)
+            status_buf = io.StringIO()
+            with contextlib.redirect_stdout(status_buf):
+                self.assertEqual(run_cli(["status", str(repo), "--json"]), 0)
+            meta_path = json.loads(status_buf.getvalue())["baseline_metadata_path"]
+            (repo / meta_path).write_text("{", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(run_cli(["diff", str(repo), "--ci"]), 1)
+            data = json.loads(buf.getvalue())
+            self.assertEqual(data["verdict"], "FAIL")
+            self.assertTrue(data["ci"])
+            self.assertEqual(data["baseline_state"], "corrupt")
+
     def test_judge_patch_report_has_traffic_sections(self):
         with TemporaryDirectory() as td:
             tmp = Path(td)
@@ -784,7 +825,7 @@ new file mode 100644
                 self.assertIn(key, report)
             md = (out / "patch_judgment_report.md").read_text()
             self.assertIn("## Blockers", md)
-            self.assertIn("## Warnings", md)
+            self.assertIn("## Review warnings", md)
             self.assertIn("## Uncertainties", md)
 
     def test_diff_output_omits_legacy_patch_report_header(self):

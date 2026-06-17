@@ -106,7 +106,7 @@ sourcepack judge-patch /tmp/sourcepack_demo_packet examples/fake_ai_patch.diff -
 
 `sourcepack judge <packet> <answer.md> --out <report_folder>` evaluates prose answers. It reports unsupported file references, dependency claims, commands, and capabilities in `judgment_report.md` and `judgment_report.json`.
 
-`sourcepack judge-patch <packet> <patch.diff> --out <report_folder>` evaluates standard git-style unified diffs, such as output from `git diff`. It reports modified missing files, new files, deleted files, unsupported imports, unsupported commands, and root-level protected packet artifact edits in `patch_judgment_report.md` and `patch_judgment_report.json`. It does not claim support for arbitrary patch formats, binary diffs, rename/copy semantics, full semantic patch analysis, or runtime validation.
+`sourcepack judge-patch <packet> <patch.diff> --out <report_folder>` evaluates standard git-style unified diffs, such as output from `git diff`. It reports modified missing files, new files, deleted files, unsupported imports, unsupported commands, and root-level protected packet artifact edits in `patch_judgment_report.md` and `patch_judgment_report.json`. JSON reports include stable automation fields such as schema version, SourcePack version, verdict, findings, blockers, review warnings, uncertainties, checked categories, not checked categories, next action, and report path. It does not claim support for arbitrary patch formats, binary diffs, rename/copy semantics, full semantic patch analysis, or runtime validation.
 
 `sourcepack judge` and `sourcepack judge-patch` return success when report generation succeeds. Read the report verdict to determine whether the answer or patch passed grounding checks.
 
@@ -161,8 +161,10 @@ SourcePack does not execute the target application by default. Capability, depen
 
 - GREEN/PASS exits `0`: no checked category triggered. It does not prove correctness.
 - YELLOW/WARN exits `0` by default: review, uncertainty, or tooling degradation exists. It is allowed locally unless strict mode is enabled.
+- YELLOW/WARN exits nonzero with `--strict` or `--ci`.
 - RED/FAIL exits `1`: action is blocked unless the user explicitly bypasses the gate.
 - Hook strict mode blocks YELLOW/WARN as well as RED/FAIL.
+- `sourcepack diff --ci` is non-interactive, disables clipboard use, prints JSON on every return path, and stamps CI reports with `ci: true`.
 
 YELLOW findings are surfaced by reason type so different risks do not collapse into one generic warning:
 

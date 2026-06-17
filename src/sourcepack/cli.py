@@ -1274,7 +1274,7 @@ def judge_ai_answer(packet_path: str | Path, ai_answer_path: str | Path, out_dir
     deps = dependency_inventory(manifest, packet)
     scripts = _package_json_scripts(packet)
     files_lower = {f.lower() for f in known_files}
-    report = {"supported_files": [], "missing_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "unsupported_capabilities": []}
+    report = {"sourcepack_version": __version__, "supported_files": [], "missing_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "unsupported_capabilities": []}
     for ref in sorted(refs):
         if ref in known_files:
             report["supported_files"].append(ref)

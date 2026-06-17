@@ -43,6 +43,35 @@ def test_core_modules_do_not_import_cli() -> None:
     assert offenders == []
 
 
+def test_judgment_module_does_not_contain_cli_behavior() -> None:
+    source = (ROOT / "src/sourcepack/judgment.py").read_text(encoding="utf-8")
+    forbidden = [
+        "argparse",
+        "webbrowser",
+        "def run_cli",
+        "def cli_",
+        "print(",
+        "parser.add_",
+        "subparsers",
+        "install_hook",
+        "uninstall_hook",
+    ]
+    offenders = [token for token in forbidden if token in source]
+    assert offenders == []
+
+
+def test_judgment_uses_diff_parser_patch_file_change() -> None:
+    source = (ROOT / "src/sourcepack/judgment.py").read_text(encoding="utf-8")
+    assert "from .diff_parser import PatchFileChange" in source
+    assert "class PatchFileChange" not in source
+    assert "def parse_unified_diff" not in source
+
+
+def test_baseline_module_does_not_import_judgment() -> None:
+    source = (ROOT / "src/sourcepack/baseline.py").read_text(encoding="utf-8")
+    assert "judgment" not in source
+
+
 def test_cli_diff_delegates_to_judge_repo_change() -> None:
     source = (ROOT / "src/sourcepack/cli.py").read_text(encoding="utf-8")
     tree = ast.parse(source)

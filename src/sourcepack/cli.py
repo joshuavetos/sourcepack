@@ -655,7 +655,7 @@ def _python_dependency_names_from_requirement_lines(text: str) -> set[str]:
     for line in text.splitlines():
         cleaned = line.split("#", 1)[0].strip()
         if cleaned and not cleaned.startswith(("-", "--")):
-            deps.add(_normalize_dependency_name(re.split(r"[<>=!~;\[]", cleaned, 1)[0]))
+            deps.add(_normalize_dependency_name(re.split(r"[<>=!~;\[]", cleaned, maxsplit=1)[0]))
     return deps
 
 
@@ -668,7 +668,7 @@ def _python_dependency_names_from_pyproject(content: str) -> set[str]:
 
     def add_requirement(req: object) -> None:
         if isinstance(req, str):
-            name = re.split(r"[<>=!~;\[]", req.strip(), 1)[0]
+            name = re.split(r"[<>=!~;\[]", req.strip(), maxsplit=1)[0]
             if name:
                 deps.add(_normalize_dependency_name(name))
 
@@ -1861,7 +1861,7 @@ def _python_dependency_names_by_scope_from_pyproject(content: str) -> dict[str, 
 
     def add_req(target: set[str], req: object) -> None:
         if isinstance(req, str):
-            name = re.split(r"[<>=!~;\[]", req.strip(), 1)[0]
+            name = re.split(r"[<>=!~;\[]", req.strip(), maxsplit=1)[0]
             if name:
                 target.add(_normalize_dependency_name(name))
 

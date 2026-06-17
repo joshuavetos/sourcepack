@@ -116,6 +116,8 @@ def scenario_cases() -> list[Scenario]:
     cases.append(Scenario("copy_protected_fail", {"README.md": "demo\n"}, "diff --git a/README.md b/.sourcepack/baseline/active.json\ncopy from README.md\ncopy to .sourcepack/baseline/active.json\n", MUST_RED, "protected_artifact", repo_shape="copy", summary="copy to protected"))
     cases.append(Scenario("new_file", {"a.py": "x\n"}, unified_patch("new.py", "", "import os\n", new_file=True), MUST_YELLOW, "new_file", repo_shape="edge", summary="new file"))
     cases.append(Scenario("deleted_file", {"a.py": "x\n"}, unified_patch("a.py", "x\n", "", deleted=True), MUST_YELLOW, "deleted_file", repo_shape="edge", summary="deleted file"))
+    for marker in ["Cargo.toml", "go.mod", "pom.xml", "build.gradle", "settings.gradle.kts"]:
+        cases.append(Scenario(f"unsupported_ecosystem_{marker.replace('.', '_').lower()}", {marker: "\n", "README.md": "demo\n"}, unified_patch("README.md", "demo\n", "updated\n"), MUST_YELLOW, "unsupported_ecosystem", repo_shape="unsupported ecosystem", summary=marker))
     for i, mod in enumerate(["csv", "hashlib", "collections", "itertools", "functools", "typing", "unittest", "subprocess", "re", "math", "decimal", "sqlite3", "http", "email"]):
         cases.append(Scenario(f"py_stdlib_extra_{i}_{mod}", {"app.py": "VALUE = 1\n"}, py_import_patch("app.py", f"import {mod}"), MUST_NOT_RED, forbidden_ids={"unsupported_dependency"}, repo_shape="python no deps", summary="extra stdlib coverage"))
     for script in ["lint", "typecheck", "format", "start"]:

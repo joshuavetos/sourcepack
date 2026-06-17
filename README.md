@@ -166,6 +166,18 @@ SourcePack does not execute the target application by default. Capability, depen
 - Hook strict mode blocks YELLOW/WARN as well as RED/FAIL.
 - `sourcepack diff --ci` is non-interactive, disables clipboard use, prints JSON on every return path, and stamps CI reports with `ci: true`.
 
+### CI usage
+
+Run SourcePack CI after checkout and installation:
+
+```yaml
+- uses: actions/checkout@v4
+- run: python -m pip install -e .
+- run: sourcepack diff . --ci
+```
+
+`sourcepack diff . --ci` prints JSON, returns `0` for PASS, and exits nonzero for WARN or FAIL. CI mode must not establish trust automatically: if the trusted baseline is missing, the CI check fails until a baseline is created intentionally outside CI.
+
 YELLOW findings are surfaced by reason type so different risks do not collapse into one generic warning:
 
 - **YELLOW REVIEW**: allowed locally by default. This covers normal changes that need human review, such as new files, declared dependencies, and deleted files.

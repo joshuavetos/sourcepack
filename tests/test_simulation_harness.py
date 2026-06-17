@@ -163,9 +163,31 @@ def test_real_repo_failure_regression_unsupported_import_outside_prompt_context(
     assert report["missing_modified_files"] == []
 
 
+def test_legacy_packet_without_inventory_treats_outside_context_edit_as_uncertain_not_missing_file(tmp_path: Path) -> None:
+    packet = write_packet(tmp_path, {"README.md": "old docs\n", "app.py": "VALUE = 1\n"}, context_files={"app.py"})
+    (packet / "file_inventory.json").unlink()
+    report = judge_patch_text(packet, unified_patch("README.md", "old docs\n", "updated docs\n"))
+    assert report["verdict"] == "WARN"
+    assert report["missing_modified_files"] == []
+    assert "README.md" in report.get("uncertain_modified_files", [])
+    assert any(item.get("id") == "baseline_inventory_missing" for item in report.get("uncertainties", []))
+    assert "missing_file" not in summarize(report)["finding_ids"]
+
+
+def test_legacy_packet_without_inventory_still_reds_unsupported_import_outside_context(tmp_path: Path) -> None:
+    packet = write_packet(tmp_path, {"README.md": "old docs\n", "app.py": "VALUE = 1\n"}, context_files={"README.md"})
+    (packet / "file_inventory.json").unlink()
+    report = judge_patch_text(packet, unified_patch("app.py", "VALUE = 1\n", "import fastapi\nVALUE = 1\n"))
+    assert report["verdict"] == "FAIL"
+    assert report["missing_modified_files"] == []
+    assert "app.py" in report.get("uncertain_modified_files", [])
+    assert "fastapi" in report["unsupported_dependencies"]
+    ids = summarize(report)["finding_ids"]
+    assert "unsupported_dependency" in ids
+    assert "missing_file" not in ids
+
 def test_simulation_count() -> None:
     assert len(SCENARIOS) >= 100
-
 
 
 def test_ai_answer_simulation_catches_fake_claims(tmp_path: Path) -> None:

@@ -18,6 +18,11 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 from xml.sax.saxutils import escape as xml_escape
+from .ecosystems.python import PY_IMPORT_ALIASES
+from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_paths
+from .reports.html import render_report_html
+from .reports.json import normalized_finding, traffic_report, write_user_report
+from .reports.markdown import LIGHT_BY_VERDICT, SEVERITY_ORDER, render_traffic
 
 try:
     from . import __version__
@@ -825,7 +830,6 @@ def feature_inventory(manifest: dict, packet: Path, deps: set[str] | None = None
 
 
 PROTECTED_PACKET_ARTIFACTS = {"manifest.json", "receipt.json", "reality_map.json", "ai_instructions.md"}
-PY_IMPORT_ALIASES = {"yaml": "pyyaml", "pil": "pillow", "bs4": "beautifulsoup4", "cv2": "opencv-python", "sklearn": "scikit-learn", "dotenv": "python-dotenv", "jwt": "pyjwt", "dateutil": "python-dateutil"}
 
 
 def _normalize_inventory_path(value: object) -> str | None:
@@ -1338,251 +1342,9 @@ PY_DEP_FILES = {"requirements.txt", "pyproject.toml", "setup.py", "setup.cfg"}
 JS_EXTS = {".js", ".jsx", ".ts", ".tsx"}
 
 
-def sourcepack_paths(repo: str | Path) -> dict[str, Path]:
-    root = Path(repo).resolve()
-    base = root / ".sourcepack"
-    baseline = base / "baseline"
-    prompt = base / "prompt"
-    reports = base / "reports"
-    return {
-        "root": root,
-        "base": base,
-        "current": base / "current",  # legacy compatibility marker only
-        "baseline": baseline,
-        "packet": baseline / "packet",
-        "baseline_meta": baseline / "metadata.json",
-        "prompt_dir": prompt,
-        "prompt_packet": prompt / "packet",
-        "prompt_reality": prompt / "reality_map.json",
-        "prompt_instructions": prompt / "ai_instructions.md",
-        "reports": reports,
-        "archive": reports / "archive",
-        "reality": baseline / "reality_map.json",
-        "instructions": baseline / "ai_instructions.md",
-        "prompt": prompt / "prompt.md",
-        "state": base / "state",
-        "stale_marker": base / "state" / "baseline_stale.json",
-        "latest_json": reports / "latest.json",
-        "latest_md": reports / "latest.md",
-        "latest_html": reports / "latest.html",
-        "latest_diff_json": reports / "latest_diff.json",
-        "latest_prompt_json": reports / "latest_prompt.json",
-        "latest_baseline_json": reports / "latest_baseline.json",
-        "builds": baseline / "builds",
-        "active_pointer": baseline / "active.json",
-        "baseline_lock": base / "state" / "baseline.lock",
-    }
-
-
-def ensure_sourcepack_dirs(repo: str | Path) -> dict[str, Path]:
-    paths = sourcepack_paths(repo)
-    paths["baseline"].mkdir(parents=True, exist_ok=True)
-    paths["prompt_dir"].mkdir(parents=True, exist_ok=True)
-    paths["current"].mkdir(parents=True, exist_ok=True)
-    paths["reports"].mkdir(parents=True, exist_ok=True)
-    paths["archive"].mkdir(parents=True, exist_ok=True)
-    paths["state"].mkdir(parents=True, exist_ok=True)
-    return paths
-
-
-def ensure_gitignore_entry(repo: str | Path) -> tuple[bool, str | None]:
-    path = Path(repo) / ".gitignore"
-    try:
-        if not path.exists():
-            path.write_text(".sourcepack/\n", encoding="utf-8")
-            return True, None
-        data = path.read_bytes()
-        text = data.decode("utf-8")
-        if any(line.strip() in {".sourcepack", ".sourcepack/"} for line in text.splitlines()):
-            return False, None
-        newline = "\r\n" if b"\r\n" in data else "\n"
-        addition = ("" if text.endswith(("\n", "\r\n")) or not text else newline) + ".sourcepack/" + newline
-        path.write_text(text + addition, encoding="utf-8", newline="")
-        return True, None
-    except Exception as exc:
-        return False, str(exc)
-
-
-def normalized_finding(fid: str, severity: str, category: str, message: str, path: str | None = None, evidence: str | None = None, suggestion: str | None = None) -> dict:
-    return {"id": fid, "severity": severity, "category": category, "path": path, "message": message, "evidence": evidence, "suggestion": suggestion}
-
-
-def traffic_report(verdict: str, headline: str | None = None, findings: list[dict] | None = None, checked_categories: list[str] | None = None, next_action: str | None = None, report_path: str = ".sourcepack/reports/latest.json", reason_type: str | None = None, not_checked: list[str] | None = None) -> dict:
-    findings = sorted(findings or [], key=lambda f: (SEVERITY_ORDER.get(f.get("severity", "info"), 9), f.get("id", ""), f.get("path") or ""))
-    blockers = [f for f in findings if f.get("severity") == "error"]
-    warnings = [f for f in findings if f.get("severity") == "warn"]
-    light = LIGHT_BY_VERDICT.get(verdict, "YELLOW LIGHT")
-    if reason_type is None:
-        reason_type = "blocker" if verdict == "FAIL" else "review" if warnings else "none"
-        if any(f.get("category") in {"uncertainty", "tooling"} for f in warnings):
-            reason_type = "uncertainty" if any(f.get("category") == "uncertainty" for f in warnings) else "tooling"
-    if headline is None:
-        if verdict == "WARN" and reason_type == "uncertainty":
-            headline = "SourcePack could not fully evaluate this change."
-        elif verdict == "WARN" and reason_type == "tooling":
-            headline = "SourcePack tooling degraded."
-        else:
-            headline = {"PASS": "good to continue.", "WARN": "review before continuing.", "FAIL": "stop before trusting this output."}.get(verdict, "review before continuing.")
-    next_action = next_action or ("ask the AI to revise using only files, dependencies, and commands confirmed by SourcePack." if verdict == "FAIL" else "review the listed items before continuing." if verdict == "WARN" else "continue.")
-    commit_policy = None
-    if verdict == "WARN":
-        commit_policy = "allowed locally, blocked in strict mode."
-    elif verdict == "FAIL":
-        commit_policy = "blocked unless explicitly bypassed."
-    return {"schema_version": "traffic_report.v1", "sourcepack_version": __version__, "verdict": verdict, "light": light, "headline": headline, "reason_type": reason_type, "commit_policy": commit_policy, "blockers": blockers, "warnings": warnings, "uncertainties": [f for f in warnings if f.get("category") == "uncertainty"], "checked_categories": checked_categories or [], "not_checked": not_checked or ["runtime behavior", "semantic correctness", "security", "external services"], "next_action": next_action, "report_path": report_path, "findings": findings}
-
-
-def render_traffic(report: dict, verbose: bool = False) -> str:
-    verdict = report.get("verdict", "WARN")
-    lines = [f"Verdict: {verdict}", f"{report.get('light', LIGHT_BY_VERDICT.get(verdict, 'YELLOW LIGHT'))}: {report.get('headline', '')}", ""]
-    if report.get("reason_type"):
-        lines.append(f"Reason type: {report.get('reason_type')}")
-    lines.append(f"Commit policy: {report.get('commit_policy') or 'allowed.'}")
-    lines.append("")
-    if verdict == "PASS":
-        info = [f for f in report.get("findings", []) if f.get("severity") == "info"]
-        lines.append(info[0]["message"] if info else "No unsupported project claims or patch assumptions detected.")
-        if report.get("checked_categories"):
-            lines.extend(["", "Checked:", ""])
-            lines.extend(f"- {item}" for item in report.get("checked_categories", []))
-        if report.get("not_checked"):
-            lines.extend(["", "Not checked:", ""])
-            lines.extend(f"- {item}" for item in report.get("not_checked", []))
-    elif verdict == "WARN":
-        lines.append("SourcePack found review or uncertainty items, but no clear unsupported blocker.")
-        review = [f for f in report.get("warnings", []) if f.get("category") != "uncertainty"]
-        uncertain = [f for f in report.get("warnings", []) if f.get("category") == "uncertainty"]
-        if review:
-            lines.extend(["", "Review warnings:", ""])
-            shown = review if verbose else review[:3]
-            lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
-        if uncertain:
-            lines.extend(["", "Uncertainties:", ""])
-            shown = uncertain if verbose else uncertain[:3]
-            lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
-        lines.extend(["", f"Next action: {report.get('next_action')}"])
-    else:
-        lines.append("SourcePack found missing files, unsupported dependencies, unsupported commands, or unsupported capabilities.")
-        if report.get("blockers"):
-            lines.extend(["", "Blockers:", ""])
-            shown = report.get("blockers", []) if verbose else report.get("blockers", [])[:3]
-            lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
-        review = [f for f in report.get("warnings", []) if f.get("category") != "uncertainty"]
-        uncertain = [f for f in report.get("warnings", []) if f.get("category") == "uncertainty"]
-        if review:
-            lines.extend(["", "Review warnings:", ""])
-            shown = review if verbose else review[:3]
-            lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
-        if uncertain:
-            lines.extend(["", "Uncertainties:", ""])
-            shown = uncertain if verbose else uncertain[:3]
-            lines.extend(f"- {f.get('id')}: {f.get('message')}" for f in shown)
-        lines.extend(["", f"Next action: {report.get('next_action')}"])
-    if verdict != "PASS":
-        if report.get("checked_categories"):
-            lines.extend(["", "Checked:", ""])
-            lines.extend(f"- {item}" for item in report.get("checked_categories", []))
-        if report.get("not_checked"):
-            lines.extend(["", "Not checked:", ""])
-            lines.extend(f"- {item}" for item in report.get("not_checked", []))
-    lines.extend(["", f"Report path: {report.get('report_path', '.sourcepack/reports/latest.json')}"])
-    return "\n".join(lines) + "\n"
-
-
-
-def _html_escape(value: object) -> str:
-    return xml_escape("" if value is None else str(value), {'"': '&quot;', "'": '&#x27;'})
-
-
-def _report_badge_class(verdict: str) -> str:
-    return {"PASS": "pass", "WARN": "warn", "FAIL": "fail"}.get(verdict, "warn")
-
-
-def render_report_html(report: dict) -> str:
-    verdict = str(report.get("verdict", "WARN"))
-    badge = _report_badge_class(verdict)
-    findings = report.get("findings", []) if isinstance(report.get("findings"), list) else []
-    raw_json_path = report.get("report_path") or ".sourcepack/reports/latest.json"
-    baseline_path = report.get("baseline_packet_path") or (report.get("baseline") or {}).get("packet_path") if isinstance(report.get("baseline"), dict) else report.get("baseline_packet_path")
-
-    def finding_rows(items: list[dict]) -> str:
-        if not items:
-            return '<tr><td colspan="5" class="muted">None.</td></tr>'
-        rows = []
-        for f in items:
-            rows.append(
-                "<tr>"
-                f"<td><code>{_html_escape(f.get('id'))}</code></td>"
-                f"<td><span class='severity {_html_escape(f.get('severity'))}'>{_html_escape(f.get('severity'))}</span></td>"
-                f"<td>{_html_escape(f.get('path') or '—')}</td>"
-                f"<td>{_html_escape(f.get('message'))}</td>"
-                f"<td>{_html_escape(f.get('suggestion') or f.get('evidence') or '—')}</td>"
-                "</tr>"
-            )
-        return "\n".join(rows)
-
-    checked = "".join(f"<li>{_html_escape(item)}</li>" for item in report.get("checked_categories", [])) or "<li>None recorded.</li>"
-    not_checked = "".join(f"<li>{_html_escape(item)}</li>" for item in report.get("not_checked", [])) or "<li>None recorded.</li>"
-    affected = sorted({str(f.get("path")) for f in findings if f.get("path")})
-    affected_html = "".join(f"<li><code>{_html_escape(path)}</code></li>" for path in affected) or "<li>No affected file paths recorded.</li>"
-    missing = [f for f in findings if f.get("id") in {"missing_file", "unsupported_dependency", "unsupported_command", "unsupported_ecosystem", "js_alias_uncertain", "dependency_manifest_uncertain"} or f.get("category") == "uncertainty"]
-    fixes = [f for f in findings if f.get("suggestion")]
-    missing_html = "".join(f"<li><code>{_html_escape(f.get('id'))}</code>: {_html_escape(f.get('message'))}</li>" for f in missing) or "<li>No missing evidence recorded.</li>"
-    fixes_html = "".join(f"<li>{_html_escape(f.get('suggestion'))}</li>" for f in fixes) or "<li>No suggested fixes recorded.</li>"
-    generated = _html_escape(report.get("generated_at", "unknown"))
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SourcePack Report - {verdict}</title>
-<style>
-:root {{ color-scheme: light dark; --bg:#0f172a; --panel:#111827; --text:#e5e7eb; --muted:#94a3b8; --line:#334155; --pass:#16a34a; --warn:#d97706; --fail:#dc2626; }}
-body {{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }}
-main {{ max-width:1100px; margin:0 auto; padding:32px 20px 56px; }}
-header, section {{ background:rgba(17,24,39,.92); border:1px solid var(--line); border-radius:18px; padding:22px; margin:16px 0; box-shadow:0 20px 50px rgba(0,0,0,.22); }}
-h1 {{ margin:0 0 8px; font-size:32px; }}
-h2 {{ margin-top:0; }}
-.badge {{ display:inline-block; padding:8px 14px; border-radius:999px; font-weight:800; letter-spacing:.04em; }}
-.badge.pass {{ background:var(--pass); }} .badge.warn {{ background:var(--warn); }} .badge.fail {{ background:var(--fail); }}
-.grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; }}
-.card {{ border:1px solid var(--line); border-radius:14px; padding:14px; background:rgba(15,23,42,.72); }}
-.label {{ color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }}
-.value {{ margin-top:6px; font-weight:650; overflow-wrap:anywhere; }}
-table {{ width:100%; border-collapse:collapse; }} th, td {{ text-align:left; border-bottom:1px solid var(--line); padding:10px; vertical-align:top; }} th {{ color:var(--muted); font-size:13px; }}
-code {{ color:#bfdbfe; }} .muted {{ color:var(--muted); }} .severity.error {{ color:#fca5a5; }} .severity.warn {{ color:#fcd34d; }} .severity.info {{ color:#93c5fd; }}
-</style>
-</head>
-<body><main>
-<header>
-<span class="badge {badge}">{_html_escape(report.get('light') or verdict)}</span>
-<h1>SourcePack local report</h1>
-<p>{_html_escape(report.get('headline'))}</p>
-<p class="muted">Generated {generated}</p>
-</header>
-<section class="grid">
-<div class="card"><div class="label">Verdict</div><div class="value">{_html_escape(verdict)}</div></div>
-<div class="card"><div class="label">Reason type</div><div class="value">{_html_escape(report.get('reason_type') or 'none')}</div></div>
-<div class="card"><div class="label">Commit policy</div><div class="value">{_html_escape(report.get('commit_policy') or 'allowed.')}</div></div>
-<div class="card"><div class="label">Raw JSON</div><div class="value"><code>{_html_escape(raw_json_path)}</code></div></div>
-</section>
-<section><h2>Reason codes</h2><table><thead><tr><th>Code</th><th>Severity</th><th>Path</th><th>Explanation</th><th>Evidence / fix</th></tr></thead><tbody>{finding_rows(findings)}</tbody></table></section>
-<section class="grid"><div class="card"><h2>Affected files</h2><ul>{affected_html}</ul></div><div class="card"><h2>Missing evidence</h2><ul>{missing_html}</ul></div><div class="card"><h2>Suggested fixes</h2><ul>{fixes_html}</ul></div></section>
-<section><h2>Baseline and prompt trust</h2><p>SourcePack treats prompt context as helpful but non-authoritative. Diff checks are judged against the trusted local baseline packet.</p><div class="grid"><div class="card"><div class="label">Baseline state</div><div class="value">{_html_escape(report.get('baseline_state') or 'not recorded')}</div></div><div class="card"><div class="label">Baseline packet</div><div class="value"><code>{_html_escape(baseline_path or 'not recorded')}</code></div></div></div></section>
-<section class="grid"><div class="card"><h2>Checked</h2><ul>{checked}</ul></div><div class="card"><h2>Not checked</h2><ul>{not_checked}</ul></div></section>
-<section><h2>Next action</h2><p>{_html_escape(report.get('next_action'))}</p></section>
-</main></body></html>"""
-
 
 def _latest_report_html_path(repo: str | Path) -> Path:
     return ensure_sourcepack_dirs(repo)["latest_html"]
-
-
-def _write_optional_report_file(path: Path, content: str) -> None:
-    try:
-        path.write_text(content, encoding="utf-8")
-    except Exception as exc:
-        print(f"WARNING: could not write SourcePack report artifact {path}: {exc}", file=sys.stderr)
 
 
 def cli_report_path(args) -> int:
@@ -1608,30 +1370,6 @@ def cli_report_open(args) -> int:
     if not opened:
         print("Browser open was not confirmed; open the path above manually.")
     return 0
-
-def write_user_report(repo: str | Path, report: dict, stem: str = "report") -> None:
-    paths = ensure_sourcepack_dirs(repo)
-    full = dict(report)
-    full.setdefault("sourcepack_version", __version__)
-    full.setdefault("schema_version", "traffic_report.v1")
-    full["generated_at"] = utc_now()
-    json_text = json.dumps(full, indent=2)
-    md_text = render_traffic(full, verbose=True)
-    paths["latest_json"].write_text(json_text, encoding="utf-8")
-    _write_optional_report_file(paths["latest_md"], md_text)
-    try:
-        html_text = render_report_html(full)
-    except Exception as exc:
-        print(f"WARNING: could not render SourcePack HTML report: {exc}", file=sys.stderr)
-    else:
-        _write_optional_report_file(paths["latest_html"], html_text)
-    typed = paths.get(f"latest_{stem}_json")
-    if typed is not None:
-        _write_optional_report_file(typed, json_text)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    _write_optional_report_file(paths["archive"] / f"{ts}_{stem}.json", json_text)
-    _write_optional_report_file(paths["archive"] / f"{ts}_{stem}.md", md_text)
-
 
 
 def finalize_diff_report(repo: str | Path | None, report: dict, args, stem: str = "diff") -> dict:

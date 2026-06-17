@@ -36,6 +36,24 @@ def test_warn_and_fail_scenarios_have_expected_reason_codes():
             assert scenario.expected_reason_codes_include, scenario.scenario_id
 
 
+def test_pass_scenarios_do_not_require_expected_reason_codes():
+    pass_scenarios = [s for s in build_scenarios() if s.expected_verdict == "PASS"]
+    assert pass_scenarios
+    assert any(not s.expected_reason_codes_include for s in pass_scenarios)
+
+
+def test_internal_judge_patch_scenarios_do_not_validate_exit_codes():
+    judge_patch_scenarios = [s for s in build_scenarios() if s.command_mode == "judge_patch"]
+    assert judge_patch_scenarios
+    assert all(s.expected_exit_code is None for s in judge_patch_scenarios)
+
+
+def test_scenario_schema_uses_expected_report_fields_name():
+    scenario = build_scenarios()[0]
+    assert hasattr(scenario, "expected_report_fields")
+    assert not hasattr(scenario, "expected_checked_fields")
+
+
 def test_reason_code_normalization_is_deterministic():
     assert normalize_reason_code("path_escape") == "unsafe_path"
     assert normalize_reason_code("missing_modified_files") == "missing_file"

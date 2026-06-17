@@ -47,8 +47,6 @@ The automatic git workflow is:
 5. The pre-commit hook runs `sourcepack diff . --staged`.
 6. The post-commit hook refreshes the trusted baseline only when the working tree is clean.
 
-
-
 ## Trust model
 
 - `.sourcepack/baseline/` is the authoritative enforcement state.

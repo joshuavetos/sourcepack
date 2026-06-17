@@ -464,13 +464,28 @@ class SourcePackSchemaAndDemoTest(unittest.TestCase):
             patch_json = json.loads((patch_out / "patch_judgment_report.json").read_text())
             for key in ["reality_map_schema_version", "tool_version", "supported_commands", "detected_dependencies"]:
                 self.assertIn(key, reality)
-            for key in ["supported_files", "missing_files", "unsupported_dependencies", "unsupported_commands", "unsupported_capabilities"]:
+            for key in ["sourcepack_version", "supported_files", "missing_files", "unsupported_dependencies", "unsupported_commands", "unsupported_capabilities"]:
                 self.assertIn(key, judgment_json)
             for key in ["patch_judgment_schema_version", "verdict", "modified_files", "missing_modified_files", "new_files"]:
                 self.assertIn(key, patch_json)
 
     def test_demo_exits_successfully(self):
         self.assertEqual(run_cli(["demo"]), 0)
+
+    def test_demo_exits_successfully_with_expected_fake_fail_reports(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(run_cli(["demo"]), 0)
+        output = buf.getvalue()
+        judgment_line = next(line for line in output.splitlines() if line.startswith("Demo judgment: "))
+        judgment = Path(judgment_line.removeprefix("Demo judgment: "))
+        judgment_report = json.loads((judgment / "judgment_report.json").read_text(encoding="utf-8"))
+        self.assertEqual(judgment_report["verdict"], "FAIL")
+        if "Demo patch judgment: " in output:
+            patch_line = next(line for line in output.splitlines() if line.startswith("Demo patch judgment: "))
+            patch_judgment = Path(patch_line.removeprefix("Demo patch judgment: "))
+            patch_report = json.loads((patch_judgment / "patch_judgment_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(patch_report["verdict"], "FAIL")
 
 
 class SourcePackLocalUsabilityTest(unittest.TestCase):

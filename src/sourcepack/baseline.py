@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,8 +15,6 @@ try:
 except Exception:
     __version__ = "1.10.0-alpha"
 
-BASELINE_IGNORED_DIRS = {".git", ".sourcepack", "node_modules", ".venv", "venv", "__pycache__", "dist", "build"}
-BASELINE_TEXT_EXTENSIONS = {".txt", ".md", ".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".yaml", ".yml", ".html", ".css", ".csv", ".toml", ".ini", ".sql", ".sh", ".rs", ".go", ".java", ".c", ".cpp", ".h", ".hpp", ".rb", ".php", ".xml"}
 
 
 def protected_baseline_path(path: str) -> bool:
@@ -188,53 +187,54 @@ def _unique_build_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + f"-{os.getpid()}"
 
 
-def _iter_baseline_files(repo: Path) -> list[Path]:
-    files: list[Path] = []
-    for root, dirs, names in os.walk(repo):
-        root_path = Path(root)
-        dirs[:] = [d for d in dirs if d not in BASELINE_IGNORED_DIRS]
-        for name in names:
-            path = root_path / name
-            try:
-                rel = path.relative_to(repo).as_posix()
-            except ValueError:
-                continue
-            if protected_baseline_path(rel) or path.suffix.lower() not in BASELINE_TEXT_EXTENSIONS:
-                continue
-            files.append(path)
-    return sorted(files, key=lambda p: p.relative_to(repo).as_posix())
-
-
 def _write_baseline_packet(repo: Path, packet: Path) -> None:
-    packet.mkdir(parents=True, exist_ok=True)
-    included = []
-    context_parts = ["# SourcePack Context Packet", ""]
-    for path in _iter_baseline_files(repo):
-        rel = path.relative_to(repo).as_posix()
-        try:
-            content = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        rec = {"relative_path": rel, "absolute_path": str(path), "size_bytes": path.stat().st_size, "sha256": sha256_file(path), "source_sha256": sha256_file(path), "packet_sha256": sha256_text(content), "estimated_tokens": (len(content) + 3) // 4, "extension": path.suffix}
-        included.append(rec)
-        context_parts.extend([f"## File: {rel}", "", content, ""])
-    manifest = {"input_path": str(repo), "generated_at": utc_now(), "tool_version": __version__, "total_files_seen": len(included), "total_files_included": len(included), "total_files_ignored": 0, "total_bytes_included": sum(r["size_bytes"] for r in included), "total_estimated_tokens": sum(r["estimated_tokens"] for r in included), "included_files": included, "ignored_files": []}
-    (packet / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    (packet / "context.md").write_text("\n".join(context_parts), encoding="utf-8")
-    (packet / "reality_map.json").write_text(json.dumps({"reality_map_schema_version": "1.0", "tool_version": __version__, "generated_at": utc_now(), "input_path": str(repo), "confirmed_files": [r["relative_path"] for r in included], "included_file_count": len(included), "supported_commands": [], "detected_dependencies": [], "supported_capabilities": [], "claim_boundaries": ["SourcePack did not execute the application."]}, indent=2), encoding="utf-8")
-    (packet / "token_report.json").write_text(json.dumps({"total_estimated_tokens": manifest["total_estimated_tokens"], "warnings": [], "per_file": [{"relative_path": r["relative_path"], "estimated_tokens": r["estimated_tokens"]} for r in included]}, indent=2), encoding="utf-8")
-    (packet / "redactions.json").write_text(json.dumps({"redactions": []}, indent=2), encoding="utf-8")
-    (packet / "ai_instructions.md").write_text("Use only the packet and reality map as project evidence.\n", encoding="utf-8")
-    hashes = {name: sha256_file(packet / name) for name in ["manifest.json", "context.md", "reality_map.json", "token_report.json", "redactions.json", "ai_instructions.md"]}
-    (packet / "receipt.json").write_text(json.dumps({"generated_at": utc_now(), "tool_version": __version__, "hashes": hashes}, indent=2), encoding="utf-8")
+    from .packet import PacketWriter, SourceScanner
+
+    PacketWriter(packet, SourceScanner(repo).scan(), force=True).write_all()
+
+
+def _verify_baseline_packet(packet: Path) -> bool:
+    from .packet import verify_packet
+
+    return verify_packet(packet)
+
+
+def _run_git(repo: Path, args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=repo, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
+    root = Path(repo)
+    cp = _run_git(root, ["status", "--porcelain=v1", "--untracked-files=all"])
+    if cp.returncode != 0:
+        return False, "git_status_failed"
+    lines = [line for line in cp.stdout.splitlines() if line.strip()]
+    protected = [line for line in lines if protected_baseline_path(line[3:] if len(line) > 3 else line)]
+    non_baseline = [line for line in lines if line not in protected]
+    if non_baseline:
+        return True, None
+    if protected:
+        return False, "baseline_only_dirty"
+    return False, None
 
 
 def scanner_config_hash() -> str:
-    return sha256_text(json.dumps({"ignored_dirs": sorted(BASELINE_IGNORED_DIRS), "text_extensions": sorted(BASELINE_TEXT_EXTENSIONS)}, sort_keys=True))
+    from .packet import scanner_config_hash as packet_scanner_config_hash
+
+    return packet_scanner_config_hash()
 
 
 def git_metadata(repo: str | Path) -> dict:
-    return {"branch": None, "head_commit": None, "dirty": None, "dirty_state": None}
+    root = Path(repo)
+    head = _run_git(root, ["rev-parse", "HEAD"])
+    branch = _run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
+    dirty, dirty_state = _git_worktree_dirty(root)
+    return {
+        "branch": branch.stdout.strip() if branch.returncode == 0 else None,
+        "head_commit": head.stdout.strip() if head.returncode == 0 else None,
+        "dirty": dirty if dirty_state is None else None,
+        "dirty_state": dirty_state,
+    }
 
 
 def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: str | None = None) -> tuple[dict, bool]:
@@ -246,6 +246,8 @@ def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: st
         build_id = _unique_build_id(); build_dir = paths["builds"] / build_id; packet = build_dir / "packet"
         build_dir.mkdir(parents=True, exist_ok=False)
         _write_baseline_packet(repo, packet)
+        if not quiet and not _verify_baseline_packet(packet):
+            raise RuntimeError("packet verification returned FAIL")
         candidate = _validate_packet_artifacts(repo, packet)
         if candidate:
             raise RuntimeError(candidate["details"].get("reason", "candidate baseline invalid"))

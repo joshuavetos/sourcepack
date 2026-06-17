@@ -231,3 +231,20 @@ SourcePack treats untracked non-ignored files as dirty for baseline refresh purp
 The external Colab 10-repo corpus validation is not part of default pytest and is not reproduced by this checkout. The repository does not currently include enough executable inputs to recreate it safely: the 10 target repo URLs or revisions, scenario definitions per repo, generated packet locations, and Colab output artifacts are not present.
 
 `tools/real_corpus_validation.py` exists as an optional harness and is not run by default pytest. It accepts caller-provided repositories with `--repo` or `--repo-list`, deep-cleans repositories between scenarios with `git reset --hard` and `git clean -ffdx`, rebuilds a current SourcePack baseline, and runs `README_EDIT`, `NEW_FILE`, and `IMPORT_FAIL`. It preserves verdicts, reason codes, report paths, and ok/fail status, and exits nonzero when calibrated expectations fail. It does not embed or reproduce the prior external Colab corpus unless the exact corpus inputs are supplied and run.
+
+## Production validation strategy
+
+SourcePack's primary validation proof unit is a repo-state transition, not a
+real repository by itself: baseline state + prompt context state + working tree
+change + output mode + policy mode produce a verdict, reason codes, exit code,
+and report shape. The behavior-space matrix in `tools/behavior_matrix.py` is the
+source of truth for the canonical scenario schema, normalized expected-output
+schema, canonical reason-code registry, and reason-code normalization rules used
+by behavior validation.
+
+The behavior matrix covers baseline and prompt-context separation, dependency
+and import checks, command support, unsupported ecosystems, path safety,
+protected artifacts, binary and malformed diffs, output modes, policy modes, and
+metamorphic invariants. The real-corpus harness remains as secondary
+smoke/exposure coverage for unusual layouts, performance, and ecosystem variety;
+it is not the main proof of judgment semantics.

@@ -1043,7 +1043,10 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
         if ch.new_file:
             report["new_files"].append(ch.path)
         elif ch.path not in files:
-            report["missing_modified_files"].append(ch.path)
+            if baseline_inventory_loaded or ch.path in _included_paths(manifest):
+                report["missing_modified_files"].append(ch.path)
+            else:
+                report.setdefault("uncertain_modified_files", []).append(ch.path)
         if ch.deleted_file:
             report["deleted_files"].append(ch.path)
         protected = ch.path.startswith(".sourcepack/baseline/") or ch.path.startswith(".sourcepack/state/")
@@ -1102,9 +1105,14 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
         if not (py["pytest"] or py["tests"] or "pytest" in supported):
             report["unsupported_commands"].append("pytest")
     if not baseline_inventory_loaded:
-        outside_context = sorted({ch.path for ch in changes if not ch.new_file and not ch.deleted_file and ch.path not in _included_paths(manifest) and ch.path not in report["missing_modified_files"]})
+        outside_context = sorted({
+            ch.path for ch in changes
+            if not ch.new_file
+            and not ch.deleted_file
+            and ch.path not in _included_paths(manifest)
+        })
         if outside_context:
-            report.setdefault("uncertainties", []).append({"id": "baseline_inventory_missing", "message": "Baseline packet lacks full file inventory; modified files outside prompt context were judged conservatively.", "evidence": ", ".join(outside_context)})
+            report.setdefault("uncertainties", []).append({"id": "baseline_inventory_missing", "message": "Baseline packet lacks full file inventory; modified files outside prompt context could not be checked against tracked repo inventory.", "evidence": ", ".join(outside_context)})
     if report["new_files"]:
         report["warnings"].append("Patch creates new files that were not part of the original packet reality.")
     fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "path_escape"]

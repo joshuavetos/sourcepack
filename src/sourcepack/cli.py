@@ -1126,11 +1126,23 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
 
 
 def render_patch_judgment_report(report: dict) -> str:
-    lines = ["# SourcePack Patch Judgment Report", "", f"Verdict: {report['verdict']}", ""]
-    sections = [("modified_files", "Modified Files"), ("missing_modified_files", "Missing Modified Files"), ("new_files", "New Files"), ("deleted_files", "Deleted Files"), ("unsupported_dependencies", "Unsupported Dependencies"), ("unsupported_commands", "Unsupported Commands"), ("protected_artifact_modifications", "Protected Packet Artifact Modifications"), ("warnings", "Warnings")]
-    for key, title in sections:
-        lines.extend([f"## {title}"])
+    traffic = report.get("traffic") if isinstance(report.get("traffic"), dict) else patch_report_to_traffic(report, "patch_judgment_report.json")
+    lines = ["# SourcePack Patch Judgment Report", "", f"Verdict: {traffic.get('verdict', report.get('verdict', 'WARN'))}", f"Report: {report.get('report_path', 'patch_judgment_report.json')}", "", f"Next action: {traffic.get('next_action')}", ""]
+    grouped = [("blockers", "Blockers"), ("warnings", "Warnings"), ("uncertainties", "Uncertainties")]
+    for key, title in grouped:
+        lines.extend([f"## {title}", ""])
+        lines.extend([f"- {f.get('id')}: {f.get('message')}" for f in report.get(key, [])] or ["None"])
+        lines.append("")
+    for key, title in [("checked_categories", "Checked Categories"), ("not_checked", "Not Checked Categories")]:
+        lines.extend([f"## {title}", ""])
         lines.extend([f"- {item}" for item in report.get(key, [])] or ["None"])
+        lines.append("")
+    lines.extend(["## Raw Patch Sections", ""])
+    sections = [("modified_files", "Modified Files"), ("missing_modified_files", "Missing Modified Files"), ("new_files", "New Files"), ("deleted_files", "Deleted Files"), ("unsupported_dependencies", "Unsupported Dependencies"), ("unsupported_commands", "Unsupported Commands"), ("protected_artifact_modifications", "Protected Packet Artifact Modifications"), ("warnings_text", "Legacy Warnings")]
+    legacy = dict(report); legacy["warnings_text"] = report.get("legacy_warnings", report.get("warnings", []))
+    for key, title in sections:
+        lines.extend([f"### {title}"])
+        lines.extend([f"- {item}" for item in legacy.get(key, [])] or ["None"])
         lines.append("")
     return "\n".join(lines)
 
@@ -1142,12 +1154,27 @@ def judge_patch(packet_path: str | Path, patch_path: str | Path, out_dir: str | 
         report = {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     else:
         report = judge_patch_text(packet_path, patch_text)
-    text = render_patch_judgment_report(report)
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
+    report_path = str(out / "patch_judgment_report.json")
+    traffic = patch_report_to_traffic(report, report_path)
+    enriched = dict(report)
+    enriched["legacy_warnings"] = list(report.get("warnings", []))
+    enriched.update({
+        "findings": traffic.get("findings", []),
+        "blockers": traffic.get("blockers", []),
+        "warnings": [f for f in traffic.get("warnings", []) if f.get("category") != "uncertainty"],
+        "uncertainties": [f for f in traffic.get("warnings", []) if f.get("category") == "uncertainty"],
+        "checked_categories": traffic.get("checked_categories", []),
+        "not_checked": traffic.get("not_checked", []),
+        "next_action": traffic.get("next_action"),
+        "report_path": report_path,
+        "traffic": traffic,
+    })
+    text = render_patch_judgment_report(enriched)
     (out / "patch_judgment_report.md").write_text(text, encoding="utf-8")
-    (out / "patch_judgment_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(text)
-    return report
+    (out / "patch_judgment_report.json").write_text(json.dumps(enriched, indent=2), encoding="utf-8")
+    print(render_traffic(traffic, verbose=True), end="")
+    return enriched
 
 def _has_negation_before(text: str, start: int) -> bool:
     window = text[max(0, start - 48):start].lower()
@@ -2276,7 +2303,7 @@ def cli_diff(args) -> int:
             build_current_baseline(repo, quiet=True); note = "Created SourcePack baseline because none existed and no diff was present."; baseline_status = validate_baseline(repo)
         except BaselineLockError as exc:
             rep=traffic_report("WARN","baseline writer is locked.",[normalized_finding("baseline_locked","warn","tooling",str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")
-            print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 0
+            print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1 if (getattr(args, "strict", False) or getattr(args, "ci", False)) else 0
         except Exception as exc:
             rep=traffic_report("FAIL","stop before trusting this output.",[normalized_finding("baseline_failed","error","baseline",f"Baseline verification failed: {exc}")]); print(render_traffic(rep,args.verbose), end=""); return 1
     stale_findings = []
@@ -2301,11 +2328,14 @@ def cli_diff(args) -> int:
             pass
     rep["current_git"] = git_metadata(repo)
     write_user_report(repo, rep, "diff")
-    if args.json: print(json.dumps(rep, indent=2)); return 0 if rep["verdict"] != "FAIL" else 1
+    if getattr(args, "ci", False):
+        args.json = True
+        rep["ci"] = True
+    if args.json: print(json.dumps(rep, indent=2)); return 0 if (rep["verdict"] == "PASS" or (rep["verdict"] == "WARN" and not (getattr(args, "strict", False) or getattr(args, "ci", False)))) else 1
     if added: print("Added .sourcepack/ to .gitignore.")
     if note: print(note)
     print(render_traffic(rep, args.verbose), end="")
-    return 0 if rep["verdict"] != "FAIL" else 1
+    return 0 if (rep["verdict"] == "PASS" or (rep["verdict"] == "WARN" and not (getattr(args, "strict", False) or getattr(args, "ci", False)))) else 1
 
 
 
@@ -2606,7 +2636,7 @@ def doctor() -> bool:
 
 
 def run_cli(args_list=None):
-    parser = argparse.ArgumentParser(prog="sourcepack", description="Local guardrail for AI-assisted repo changes.")
+    parser = argparse.ArgumentParser(prog="sourcepack", description="Local guardrail for AI-assisted repo changes. PASS exits 0, WARN exits 0 locally unless --strict or --ci is used, and FAIL exits nonzero.")
     parser.add_argument("--version", action="store_true")
     subs = parser.add_subparsers(dest="command")
     build = subs.add_parser("build")
@@ -2623,7 +2653,7 @@ def run_cli(args_list=None):
     judge.add_argument("packet")
     judge.add_argument("ai_answer")
     judge.add_argument("--out")
-    judge_patch_cmd = subs.add_parser("judge-patch", help="judge a unified diff against a packet", description="Judge a git-style unified diff against SourcePack packet evidence. Writes patch_judgment_report.md and patch_judgment_report.json.")
+    judge_patch_cmd = subs.add_parser("judge-patch", help="judge a unified diff against a packet", description="Judge a git-style unified diff against SourcePack packet evidence. The JSON and markdown reports include verdict, blockers, warnings, uncertainties, checked categories, not checked categories, next action, and report path.")
     judge_patch_cmd.add_argument("packet")
     judge_patch_cmd.add_argument("patch")
     judge_patch_cmd.add_argument("--out", required=True)
@@ -2633,7 +2663,7 @@ def run_cli(args_list=None):
     instr = subs.add_parser("instructions")
     instr.add_argument("packet")
     subs.add_parser("demo")
-    init = subs.add_parser("init", help="initialize local SourcePack state", description="Initialize .sourcepack state. With --auto, create a safe baseline when possible and install git hooks.")
+    init = subs.add_parser("init", help="initialize local SourcePack state", description="Initialize .sourcepack state. With --auto, create a safe baseline when possible and install git hooks. --strict installs hooks that block WARN and FAIL.")
     init.add_argument("path", nargs="?", default=".")
     init.add_argument("--auto", action="store_true")
     init.add_argument("--strict", action="store_true")
@@ -2642,29 +2672,31 @@ def run_cli(args_list=None):
     init.add_argument("--install-hygiene-hooks", action="store_true")
     init.add_argument("--json", action="store_true")
     subs.add_parser("doctor")
-    prompt_cmd = subs.add_parser("prompt", help="write non-authoritative AI prompt context", description="Generate prompt context for an AI task. This does not refresh the trusted enforcement baseline.")
+    prompt_cmd = subs.add_parser("prompt", help="write non-authoritative AI prompt context", description="Generate selective prompt context for an AI task. Prompt context is non-authoritative and never refreshes the trusted enforcement baseline.")
     prompt_cmd.add_argument("repo")
     prompt_cmd.add_argument("task", nargs="?")
     prompt_cmd.add_argument("--copy", action="store_true")
     prompt_cmd.add_argument("--verbose", action="store_true")
     prompt_cmd.add_argument("--json", action="store_true")
-    baseline_cmd = subs.add_parser("baseline")
+    baseline_cmd = subs.add_parser("baseline", help="create or refresh trusted enforcement baseline", description="Create or refresh .sourcepack/baseline, the authoritative enforcement state used by sourcepack diff.")
     baseline_cmd.add_argument("repo")
     baseline_cmd.add_argument("--refresh", action="store_true")
     baseline_cmd.add_argument("--verbose", action="store_true")
     baseline_cmd.add_argument("--json", action="store_true")
     baseline_cmd.add_argument("--quiet", action="store_true")
-    diff_cmd = subs.add_parser("diff", help="check repo changes against trusted baseline", description="Judge working-tree or staged changes against .sourcepack/baseline. PASS is green, WARN needs review, FAIL blocks.")
+    diff_cmd = subs.add_parser("diff", help="check repo changes against trusted baseline", description="Judge working-tree or staged changes against .sourcepack/baseline. PASS exits 0. WARN exits 0 locally, but exits nonzero with --strict or --ci. FAIL exits nonzero. --json stays machine-readable.")
     diff_cmd.add_argument("repo")
     diff_cmd.add_argument("--staged", action="store_true")
     diff_cmd.add_argument("--verbose", action="store_true")
     diff_cmd.add_argument("--json", action="store_true")
+    diff_cmd.add_argument("--strict", action="store_true", help="exit nonzero on WARN as well as FAIL")
+    diff_cmd.add_argument("--ci", action="store_true", help="non-interactive CI mode; implies --strict and prints JSON")
     install_hook = subs.add_parser("install-hook")
     install_hook.add_argument("repo")
     install_hook.add_argument("--strict", action="store_true")
     uninstall_hook = subs.add_parser("uninstall-hook")
     uninstall_hook.add_argument("repo")
-    status_cmd = subs.add_parser("status")
+    status_cmd = subs.add_parser("status", help="show SourcePack repo state", description="Show baseline, hook, report, git, and dirty-worktree state without changing the baseline.")
     status_cmd.add_argument("repo")
     status_cmd.add_argument("--json", action="store_true")
     args = parser.parse_args(args_list)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sourcepack"
-version = "1.9.8"
+version = "1.10.0a0"
 description = "Verifiable AI context packets from source code."
 readme = "README.md"
 requires-python = ">=3.11"

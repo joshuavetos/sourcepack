@@ -277,7 +277,7 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
         dep_mr = add_python_manifest_dependency(m, "fastapi")
         if not dep_mr.applied: return dep_mr
         mr = mutate_file(p, "\nimport fastapi\n")
-        mr.details.update({"manifest_path": str(m), "manifest_before_sha256": dep_mr.before_sha256, "manifest_after_sha256": dep_mr.after_sha256, "dependency_added": "fastapi"})
+        mr.details.update({"manifest_path": str(m), "manifest_before_sha256": dep_mr.before_sha256, "manifest_after_sha256": dep_mr.after_sha256, "source_path": str(p), "source_before_sha256": mr.before_sha256, "source_after_sha256": mr.after_sha256, "dependency_added": "fastapi"})
         return mr
     if sid.startswith("undeclared_js"):
         p=find_js(repo); pkg=find_package(repo)
@@ -369,46 +369,120 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
         return MutationResult("applied", True, None, None, hashlib.sha256(sid.encode()).hexdigest(), details={"programmatic_patch_text": True})
     return MutationResult("mutation_failed", False, reason="unknown_scenario")
 
-def mutation_validation_failed(mutation_result: MutationResult, reason: str) -> MutationResult:
-    return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, reason, {"original_details": mutation_result.details or {}})
+def mutation_validation_failed(mutation_result: MutationResult, reason: str, details: dict[str, Any] | None = None) -> MutationResult:
+    failure_details = dict(details or {})
+    failure_details["original_mutation_result"] = asdict(mutation_result)
+    return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, reason, failure_details)
 
-def validate_mutation_result(repo: Path, scenario: Scenario, mutation_result: MutationResult) -> MutationResult:
-    if mutation_result.status != "applied":
-        return mutation_result
-    details=mutation_result.details or {}
-    if mutation_result.before_sha256 is not None and mutation_result.after_sha256 == mutation_result.before_sha256:
-        return mutation_validation_failed(mutation_result, "sha256_unchanged")
-    sid=scenario.scenario_id
-    if sid in {"protected_sourcepack_baseline_edit","git_config_edit","malformed_diff"} and details.get("programmatic_patch_text") is not True:
-        return mutation_validation_failed(mutation_result, "programmatic_patch_text_missing")
-    if sid in {"same_patch_js_dependency_add_plus_import","same_patch_python_dependency_add_plus_import"}:
-        if sid.endswith("js_dependency_add_plus_import"):
-            if details.get("dependency_preexisting") is True:
-                return mutation_validation_failed(mutation_result, "dependency_preexisting")
-            if details.get("import_specifier") != details.get("dependency_added"):
-                return mutation_validation_failed(mutation_result, "dependency_import_mismatch")
-            if details.get("dependency_preexisting") is not False:
-                return mutation_validation_failed(mutation_result, "dependency_preexisting_not_false")
-            if details.get("package_json_before_sha256") == details.get("package_json_after_sha256"):
-                return mutation_validation_failed(mutation_result, "package_json_unchanged")
-            if details.get("source_before_sha256") == details.get("source_after_sha256"):
-                return mutation_validation_failed(mutation_result, "source_unchanged")
-        if sid.endswith("python_dependency_add_plus_import") and details.get("manifest_before_sha256") == details.get("manifest_after_sha256"):
-            return mutation_validation_failed(mutation_result, "manifest_unchanged")
+def _rel_or_abs(repo: Path, value: Any) -> Path | None:
+    if not value:
+        return None
+    p = Path(str(value))
+    return p if p.is_absolute() else repo / p
+
+def _read(path: Path | None) -> str:
+    return path.read_text(encoding="utf-8", errors="ignore") if path and path.exists() else ""
+
+def _python_manifest_has_dependency(path: Path, dep: str) -> bool:
+    text = _read(path)
+    if path.name.startswith("requirements"):
+        for line in text.splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith("#"):
+                continue
+            name = raw.split("#", 1)[0].strip().split("==")[0].split(">=")[0].split("<=")[0].split("~=")[0].split("[")[0].strip().replace("-", "_")
+            if name == dep:
+                return True
+        return False
+    if path.name == "pyproject.toml":
+        try:
+            import tomllib
+            data = tomllib.loads(text)
+        except Exception:
+            return False
+        deps = data.get("project", {}).get("dependencies")
+        return isinstance(deps, list) and any(str(d).split("==")[0].split(">=")[0].split("<=")[0].split("~=")[0].split("[")[0].strip().replace("-", "_") == dep for d in deps)
+    return False
+
+def _policy_artifact_exists(repo: Path) -> bool:
+    return (repo / ".sourcepack" / "policy" / "allow.jsonl").exists()
+
+def _ledger_artifact_exists(repo: Path) -> bool:
+    return (repo / ".sourcepack" / "evidence" / "ledger.jsonl").exists()
+
+def verify_scenario_state(repo: Path, scenario: Scenario, mr: MutationResult) -> MutationResult:
+    if mr.status != "applied":
+        return mr
+    d = mr.details or {}
+    sid = scenario.scenario_id
+    if mr.before_sha256 is not None and mr.after_sha256 == mr.before_sha256:
+        return mutation_validation_failed(mr, "sha256_unchanged")
+    if sid == "same_patch_js_dependency_add_plus_import":
+        pkg = _rel_or_abs(repo, d.get("package_json_path")); src = _rel_or_abs(repo, d.get("source_path")); dep = d.get("dependency_added")
+        candidates = {"sourcepack-corpus-js-dep", "sourcepack-corpus-js-dep-2", "sourcepack-corpus-js-dep-3"}
+        if not pkg or not pkg.exists(): return mutation_validation_failed(mr, "js_package_json_missing")
+        if not src or not src.exists(): return mutation_validation_failed(mr, "js_source_missing")
+        if not dep: return mutation_validation_failed(mr, "js_dependency_added_missing")
+        preexisting = set()
+        sections = d.get("existing_dependency_sections")
+        if isinstance(sections, dict):
+            for vals in sections.values():
+                if isinstance(vals, list): preexisting.update(str(v) for v in vals)
+        if dep not in candidates or dep == "react": return mutation_validation_failed(mr, "js_dependency_candidate_invalid")
+        if dep in preexisting: return mutation_validation_failed(mr, "js_dependency_preexisting")
+        try: data = json.loads(pkg.read_text(encoding="utf-8"))
+        except Exception: data = {}
+        if dep not in (data.get("dependencies") or {}): return mutation_validation_failed(mr, "js_dependency_not_added_to_dependencies")
+        if d.get("dependency_preexisting") is not False: return mutation_validation_failed(mr, "js_dependency_preexisting_flag_invalid")
+        if d.get("import_specifier") != dep: return mutation_validation_failed(mr, "js_import_specifier_mismatch")
+        if f"'{dep}'" not in _read(src) and f'"{dep}"' not in _read(src): return mutation_validation_failed(mr, "js_source_import_missing")
+        if d.get("package_json_before_sha256") == d.get("package_json_after_sha256") or sha256_path(pkg) == d.get("package_json_before_sha256"): return mutation_validation_failed(mr, "js_package_json_unchanged")
+        if d.get("source_before_sha256") == d.get("source_after_sha256") or sha256_path(src) == d.get("source_before_sha256"): return mutation_validation_failed(mr, "js_source_unchanged")
+    if sid == "same_patch_python_dependency_add_plus_import":
+        manifest = _rel_or_abs(repo, d.get("manifest_path")); src = _rel_or_abs(repo, d.get("source_path") or mr.target_path); dep = d.get("dependency_added")
+        if not manifest or not manifest.exists(): return mutation_validation_failed(mr, "python_manifest_missing")
+        if not src or not src.exists(): return mutation_validation_failed(mr, "python_source_missing")
+        if dep != "fastapi": return mutation_validation_failed(mr, "python_dependency_added_missing")
+        if not _python_manifest_has_dependency(manifest, "fastapi"): return mutation_validation_failed(mr, "python_dependency_not_in_manifest")
+        if "import fastapi" not in _read(src): return mutation_validation_failed(mr, "python_import_missing")
+        if d.get("manifest_before_sha256") == d.get("manifest_after_sha256") or sha256_path(manifest) == d.get("manifest_before_sha256"): return mutation_validation_failed(mr, "python_manifest_unchanged")
+        if sha256_path(src) == mr.before_sha256 or d.get("source_before_sha256") == d.get("source_after_sha256"): return mutation_validation_failed(mr, "python_source_unchanged")
     if sid == "docker_compose_missing_file":
-        if details.get("compose_files_remaining"):
-            return mutation_validation_failed(mutation_result, "compose_files_still_present")
-        if "deleted_compose_files" not in details or "compose_files_remaining" not in details:
-            return mutation_validation_failed(mutation_result, "compose_provenance_missing")
-        if details.get("command_written") != "docker compose up":
-            return mutation_validation_failed(mutation_result, "compose_command_mismatch")
-        if details.get("readme_before_sha256") == details.get("readme_after_sha256"):
-            return mutation_validation_failed(mutation_result, "readme_unchanged")
-    if sid.startswith("policy_allow") and ("policy_exit_code" not in details or details.get("policy_exit_code") != 0):
-        return mutation_validation_failed(mutation_result, "policy_setup_failed")
-    if sid == "execution_claim_with_successful_ledger" and ("ledger_exit_code" not in details or details.get("ledger_exit_code") != 0):
-        return mutation_validation_failed(mutation_result, "execution_ledger_setup_failed")
-    return mutation_result
+        readme = _rel_or_abs(repo, d.get("readme_path") or mr.target_path)
+        if not readme or not readme.exists(): return mutation_validation_failed(mr, "compose_readme_missing")
+        if "docker compose up" not in _read(readme): return mutation_validation_failed(mr, "compose_command_missing")
+        if any((repo / n).exists() for n in ("compose.yml","compose.yaml","docker-compose.yml","docker-compose.yaml")): return mutation_validation_failed(mr, "compose_files_still_present")
+        if "deleted_compose_files" not in d: return mutation_validation_failed(mr, "compose_deletion_provenance_missing")
+        if "compose_files_remaining" not in d or d.get("compose_files_remaining") != []: return mutation_validation_failed(mr, "compose_remaining_provenance_invalid")
+        if d.get("readme_before_sha256") == d.get("readme_after_sha256") or sha256_path(readme) == d.get("readme_before_sha256"): return mutation_validation_failed(mr, "compose_readme_unchanged")
+    if sid == "policy_allow_matching_dependency":
+        src = _rel_or_abs(repo, mr.target_path)
+        if d.get("policy_exit_code") != 0: return mutation_validation_failed(mr, "policy_setup_failed")
+        if d.get("policy_allowed_dependency") != "fastapi": return mutation_validation_failed(mr, "policy_allowed_dependency_missing")
+        if not d.get("policy_command"): return mutation_validation_failed(mr, "policy_command_missing")
+        if "import fastapi" not in _read(src): return mutation_validation_failed(mr, "policy_import_missing")
+        if not _policy_artifact_exists(repo): return mutation_validation_failed(mr, "policy_artifact_missing")
+    if sid == "policy_allow_nonmatching_dependency":
+        src = _rel_or_abs(repo, mr.target_path)
+        if d.get("policy_exit_code") != 0: return mutation_validation_failed(mr, "policy_setup_failed")
+        if d.get("policy_allowed_dependency") != "fastapi": return mutation_validation_failed(mr, "policy_allowed_dependency_missing")
+        if d.get("unsuppressed_dependency") != "flask": return mutation_validation_failed(mr, "policy_unsuppressed_dependency_missing")
+        text = _read(src)
+        if "import fastapi" not in text or "import flask" not in text: return mutation_validation_failed(mr, "policy_imports_missing")
+        if not _policy_artifact_exists(repo): return mutation_validation_failed(mr, "policy_artifact_missing")
+    if sid == "execution_claim_without_ledger":
+        if not any(x in _read(_rel_or_abs(repo, mr.target_path)).lower() for x in ("tests passed", "pytest passed", "i ran pytest")): return mutation_validation_failed(mr, "execution_claim_missing")
+    if sid == "execution_claim_with_successful_ledger":
+        cmd = d.get("ledger_command"); readme_text = _read(_rel_or_abs(repo, mr.target_path)).lower()
+        if d.get("ledger_exit_code") != 0: return mutation_validation_failed(mr, "execution_ledger_setup_failed")
+        if not cmd: return mutation_validation_failed(mr, "execution_ledger_command_missing")
+        if not _ledger_artifact_exists(repo): return mutation_validation_failed(mr, "execution_ledger_artifact_missing")
+        if str(cmd).lower() not in readme_text: return mutation_validation_failed(mr, "execution_claim_missing")
+    if sid in {"protected_sourcepack_baseline_edit", "git_config_edit", "malformed_diff"} and d.get("programmatic_patch_text") is not True:
+        return mutation_validation_failed(mr, "programmatic_patch_text_missing")
+    return mr
+
+validate_mutation_result = verify_scenario_state
 
 def cleanup_repo(repo: Path) -> bool:
     a=run(["git","reset","--hard","HEAD"], repo, 20)
@@ -557,7 +631,7 @@ def run_harness(args: argparse.Namespace) -> tuple[dict[str,Any], int]:
                 elif not create_baseline(work, min(args.timeout, s.timeout_seconds)):
                     mr=MutationResult("baseline_failed",False,reason="sourcepack_baseline_failed"); row=empty_result(entry,s,repo_path,mr,["baseline creation failed"])
                 else:
-                    mr=validate_mutation_result(work, s, apply_mutation(work,s))
+                    mr=verify_scenario_state(work, s, apply_mutation(work,s))
                     if not mr.applied: row=empty_result(entry,s,repo_path,mr,[mr.reason or mr.status])
                     else:
                         try:

@@ -125,7 +125,7 @@ def find_readme(repo: Path, create: bool=True) -> Path | None:
     return repo/"README.md" if create else None
 
 def find_py_manifest(repo: Path) -> Path | None:
-    for n in ("pyproject.toml","requirements.txt"):
+    for n in ("requirements.txt","pyproject.toml"):
         if (repo/n).exists(): return repo/n
     req=sorted(repo.glob("requirements*.txt"))
     return req[0] if req else None
@@ -295,11 +295,27 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
             data=json.loads(pkg.read_text() or "{}")
         except Exception as exc:
             return skip("package_json_invalid", {"error": str(exc)})
-        data.setdefault("dependencies",{})["react"]="latest"; pkg.write_text(json.dumps(data, indent=2, sort_keys=True)+"\n", encoding="utf-8")
+        existing=set()
+        for section in ("dependencies","devDependencies","peerDependencies","optionalDependencies"):
+            vals=data.get(section)
+            if isinstance(vals, dict): existing.update(str(k) for k in vals)
+        candidates=("sourcepack-corpus-js-dep","sourcepack-corpus-js-dep-2","sourcepack-corpus-js-dep-3")
+        dep=next((c for c in candidates if c not in existing), None)
+        if dep is None:
+            return MutationResult("mutation_failed", False, str(pkg), before, before, "js_dependency_candidate_preexisting", {"dependency_candidates": list(candidates)})
+        deps=data.setdefault("dependencies",{})
+        if not isinstance(deps, dict):
+            return MutationResult("mutation_failed", False, str(pkg), before, before, "package_json_dependencies_not_object")
+        deps[dep]="latest"
+        pkg.write_text(json.dumps(data, indent=2, sort_keys=True)+"\n", encoding="utf-8")
         after=sha256_path(pkg)
-        if before == after: return MutationResult("mutation_failed", False, str(pkg), before, after, "package_json_unchanged")
-        mr = mutate_file(p, "\nimport React from 'react';\n")
-        mr.details.update({"package_json_path": str(pkg), "package_json_before_sha256": before, "package_json_after_sha256": after, "dependency_added": "react"})
+        source_before=sha256_path(p)
+        if before == after or dep not in (json.loads(pkg.read_text()).get("dependencies") or {}):
+            return MutationResult("mutation_failed", False, str(pkg), before, after, "package_json_unchanged")
+        mr = mutate_file(p, f"\nimport sourcepackCorpusJsDep from '{dep}';\n")
+        mr.details.update({"package_json_path": str(pkg), "package_json_before_sha256": before, "package_json_after_sha256": after, "source_path": str(p), "source_before_sha256": source_before, "source_after_sha256": mr.after_sha256, "dependency_added": dep, "dependency_preexisting": False, "import_specifier": dep})
+        if not mr.applied:
+            mr.status="mutation_failed"; mr.reason="source_unchanged"
         return mr
     if sid in {"missing_npm_script_reference","existing_npm_script_reference"}:
         pkg=find_package(repo)
@@ -311,10 +327,22 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
             script=sorted(scripts)[0]
         return mutate_file(find_readme(repo, True), f"\nRun `npm run {script}`.\n")
     if sid == "docker_compose_missing_file":
-        for c in ("compose.yml","compose.yaml","docker-compose.yml","docker-compose.yaml"):
+        compose_names=("compose.yml","compose.yaml","docker-compose.yml","docker-compose.yaml")
+        deleted=[]
+        for c in compose_names:
             path=repo/c
-            if path.exists(): path.unlink()
-        return mutate_file(find_readme(repo, True), "\nRun `docker compose up`.\n")
+            if path.exists():
+                path.unlink(); deleted.append(str(path))
+        remaining=[str(repo/c) for c in compose_names if (repo/c).exists()]
+        readme=find_readme(repo, True)
+        before=sha256_path(readme)
+        mr=mutate_file(readme, "\nRun `docker compose up`.\n")
+        mr.details.update({"deleted_compose_files": deleted, "compose_files_remaining": remaining, "command_written": "docker compose up", "readme_before_sha256": before, "readme_after_sha256": mr.after_sha256})
+        if remaining:
+            mr.status="mutation_failed"; mr.applied=False; mr.reason="compose_files_still_present"
+        elif before == mr.after_sha256:
+            mr.status="mutation_failed"; mr.applied=False; mr.reason="readme_unchanged"
+        return mr
     if sid == "docker_compose_existing_file":
         c=find_compose(repo); return skip("docker_compose_missing") if not c else mutate_file(find_readme(repo, True), "\nRun `docker compose up`.\n")
     if sid == "make_target_missing":
@@ -336,6 +364,30 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
     if sid in {"protected_sourcepack_baseline_edit","git_config_edit","malformed_diff"}:
         return MutationResult("applied", True, None, None, hashlib.sha256(sid.encode()).hexdigest(), details={"programmatic_patch_text": True})
     return MutationResult("mutation_failed", False, reason="unknown_scenario")
+
+def validate_mutation_result(repo: Path, scenario: Scenario, mutation_result: MutationResult) -> MutationResult:
+    if mutation_result.status != "applied":
+        return mutation_result
+    details=mutation_result.details or {}
+    if mutation_result.before_sha256 is not None and mutation_result.after_sha256 == mutation_result.before_sha256:
+        return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "sha256_unchanged", details)
+    sid=scenario.scenario_id
+    if sid in {"protected_sourcepack_baseline_edit","git_config_edit","malformed_diff"} and details.get("programmatic_patch_text") is not True:
+        return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "programmatic_patch_text_missing", details)
+    if sid in {"same_patch_js_dependency_add_plus_import","same_patch_python_dependency_add_plus_import"}:
+        if details.get("dependency_preexisting") is True:
+            return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "dependency_preexisting", details)
+        if sid.endswith("js_dependency_add_plus_import") and details.get("import_specifier") != details.get("dependency_added"):
+            return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "dependency_import_mismatch", details)
+        if sid.endswith("python_dependency_add_plus_import") and details.get("manifest_before_sha256") == details.get("manifest_after_sha256"):
+            return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "manifest_unchanged", details)
+    if sid == "docker_compose_missing_file" and details.get("compose_files_remaining"):
+        return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "compose_files_still_present", details)
+    if sid.startswith("policy_allow") and details.get("policy_exit_code") != 0:
+        return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "policy_setup_failed", details)
+    if sid == "execution_claim_with_successful_ledger" and details.get("ledger_exit_code") != 0:
+        return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "execution_ledger_setup_failed", details)
+    return mutation_result
 
 def cleanup_repo(repo: Path) -> bool:
     a=run(["git","reset","--hard","HEAD"], repo, 20)
@@ -484,7 +536,7 @@ def run_harness(args: argparse.Namespace) -> tuple[dict[str,Any], int]:
                 elif not create_baseline(work, min(args.timeout, s.timeout_seconds)):
                     mr=MutationResult("baseline_failed",False,reason="sourcepack_baseline_failed"); row=empty_result(entry,s,repo_path,mr,["baseline creation failed"])
                 else:
-                    mr=apply_mutation(work,s)
+                    mr=validate_mutation_result(work, s, apply_mutation(work,s))
                     if not mr.applied: row=empty_result(entry,s,repo_path,mr,[mr.reason or mr.status])
                     else:
                         try:

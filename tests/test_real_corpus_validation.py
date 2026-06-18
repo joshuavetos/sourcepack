@@ -167,8 +167,23 @@ def test_same_patch_js_dependency_mutates_package_json(tmp_path):
     mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID["same_patch_js_dependency_add_plus_import"])
     assert mr.applied
     data = json.loads((repo / "package.json").read_text())
-    assert data["dependencies"]["react"] == "latest"
+    assert mr.details["dependency_added"] == "sourcepack-corpus-js-dep"
+    assert data["dependencies"]["sourcepack-corpus-js-dep"] == "latest"
+    assert "react" != mr.details["dependency_added"]
+    assert mr.details["dependency_preexisting"] is False
+    assert mr.details["import_specifier"] == mr.details["dependency_added"]
     assert mr.details["package_json_before_sha256"] != mr.details["package_json_after_sha256"]
+    assert mr.details["source_before_sha256"] != mr.details["source_after_sha256"]
+
+
+def test_same_patch_js_dependency_fails_if_candidates_preexist(tmp_path):
+    repo = make_repo(tmp_path, node=True)
+    data = json.loads((repo / "package.json").read_text())
+    data["dependencies"].update({"sourcepack-corpus-js-dep":"latest", "sourcepack-corpus-js-dep-2":"latest", "sourcepack-corpus-js-dep-3":"latest"})
+    (repo / "package.json").write_text(json.dumps(data))
+    mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID["same_patch_js_dependency_add_plus_import"])
+    assert mr.status == "mutation_failed"
+    assert mr.reason == "js_dependency_candidate_preexisting"
 
 
 def test_makefile_existing_uses_real_parsed_target(tmp_path):
@@ -193,6 +208,9 @@ def test_docker_compose_missing_uses_detected_command_form(tmp_path):
     mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID["docker_compose_missing_file"])
     assert mr.applied
     assert "docker compose up" in (repo / "README.md").read_text()
+    assert mr.details["command_written"] == "docker compose up"
+    assert mr.details["deleted_compose_files"]
+    assert mr.details["compose_files_remaining"] == []
     assert not (repo / "compose.yml").exists()
 
 
@@ -283,3 +301,30 @@ def test_policy_nonmatching_cannot_pass_if_unrelated_finding_disappears():
 def test_execution_without_ledger_cannot_pass_without_trust_violation():
     flags = rcv.classify(rcv.SCENARIO_BY_ID["execution_claim_without_ledger"], "PASS", [], False, False, False, rcv.MutationResult("applied", True))
     assert flags["trust_violation"]
+
+
+def test_execution_claim_with_successful_ledger_records_setup_details(tmp_path):
+    repo = make_repo(tmp_path)
+    mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID["execution_claim_with_successful_ledger"])
+    assert {"ledger_command", "ledger_exit_code", "ledger_stdout", "ledger_stderr"} <= set(mr.details)
+
+
+def test_validate_mutation_result_rejects_invalid_states(tmp_path):
+    repo = make_repo(tmp_path)
+    scenario = rcv.SCENARIO_BY_ID["benign_readme_edit"]
+    mr = rcv.MutationResult("applied", True, str(repo / "README.md"), "same", "same")
+    assert rcv.validate_mutation_result(repo, scenario, mr).reason == "sha256_unchanged"
+    js = rcv.SCENARIO_BY_ID["same_patch_js_dependency_add_plus_import"]
+    mr = rcv.MutationResult("applied", True, details={"dependency_preexisting": True, "dependency_added":"a", "import_specifier":"a"})
+    assert rcv.validate_mutation_result(repo, js, mr).reason == "dependency_preexisting"
+    mr = rcv.MutationResult("applied", True, details={"dependency_added":"a", "import_specifier":"b"})
+    assert rcv.validate_mutation_result(repo, js, mr).reason == "dependency_import_mismatch"
+    pol = rcv.SCENARIO_BY_ID["policy_allow_matching_dependency"]
+    mr = rcv.MutationResult("applied", True, details={"policy_exit_code": 1})
+    assert rcv.validate_mutation_result(repo, pol, mr).reason == "policy_setup_failed"
+    led = rcv.SCENARIO_BY_ID["execution_claim_with_successful_ledger"]
+    mr = rcv.MutationResult("applied", True, details={"ledger_exit_code": 1})
+    assert rcv.validate_mutation_result(repo, led, mr).reason == "execution_ledger_setup_failed"
+    dock = rcv.SCENARIO_BY_ID["docker_compose_missing_file"]
+    mr = rcv.MutationResult("applied", True, details={"compose_files_remaining": ["compose.yml"]})
+    assert rcv.validate_mutation_result(repo, dock, mr).reason == "compose_files_still_present"

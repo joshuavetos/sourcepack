@@ -1,0 +1,16 @@
+[
+  {
+    "repo_id": "flask",
+    "url": "https://github.com/pallets/flask.git",
+    "ecosystem_tags": ["python", "flask", "github_actions"],
+    "expected_features": ["pyproject.toml", "src layout"],
+    "notes": "Small public Python project for optional network stress validation. Clone failures are reported as network_unavailable or clone_failed, not product failures."
+  },
+  {
+    "repo_id": "vite",
+    "url": "https://github.com/vitejs/vite.git",
+    "ecosystem_tags": ["node", "javascript", "typescript", "vite", "monorepo", "workspace", "github_actions"],
+    "expected_features": ["package.json", "workspace"],
+    "notes": "Public Node/TypeScript project for optional network stress validation."
+  }
+]

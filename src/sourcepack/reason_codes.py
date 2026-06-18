@@ -42,6 +42,10 @@ class ReasonCode(StrEnum):
     COMMAND_MANIFEST_UNCERTAIN = "command_manifest_uncertain"
     DEPENDENCY_SCOPE_REVIEW = "dependency_scope_review"
     JS_ALIAS_UNCERTAIN = "js_alias_uncertain"
+    EXECUTION_EVIDENCE_MISSING = "execution_evidence_missing"
+    EXECUTION_EVIDENCE_PRESENT = "execution_evidence_present"
+    EXECUTION_FAILED = "execution_failed"
+    EXECUTION_INCONCLUSIVE = "execution_inconclusive"
 
 
 _CANONICAL = {code.value for code in ReasonCode}

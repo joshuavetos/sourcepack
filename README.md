@@ -138,6 +138,10 @@ sourcepack baseline . --refresh
 sourcepack report path
 sourcepack report open
 sourcepack status .
+sourcepack exec -- pytest
+sourcepack evidence list
+sourcepack evidence show <entry-id>
+sourcepack evidence clear
 sourcepack doctor
 sourcepack demo
 ```
@@ -148,6 +152,22 @@ Hook management commands also exist for explicit maintenance:
 sourcepack install-hook .
 sourcepack uninstall-hook .
 ```
+
+## Local execution evidence
+
+`sourcepack exec -- <command...>` runs a local command and records bounded evidence under `.sourcepack/evidence/ledger.jsonl`. Ledger entries store command metadata, exit code, stdout/stderr SHA-256 hashes, short excerpts, git head, dirty-worktree state before and after execution, duration, and a small environment summary. They do not store full logs by default and are local-only. Command output can still contain sensitive information, so review `.sourcepack/evidence/` before sharing it.
+
+Use:
+
+```bash
+sourcepack exec -- pytest
+sourcepack evidence list
+sourcepack evidence show <entry-id>
+sourcepack evidence clear
+sourcepack evidence export --json
+```
+
+Execution evidence only supports bounded claims that a command was run locally. It does not prove code correctness, security, or external API behavior. Prompt context in `.sourcepack/prompt/` remains advisory and cannot satisfy execution evidence.
 
 ## Local reports
 

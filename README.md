@@ -240,3 +240,8 @@ Before public alpha, verify:
 - Golden demos pass.
 - Known limitations are documented.
 - Do not claim PyPI publication unless SourcePack is actually published there.
+
+
+## CI and editor planning
+
+See `docs/ci.md` for CI usage and `docs/vscode-extension-plan.md` for the VS Code extension plan.

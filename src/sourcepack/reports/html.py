@@ -79,10 +79,10 @@ code {{ color:#bfdbfe; }} .muted {{ color:var(--muted); }} .severity.error {{ co
 <div class="card"><div class="label">Raw JSON</div><div class="value"><code>{_html_escape(raw_json_path)}</code></div></div>
 </section>
 <section><h2>Reason codes</h2><table><thead><tr><th>Code</th><th>Severity</th><th>Path</th><th>Explanation</th><th>Evidence / fix</th></tr></thead><tbody>{finding_rows(findings)}</tbody></table></section>
-<section class="grid"><div class="card"><h2>Affected files</h2><ul>{affected_html}</ul></div><div class="card"><h2>Missing evidence</h2><ul>{missing_html}</ul></div><div class="card"><h2>Suggested fixes</h2><ul>{fixes_html}</ul></div></section>
+<section class="grid"><div class="card"><h2>Affected files</h2><ul>{affected_html}</ul></div><div class="card"><h2>Evidence found</h2><ul>{checked}</ul></div><div class="card"><h2>Evidence missing</h2><ul>{missing_html}</ul></div><div class="card"><h2>Suggested fixes</h2><ul>{fixes_html}</ul></div></section>
 <section><h2>Baseline and prompt trust</h2><p>SourcePack treats prompt context as helpful but non-authoritative. Diff checks are judged against the trusted local baseline packet.</p><div class="grid"><div class="card"><div class="label">Baseline state</div><div class="value">{_html_escape(report.get('baseline_state') or 'not recorded')}</div></div><div class="card"><div class="label">Baseline packet</div><div class="value"><code>{_html_escape(baseline_path or 'not recorded')}</code></div></div></div></section>
 <section class="grid"><div class="card"><h2>Checked</h2><ul>{checked}</ul></div><div class="card"><h2>Not checked</h2><ul>{not_checked}</ul></div></section>
-<section><h2>Next action</h2><p>{_html_escape(report.get('next_action'))}</p></section>
+<section><h2>Execution evidence</h2><p>Execution evidence proves only that a command was run locally and records exit/output hashes; it does not prove correctness, security, or external API behavior.</p></section><section><h2>Safe next actions</h2><p>{_html_escape(report.get('next_action'))}</p></section>
 </main></body></html>"""
 
 

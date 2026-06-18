@@ -40,6 +40,8 @@ class ReasonCode(StrEnum):
     UNSUPPORTED_RENAME_COPY = "unsupported_rename_copy"
     DEPENDENCY_MANIFEST_UNCERTAIN = "dependency_manifest_uncertain"
     COMMAND_MANIFEST_UNCERTAIN = "command_manifest_uncertain"
+    COMMAND_MANIFEST_MISSING = "command_manifest_missing"
+    COMMAND_CHECK_INCONCLUSIVE = "command_check_inconclusive"
     DEPENDENCY_SCOPE_REVIEW = "dependency_scope_review"
     JS_ALIAS_UNCERTAIN = "js_alias_uncertain"
     EXECUTION_EVIDENCE_MISSING = "execution_evidence_missing"

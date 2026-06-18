@@ -23,6 +23,7 @@ from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_pa
 from .reports.html import render_report_html
 from .reports.json import normalized_finding, traffic_report, write_user_report
 from .reports.markdown import LIGHT_BY_VERDICT, SEVERITY_ORDER, render_traffic
+from .execution_ledger import clear_ledger, entry_to_json, execution_findings, iter_entries, run_and_record, find_repo_root
 
 try:
     from . import __version__
@@ -2631,6 +2632,42 @@ def doctor() -> bool:
     return True
 
 
+
+def cli_exec(args) -> int:
+    entry = run_and_record(args.exec_command, cwd=".")
+    print(entry.stdout_excerpt, end="")
+    if entry.stderr_excerpt:
+        print(entry.stderr_excerpt, end="", file=sys.stderr)
+    print(f"SourcePack evidence entry: {entry.entry_id}", file=sys.stderr)
+    return entry.exit_code
+
+
+def cli_evidence(args) -> int:
+    repo = find_repo_root(".")
+    if args.evidence_command == "clear":
+        clear_ledger(repo)
+        print("Cleared SourcePack execution evidence ledger.")
+        return 0
+    if args.evidence_command == "list":
+        entries = list(iter_entries(repo))
+        if args.json:
+            print(json.dumps({"schema_version": "sourcepack.execution_ledger.list.v1", "entries": entries}, indent=2))
+            return 0
+        for entry in entries:
+            print(f"{entry.get('entry_id')} exit={entry.get('exit_code')} command={' '.join(entry.get('command') or [])}")
+        return 0
+    if args.evidence_command == "show":
+        for entry in iter_entries(repo):
+            if entry.get("entry_id") == args.entry_id:
+                print(json.dumps(entry, indent=2, sort_keys=True))
+                return 0
+        print(f"ERROR: evidence entry not found: {args.entry_id}", file=sys.stderr)
+        return 1
+    if args.evidence_command == "export":
+        print(json.dumps({"schema_version": "sourcepack.execution_ledger.export.v1", "entries": list(iter_entries(repo))}, indent=2))
+        return 0
+    return 1
+
 def run_cli(args_list=None):
     parser = argparse.ArgumentParser(prog="sourcepack", description="Local guardrail for AI-assisted repo changes. PASS exits 0, WARN exits 0 locally unless --strict or --ci is used, and FAIL exits nonzero.")
     parser.add_argument("--version", action="store_true")
@@ -2668,6 +2705,17 @@ def run_cli(args_list=None):
     init.add_argument("--install-hygiene-hooks", action="store_true")
     init.add_argument("--json", action="store_true")
     subs.add_parser("doctor")
+    exec_cmd = subs.add_parser("exec", help="run a local command and record bounded execution evidence")
+    exec_cmd.add_argument("exec_command", nargs=argparse.REMAINDER)
+    evidence_cmd = subs.add_parser("evidence", help="inspect local SourcePack execution evidence")
+    evidence_subs = evidence_cmd.add_subparsers(dest="evidence_command")
+    evidence_list = evidence_subs.add_parser("list")
+    evidence_list.add_argument("--json", action="store_true")
+    evidence_show = evidence_subs.add_parser("show")
+    evidence_show.add_argument("entry_id")
+    evidence_subs.add_parser("clear")
+    evidence_export = evidence_subs.add_parser("export")
+    evidence_export.add_argument("--json", action="store_true")
     prompt_cmd = subs.add_parser("prompt", help="write non-authoritative AI prompt context", description="Generate selective prompt context for an AI task. Prompt context is non-authoritative and never refreshes the trusted enforcement baseline.")
     prompt_cmd.add_argument("repo")
     prompt_cmd.add_argument("task", nargs="?")
@@ -2707,6 +2755,12 @@ def run_cli(args_list=None):
     try:
         if args.command == "doctor":
             doctor(); return 0
+        if args.command == "exec":
+            if args.exec_command and args.exec_command[0] == "--":
+                args.exec_command = args.exec_command[1:]
+            return cli_exec(args)
+        if args.command == "evidence":
+            return cli_evidence(args)
         if args.command == "init":
             return cli_init(args)
         if args.command == "prompt":

@@ -266,3 +266,26 @@ SourcePack reason codes explain why a repo-state transition is PASS, WARN, or FA
 
 - **Status:** Reserved/emitted canonical code.
 - **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+## execution_evidence_missing
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** An answer makes an explicit command-execution claim, but no matching local SourcePack execution-ledger entry was found.
+
+
+## execution_evidence_present
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** A matching local SourcePack execution-ledger entry exists for an explicit command-execution claim and recorded exit code 0.
+
+
+## execution_failed
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** A matching local SourcePack execution-ledger entry exists for an explicit command-execution claim and recorded a nonzero exit code.
+
+
+## execution_inconclusive
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** Local SourcePack execution-ledger entries for an explicit command-execution claim were ambiguous or mixed.

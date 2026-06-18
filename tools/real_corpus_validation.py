@@ -296,13 +296,17 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
         except Exception as exc:
             return skip("package_json_invalid", {"error": str(exc)})
         existing=set()
+        existing_sections={}
         for section in ("dependencies","devDependencies","peerDependencies","optionalDependencies"):
             vals=data.get(section)
-            if isinstance(vals, dict): existing.update(str(k) for k in vals)
+            if isinstance(vals, dict):
+                names=sorted(str(k) for k in vals)
+                existing_sections[section]=names
+                existing.update(names)
         candidates=("sourcepack-corpus-js-dep","sourcepack-corpus-js-dep-2","sourcepack-corpus-js-dep-3")
         dep=next((c for c in candidates if c not in existing), None)
         if dep is None:
-            return MutationResult("mutation_failed", False, str(pkg), before, before, "js_dependency_candidate_preexisting", {"dependency_candidates": list(candidates)})
+            return MutationResult("mutation_failed", False, str(pkg), before, before, "js_dependency_candidate_preexisting", {"dependency_candidates": list(candidates), "existing_dependency_sections": existing_sections})
         deps=data.setdefault("dependencies",{})
         if not isinstance(deps, dict):
             return MutationResult("mutation_failed", False, str(pkg), before, before, "package_json_dependencies_not_object")
@@ -313,7 +317,7 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
         if before == after or dep not in (json.loads(pkg.read_text()).get("dependencies") or {}):
             return MutationResult("mutation_failed", False, str(pkg), before, after, "package_json_unchanged")
         mr = mutate_file(p, f"\nimport sourcepackCorpusJsDep from '{dep}';\n")
-        mr.details.update({"package_json_path": str(pkg), "package_json_before_sha256": before, "package_json_after_sha256": after, "source_path": str(p), "source_before_sha256": source_before, "source_after_sha256": mr.after_sha256, "dependency_added": dep, "dependency_preexisting": False, "import_specifier": dep})
+        mr.details.update({"package_json_path": str(pkg), "package_json_before_sha256": before, "package_json_after_sha256": after, "source_path": str(p), "source_before_sha256": source_before, "source_after_sha256": mr.after_sha256, "dependency_added": dep, "dependency_preexisting": False, "existing_dependency_sections": existing_sections, "import_specifier": dep})
         if not mr.applied:
             mr.status="mutation_failed"; mr.reason="source_unchanged"
         return mr
@@ -337,7 +341,7 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
         readme=find_readme(repo, True)
         before=sha256_path(readme)
         mr=mutate_file(readme, "\nRun `docker compose up`.\n")
-        mr.details.update({"deleted_compose_files": deleted, "compose_files_remaining": remaining, "command_written": "docker compose up", "readme_before_sha256": before, "readme_after_sha256": mr.after_sha256})
+        mr.details.update({"deleted_compose_files": deleted, "compose_files_remaining": remaining, "command_written": "docker compose up", "readme_path": str(readme), "readme_before_sha256": before, "readme_after_sha256": mr.after_sha256})
         if remaining:
             mr.status="mutation_failed"; mr.applied=False; mr.reason="compose_files_still_present"
         elif before == mr.after_sha256:
@@ -365,28 +369,45 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
         return MutationResult("applied", True, None, None, hashlib.sha256(sid.encode()).hexdigest(), details={"programmatic_patch_text": True})
     return MutationResult("mutation_failed", False, reason="unknown_scenario")
 
+def mutation_validation_failed(mutation_result: MutationResult, reason: str) -> MutationResult:
+    return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, reason, {"original_details": mutation_result.details or {}})
+
 def validate_mutation_result(repo: Path, scenario: Scenario, mutation_result: MutationResult) -> MutationResult:
     if mutation_result.status != "applied":
         return mutation_result
     details=mutation_result.details or {}
     if mutation_result.before_sha256 is not None and mutation_result.after_sha256 == mutation_result.before_sha256:
-        return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "sha256_unchanged", details)
+        return mutation_validation_failed(mutation_result, "sha256_unchanged")
     sid=scenario.scenario_id
     if sid in {"protected_sourcepack_baseline_edit","git_config_edit","malformed_diff"} and details.get("programmatic_patch_text") is not True:
-        return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "programmatic_patch_text_missing", details)
+        return mutation_validation_failed(mutation_result, "programmatic_patch_text_missing")
     if sid in {"same_patch_js_dependency_add_plus_import","same_patch_python_dependency_add_plus_import"}:
-        if details.get("dependency_preexisting") is True:
-            return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "dependency_preexisting", details)
-        if sid.endswith("js_dependency_add_plus_import") and details.get("import_specifier") != details.get("dependency_added"):
-            return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "dependency_import_mismatch", details)
+        if sid.endswith("js_dependency_add_plus_import"):
+            if details.get("dependency_preexisting") is True:
+                return mutation_validation_failed(mutation_result, "dependency_preexisting")
+            if details.get("import_specifier") != details.get("dependency_added"):
+                return mutation_validation_failed(mutation_result, "dependency_import_mismatch")
+            if details.get("dependency_preexisting") is not False:
+                return mutation_validation_failed(mutation_result, "dependency_preexisting_not_false")
+            if details.get("package_json_before_sha256") == details.get("package_json_after_sha256"):
+                return mutation_validation_failed(mutation_result, "package_json_unchanged")
+            if details.get("source_before_sha256") == details.get("source_after_sha256"):
+                return mutation_validation_failed(mutation_result, "source_unchanged")
         if sid.endswith("python_dependency_add_plus_import") and details.get("manifest_before_sha256") == details.get("manifest_after_sha256"):
-            return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "manifest_unchanged", details)
-    if sid == "docker_compose_missing_file" and details.get("compose_files_remaining"):
-        return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "compose_files_still_present", details)
-    if sid.startswith("policy_allow") and details.get("policy_exit_code") != 0:
-        return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "policy_setup_failed", details)
-    if sid == "execution_claim_with_successful_ledger" and details.get("ledger_exit_code") != 0:
-        return MutationResult("mutation_failed", False, mutation_result.target_path, mutation_result.before_sha256, mutation_result.after_sha256, "execution_ledger_setup_failed", details)
+            return mutation_validation_failed(mutation_result, "manifest_unchanged")
+    if sid == "docker_compose_missing_file":
+        if details.get("compose_files_remaining"):
+            return mutation_validation_failed(mutation_result, "compose_files_still_present")
+        if "deleted_compose_files" not in details or "compose_files_remaining" not in details:
+            return mutation_validation_failed(mutation_result, "compose_provenance_missing")
+        if details.get("command_written") != "docker compose up":
+            return mutation_validation_failed(mutation_result, "compose_command_mismatch")
+        if details.get("readme_before_sha256") == details.get("readme_after_sha256"):
+            return mutation_validation_failed(mutation_result, "readme_unchanged")
+    if sid.startswith("policy_allow") and ("policy_exit_code" not in details or details.get("policy_exit_code") != 0):
+        return mutation_validation_failed(mutation_result, "policy_setup_failed")
+    if sid == "execution_claim_with_successful_ledger" and ("ledger_exit_code" not in details or details.get("ledger_exit_code") != 0):
+        return mutation_validation_failed(mutation_result, "execution_ledger_setup_failed")
     return mutation_result
 
 def cleanup_repo(repo: Path) -> bool:

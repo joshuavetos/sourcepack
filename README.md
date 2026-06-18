@@ -143,6 +143,7 @@ sourcepack evidence list
 sourcepack evidence show <entry-id>
 sourcepack evidence clear
 sourcepack doctor
+sourcepack doctor --strict
 sourcepack demo
 ```
 
@@ -211,7 +212,7 @@ Safe CI usage for projects that intentionally manage a trusted baseline:
 
 ## Validation
 
-Current validation is local and deterministic:
+Current validation is local and deterministic. `sourcepack doctor --strict` performs a production-readiness health check and fails on missing runtime prerequisites or packaged assets:
 
 - Hosted GitHub Actions workflow is the source of truth for hosted checks.
 - The behavior matrix covers canonical repo-state transitions.

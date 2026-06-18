@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.resources as resources
 import fnmatch
 import hashlib
 import json
@@ -2622,14 +2623,41 @@ def cli_init(args) -> int:
     print(f".sourcepack/ gitignored: {'yes' if details['sourcepack_gitignored'] else 'no'}")
     return 0 if verdict != "FAIL" else 1
 
-def doctor() -> bool:
+def _health_check_rows() -> list[tuple[str, str, str]]:
+    rows: list[tuple[str, str, str]] = []
+    rows.append(("version", "PASS" if __version__ else "FAIL", __version__ or "missing package version"))
+    rows.append(("python", "PASS" if sys.version_info >= (3, 11) else "FAIL", platform.python_version()))
+    rows.append(("platform", "PASS", platform.platform()))
+    rows.append(("git", "PASS" if shutil.which("git") else "WARN", shutil.which("git") or "not found on PATH; git-backed checks and hooks will be limited"))
+    rows.append(("secret_signatures", "PASS" if SECRET_PATTERNS else "FAIL", str(len(SECRET_PATTERNS))))
+
+    required_assets = ("audit_template.md", "packet_instructions.md")
+    try:
+        asset_root = resources.files("sourcepack.assets")
+        missing_assets = [name for name in required_assets if not (asset_root / name).is_file()]
+    except (FileNotFoundError, ModuleNotFoundError, AttributeError, TypeError) as exc:
+        missing_assets = list(required_assets)
+        rows.append(("package_assets", "FAIL", f"could not inspect packaged assets: {exc}"))
+    else:
+        rows.append(("package_assets", "PASS" if not missing_assets else "FAIL", "all required assets present" if not missing_assets else "missing: " + ", ".join(missing_assets)))
+
+    report_renderers = (render_report_html, render_traffic, write_user_report)
+    rows.append(("report_renderers", "PASS" if all(callable(fn) for fn in report_renderers) else "FAIL", "html, markdown, and json renderers importable"))
+    return rows
+
+
+def doctor(strict: bool = False) -> int:
+    rows = _health_check_rows()
     print("--- SourcePack Health Check ---")
-    print(f"Version: {__version__}")
-    print(f"Python: {platform.python_version()}")
-    print(f"Platform: {platform.platform()}")
-    print(f"Secret signatures: {len(SECRET_PATTERNS)}")
+    for name, status, detail in rows:
+        print(f"{status:4} {name}: {detail}")
+    has_fail = any(status == "FAIL" for _, status, _ in rows)
+    has_warn = any(status == "WARN" for _, status, _ in rows)
+    if has_fail or (strict and has_warn):
+        print("Status: NOT READY")
+        return 1
     print("Status: READY")
-    return True
+    return 0
 
 
 
@@ -2792,7 +2820,8 @@ def run_cli(args_list=None):
     init.add_argument("--refresh-baseline", action="store_true")
     init.add_argument("--install-hygiene-hooks", action="store_true")
     init.add_argument("--json", action="store_true")
-    subs.add_parser("doctor")
+    doctor_cmd = subs.add_parser("doctor")
+    doctor_cmd.add_argument("--strict", action="store_true", help="exit nonzero on warnings as well as failures")
     exec_cmd = subs.add_parser("exec", help="run a local command and record bounded execution evidence")
     exec_cmd.add_argument("exec_command", nargs=argparse.REMAINDER)
     evidence_cmd = subs.add_parser("evidence", help="inspect local SourcePack execution evidence")
@@ -2858,7 +2887,7 @@ def run_cli(args_list=None):
         print(__version__); return 0
     try:
         if args.command == "doctor":
-            doctor(); return 0
+            return doctor(strict=getattr(args, "strict", False))
         if args.command == "exec":
             if args.exec_command and args.exec_command[0] == "--":
                 args.exec_command = args.exec_command[1:]

@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -21,6 +22,8 @@ from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_pa
 from .reports.json import normalized_finding, traffic_report, write_user_report
 from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code
 from .execution_ledger import execution_findings
+from .commands import resolve_command
+from .dependencies import resolve_js_import, resolve_python_import
 
 try:
     from . import __version__
@@ -864,6 +867,23 @@ def extract_imports_from_text(text: str, suffix: str = ".py") -> set[str]:
 
 
 
+
+def _materialize_packet_worktree(packet: Path, overlay: dict[str, str] | None = None) -> tempfile.TemporaryDirectory[str]:
+    tmp = tempfile.TemporaryDirectory(prefix="sourcepack-resolver-")
+    root = Path(tmp.name)
+    contents = _packet_file_contents(packet)
+    if overlay:
+        contents.update(overlay)
+    for rel, content in contents.items():
+        normalized, unsafe = _normalize_diff_path(rel)
+        if unsafe or not normalized:
+            continue
+        target = root / normalized
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    return tmp
+
+
 def _dependency_additions_from_patch(changes: list[PatchFileChange]) -> set[str]:
     return set()
 
@@ -1495,39 +1515,73 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
         report.setdefault("uncertainties", []).extend(manifest_uncertainties)
     workspace_names = _workspace_package_names(packet)
     unsupported = set(report.get("unsupported_dependencies", []))
+    resolver_tmp = _materialize_packet_worktree(packet)
+    resolver_root = Path(resolver_tmp.name)
+    try:
+        for ch in changes:
+            suffix = Path(ch.path).suffix.lower(); added = "\n".join(ch.added_lines or [])
+            if suffix == ".py":
+                for imported in extract_imports_from_text(added, suffix):
+                    dep_resolution = resolve_python_import(resolver_root, imported, added_dependencies=patch_declared["python"])
+                    dep_name = _dependency_name_for_import(imported)
+                    if dep_resolution.verdict == "PASS":
+                        unsupported.discard(imported); unsupported.discard(dep_name)
+                    elif dep_resolution.reason_code == "declared_dependency":
+                        unsupported.discard(imported); unsupported.discard(dep_name)
+                        report.setdefault("uncertainties", []).append({"id": "declared_dependency", "message": f"{dep_name} is declared in the same patch and requires review", "path": ch.path, "evidence": dep_name})
+                    elif dep_resolution.reason_code == "dependency_scope_review":
+                        report.setdefault("uncertainties", []).append({"id": "dependency_scope_review", "message": f"{dep_name} is declared outside the runtime dependency scope", "path": ch.path, "evidence": dep_name})
+                    elif dep_resolution.reason_code == "unsupported_dependency":
+                        unsupported.add(imported)
+            elif suffix in JS_EXTS:
+                for imported in extract_imports_from_text(added, suffix):
+                    pkg = _js_package_root(imported)
+                    local_alias = _js_alias_local(imported, files, contents)
+                    if pkg in workspace_names or local_alias is True:
+                        continue
+                    dep_resolution = resolve_js_import(resolver_root, imported)
+                    if dep_resolution.verdict == "PASS":
+                        unsupported.discard(pkg)
+                    elif dep_resolution.reason_code == "js_alias_uncertain":
+                        report.setdefault("uncertainties", []).append({"id": "js_alias_uncertain", "message": f"{imported} could not be resolved safely", "path": ch.path, "evidence": imported})
+                    elif dep_resolution.reason_code == "dependency_scope_review":
+                        report.setdefault("uncertainties", []).append({"id": "dependency_scope_review", "message": f"{pkg} is declared outside the runtime dependency scope", "path": ch.path, "evidence": pkg})
+                    elif dep_resolution.reason_code == "unsupported_dependency" and pkg not in patch_declared["js"]:
+                        unsupported.add(pkg)
+    finally:
+        resolver_tmp.cleanup()
+
+    # Re-run command claims through the command resolver so report output is
+    # based on the same manifest-aware command semantics as unit-level checks.
+    command_overlay: dict[str, str] = {}
     for ch in changes:
-        suffix = Path(ch.path).suffix.lower(); added = "\n".join(ch.added_lines or [])
-        if suffix == ".py":
-            for imported in extract_imports_from_text(added, suffix):
-                if imported in PY_STDLIB or imported.startswith(".") or _is_local_python_import(imported, ch.path, files):
-                    continue
-                dep_name = _dependency_name_for_import(imported)
-                scope_status = _dependency_scope_status(dep_name, scopes["python"], ch.path)
-                if scope_status == "scope_review":
-                    report.setdefault("uncertainties", []).append({"id": "dependency_scope_review", "message": f"{dep_name} is declared outside the runtime dependency scope", "path": ch.path, "evidence": dep_name})
-                elif scope_status == "missing" and dep_name not in patch_declared["python"]:
-                    unsupported.add(imported)
-                elif dep_name in patch_declared["python"]:
-                    unsupported.discard(imported)
-                    unsupported.discard(dep_name)
-        elif suffix in JS_EXTS:
-            for imported in extract_imports_from_text(added, suffix):
-                if imported.startswith(".") or imported.startswith("/"):
-                    continue
-                local_alias = _js_alias_local(imported, files, contents)
-                pkg = _js_package_root(imported)
-                if pkg in workspace_names or local_alias is True:
-                    continue
-                if local_alias is None or (local_alias is False and _is_js_alias_specifier(imported)):
-                    report.setdefault("uncertainties", []).append({"id": "js_alias_uncertain", "message": f"{imported} could not be resolved safely", "path": ch.path, "evidence": imported})
-                    continue
-                scope_status = _dependency_scope_status(pkg, scopes["js"], ch.path)
-                if scope_status == "scope_review":
-                    report.setdefault("uncertainties", []).append({"id": "dependency_scope_review", "message": f"{pkg} is declared outside the runtime dependency scope", "path": ch.path, "evidence": pkg})
-                elif scope_status == "missing" and pkg not in patch_declared["js"]:
-                    unsupported.add(pkg)
-                elif pkg in patch_declared["js"]:
-                    unsupported.discard(pkg)
+        if Path(ch.path).name.lower() in {"package.json", "Makefile", "justfile", "Justfile", "Taskfile.yml", "Taskfile.yaml", "tox.ini", "noxfile.py", "compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml"}:
+            base = contents.get(ch.old_path or ch.path, "")
+            post = _apply_patch_change_to_text(base, ch)
+            if post is not None:
+                command_overlay[ch.path] = post
+    command_tmp = _materialize_packet_worktree(packet, command_overlay)
+    try:
+        command_root = Path(command_tmp.name)
+        added_text = "\n".join("\n".join(ch.added_lines or []) for ch in changes)
+        commands = set()
+        if re.search(r"docker\s+compose\s+up", added_text, re.I):
+            commands.add("docker compose up")
+        commands.update(re.findall(r"npm\s+(?:run\s+)?[A-Za-z0-9:_-]+", added_text))
+        commands.update(re.findall(r"make\s+[A-Za-z0-9_.:-]+", added_text))
+        commands.update(re.findall(r"just\s+[A-Za-z0-9_.:-]+", added_text))
+        commands.update(re.findall(r"task\s+[A-Za-z0-9_.:-]+", added_text))
+        if re.search(r"\b(pytest|python\s+-m\s+pytest)\b", added_text, re.I):
+            commands.add("pytest")
+        report["unsupported_commands"] = []
+        for command in sorted(commands):
+            resolution = resolve_command(command_root, command)
+            if resolution.reason_code == "unsupported_command":
+                report["unsupported_commands"].append(command)
+            elif resolution.reason_code in {"declared_command", "command_check_inconclusive", "command_manifest_missing", "command_manifest_uncertain"}:
+                report.setdefault("uncertainties", []).append({"id": resolution.reason_code, "message": resolution.message, "evidence": command})
+    finally:
+        command_tmp.cleanup()
     declared = patch_declared["python"] | patch_declared["js"]
     existing_deps = existing_declared["python"] | existing_declared["js"]
     declared_only = {d for d in declared if d not in existing_deps}

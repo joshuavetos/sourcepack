@@ -61,7 +61,7 @@ def js_declared_dependencies(root: str | Path) -> dict[str, str]:
 def resolve_python_import(root: str | Path, imported: str, *, added_dependencies: set[str] | None = None) -> DependencyResolution:
     root = Path(root); top = imported.split(".")[0]
     if top in sys.stdlib_module_names: return DependencyResolution("PASS", None, imported, "python stdlib", "stdlib")
-    if (root / (top + ".py")).exists() or (root / top / "__init__.py").exists(): return DependencyResolution("PASS", None, imported, "worktree", "local module")
+    if (root / (top + ".py")).exists() or (root / top / "__init__.py").exists() or (root / "src" / top / "__init__.py").exists() or (root / "src" / (top + ".py")).exists(): return DependencyResolution("PASS", None, imported, "worktree", "local module")
     pkg = normalize_python_package(imported); declared = python_declared_dependencies(root)
     if pkg in (added_dependencies or set()): return DependencyResolution("WARN", "declared_dependency", pkg, "patch", "dependency added in same patch")
     if pkg in declared:
@@ -78,7 +78,8 @@ def resolve_js_import(root: str | Path, spec: str) -> DependencyResolution:
         src = declared[pkg]
         if "devDependencies" in src: return DependencyResolution("WARN", "dependency_scope_review", pkg, src, "devDependency requires scope review")
         return DependencyResolution("PASS", None, pkg, src, "declared")
-    if spec.startswith("@/") and (root / "tsconfig.json").exists(): return DependencyResolution("WARN", "js_alias_uncertain", spec, "tsconfig.json", "alias requires bounded resolver")
+    if spec.startswith(("@/", "~/")):
+        return DependencyResolution("WARN", "js_alias_uncertain", spec, "tsconfig.json", "alias requires bounded resolver")
     return DependencyResolution("FAIL", "unsupported_dependency", pkg, None, "package dependency not declared")
 
 def unsupported_ecosystems(root: str | Path) -> list[DependencyResolution]:

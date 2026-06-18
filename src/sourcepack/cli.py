@@ -2668,6 +2668,94 @@ def cli_evidence(args) -> int:
         return 0
     return 1
 
+REASON_EXPLANATIONS = {
+    "unsupported_dependency": "A changed file imports a dependency that SourcePack could not find in local dependency manifests.",
+    "unsupported_command": "A changed instruction references a project command that SourcePack could not find in local command manifests.",
+    "declared_command": "The same patch declares command support and uses it; SourcePack requires review instead of treating it as established baseline evidence.",
+    "command_manifest_missing": "A command check needed a local manifest/config file, but none was available.",
+    "command_check_inconclusive": "SourcePack recognized the command family but could not safely infer support from dynamic or ambiguous config.",
+}
+
+def _policy_dir(repo: Path) -> Path:
+    path = repo / ".sourcepack" / "policy"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+def _policy_file(repo: Path) -> Path:
+    return _policy_dir(repo) / "allow.jsonl"
+
+def _policy_entries(repo: Path) -> list[dict]:
+    path = _policy_file(repo)
+    if not path.exists(): return []
+    entries=[]
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try: entries.append(json.loads(line))
+        except Exception: pass
+    return entries
+
+def cli_explain(args) -> int:
+    code = args.reason_code.strip()
+    print(f"{code}: {REASON_EXPLANATIONS.get(code, 'See docs/reason-codes.md and src/sourcepack/reason_codes.py for the canonical SourcePack reason-code vocabulary.')}")
+    return 0
+
+def cli_allow(args) -> int:
+    repo = Path(".").resolve(); reason = getattr(args, "reason", None)
+    if not reason:
+        print("ERROR: --reason is required", file=sys.stderr); return 2
+    scope_type = args.allow_type; value = args.value
+    protected = value.startswith(".git/") or value == ".git" or value.startswith(".sourcepack/")
+    if protected and not getattr(args, "high_risk", False):
+        print("ERROR: protected artifacts require --high-risk and .git/** cannot be overridden", file=sys.stderr); return 1
+    if value.startswith(".git/") or value == ".git":
+        print("ERROR: .git/** cannot be overridden", file=sys.stderr); return 1
+    entry = {"schema_version":"sourcepack.policy.allow.v1", "id": sha256_text(f'{scope_type}:{value}:{utc_now()}')[:12], "scope": scope_type, "value": value, "reason": reason, "created_at": utc_now(), "expires_at": getattr(args, "expires", None), "high_risk": bool(getattr(args, "high_risk", False))}
+    with _policy_file(repo).open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, sort_keys=True)+"\n")
+    print(json.dumps(entry, indent=2))
+    return 0
+
+def cli_policy(args) -> int:
+    repo = Path(".").resolve()
+    if args.policy_command == "list":
+        print(json.dumps({"schema_version":"sourcepack.policy.list.v1", "policies": _policy_entries(repo)}, indent=2)); return 0
+    if args.policy_command == "remove":
+        entries = [e for e in _policy_entries(repo) if e.get("id") != args.policy_id]
+        _policy_file(repo).write_text("".join(json.dumps(e, sort_keys=True)+"\n" for e in entries), encoding="utf-8")
+        print(f"Removed policy {args.policy_id}"); return 0
+    return 1
+
+def cli_reset(args) -> int:
+    repo = Path(args.repo).resolve(); target = repo / ".sourcepack" / "reports"
+    if target.exists(): shutil.rmtree(target)
+    print("SourcePack reset complete: removed local reports only; user code and trusted baseline were not deleted.")
+    return 0
+
+def cli_baseline_lifecycle(args) -> int | None:
+    if args.repo not in {"status", "verify", "refresh", "repair", "path"}: return None
+    command = args.repo; repo = Path(".").resolve(); status = validate_baseline(repo)
+    if command == "status":
+        if args.json: print(json.dumps({"schema_version":"sourcepack.baseline.status.v1", **status}, indent=2))
+        else: print(f"Baseline: {status.get('state')}\n{status.get('message')}")
+        return 0
+    if command == "verify":
+        if args.json: print(json.dumps({"schema_version":"sourcepack.baseline.verify.v1", **status}, indent=2))
+        else: print(f"Baseline verify: {status.get('state')} - {status.get('message')}")
+        return 0 if status.get("state") in {"present", "stale"} else 1
+    if command == "path":
+        print(status.get("packet_path") or "")
+        return 0 if status.get("packet_path") else 1
+    if command == "refresh":
+        dirty, _ = git_worktree_dirty(repo)
+        if dirty and not getattr(args, "force", False):
+            print("ERROR: refusing baseline refresh with dirty worktree; commit/discard changes or pass --force after review.", file=sys.stderr); return 1
+        class A: pass
+        a=A(); a.repo="."; a.refresh=True; a.verbose=getattr(args,"verbose",False); a.json=args.json; a.quiet=False
+        return cli_baseline(a)
+    if command == "repair":
+        print("Baseline repair checked metadata; no unsafe repair was attempted.")
+        return 0 if status.get("state") in {"present", "stale"} else 1
+    return None
+
 def run_cli(args_list=None):
     parser = argparse.ArgumentParser(prog="sourcepack", description="Local guardrail for AI-assisted repo changes. PASS exits 0, WARN exits 0 locally unless --strict or --ci is used, and FAIL exits nonzero.")
     parser.add_argument("--version", action="store_true")
@@ -2724,6 +2812,7 @@ def run_cli(args_list=None):
     prompt_cmd.add_argument("--json", action="store_true")
     baseline_cmd = subs.add_parser("baseline", help="create or refresh trusted enforcement baseline", description="Create or refresh .sourcepack/baseline, the authoritative enforcement state used by sourcepack diff.")
     baseline_cmd.add_argument("repo")
+    baseline_cmd.add_argument("--force", action="store_true")
     baseline_cmd.add_argument("--refresh", action="store_true")
     baseline_cmd.add_argument("--verbose", action="store_true")
     baseline_cmd.add_argument("--json", action="store_true")
@@ -2749,6 +2838,21 @@ def run_cli(args_list=None):
     report_open.add_argument("repo", nargs="?", default=".")
     report_path = report_subs.add_parser("path", help="print .sourcepack/reports/latest.html")
     report_path.add_argument("repo", nargs="?", default=".")
+    explain_cmd = subs.add_parser("explain")
+    explain_cmd.add_argument("reason_code")
+    allow_cmd = subs.add_parser("allow")
+    allow_cmd.add_argument("allow_type", choices=["dependency", "command", "path"])
+    allow_cmd.add_argument("value")
+    allow_cmd.add_argument("--reason", required=True)
+    allow_cmd.add_argument("--expires")
+    allow_cmd.add_argument("--high-risk", action="store_true")
+    policy_cmd = subs.add_parser("policy")
+    policy_subs = policy_cmd.add_subparsers(dest="policy_command")
+    policy_subs.add_parser("list")
+    policy_remove = policy_subs.add_parser("remove")
+    policy_remove.add_argument("policy_id")
+    reset_cmd = subs.add_parser("reset")
+    reset_cmd.add_argument("repo", nargs="?", default=".")
     args = parser.parse_args(args_list)
     if args.version:
         print(__version__); return 0
@@ -2766,6 +2870,9 @@ def run_cli(args_list=None):
         if args.command == "prompt":
             return cli_prompt(args)
         if args.command == "baseline":
+            lifecycle = cli_baseline_lifecycle(args)
+            if lifecycle is not None:
+                return lifecycle
             return cli_baseline(args)
         if args.command == "diff":
             return cli_diff(args)
@@ -2775,6 +2882,14 @@ def run_cli(args_list=None):
             return cli_uninstall_hook(args)
         if args.command == "status":
             return cli_status(args)
+        if args.command == "explain":
+            return cli_explain(args)
+        if args.command == "allow":
+            return cli_allow(args)
+        if args.command == "policy":
+            return cli_policy(args)
+        if args.command == "reset":
+            return cli_reset(args)
         if args.command == "report":
             if args.report_command == "open":
                 return cli_report_open(args)

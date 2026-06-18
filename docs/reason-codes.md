@@ -289,3 +289,17 @@ SourcePack reason codes explain why a repo-state transition is PASS, WARN, or FA
 
 - **Status:** Reserved/emitted canonical code.
 - **Meaning:** Local SourcePack execution-ledger entries for an explicit command-execution claim were ambiguous or mixed.
+
+## command_manifest_missing
+
+- **Meaning:** A command check requires a local manifest/config file and SourcePack could not find one.
+- **Local behavior:** WARN; SourcePack preserves the missing-evidence state rather than pretending the command was verified.
+- **Common cause:** A README or script references `make`, `just`, `task`, or similar project commands without the corresponding manifest.
+- **Likely fix:** Add the intended manifest or remove the unsupported command claim.
+
+## command_check_inconclusive
+
+- **Meaning:** SourcePack recognized the command family, but the project config was dynamic, ambiguous, unsupported, or unsafe to infer.
+- **Local behavior:** WARN; SourcePack does not fake a PASS from uncertain command evidence.
+- **Common cause:** Dynamic tox/nox configuration or an unsupported command parser.
+- **Likely fix:** Run the command locally with `sourcepack exec -- ...` and/or make the project command declaration explicit.

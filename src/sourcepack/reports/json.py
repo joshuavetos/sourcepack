@@ -10,6 +10,7 @@ from sourcepack.paths import ensure_sourcepack_dirs
 from sourcepack.reports.html import render_report_html
 from sourcepack.reports.markdown import LIGHT_BY_VERDICT, render_traffic
 from sourcepack.reason_codes import normalize_reason_code, is_canonical_reason_code
+from sourcepack.evidence import evidence_summary, make_evidence
 
 SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
 
@@ -46,7 +47,20 @@ def traffic_report(verdict: str, headline: str | None = None, findings: list[dic
         commit_policy = "allowed locally, blocked in strict mode."
     elif verdict == "FAIL":
         commit_policy = "blocked unless explicitly bypassed."
-    return {"schema_version": "traffic_report.v1", "sourcepack_version": __version__, "verdict": verdict, "light": light, "headline": headline, "reason_type": reason_type, "commit_policy": commit_policy, "blockers": blockers, "warnings": warnings, "uncertainties": [f for f in warnings if f.get("category") == "uncertainty"], "checked_categories": checked_categories or [], "not_checked": not_checked or ["runtime behavior", "semantic correctness", "security", "external services"], "next_action": next_action, "report_path": report_path, "findings": findings}
+    checked_categories = checked_categories or []
+    not_checked = not_checked or ["runtime behavior", "semantic correctness", "security", "external services"]
+    records = []
+    for category in checked_categories:
+        eclass = "trusted_baseline" if "baseline" in category else "dependency_manifest" if "import" in category.lower() else "command_manifest" if "command" in category.lower() else "current_worktree"
+        records.append(make_evidence(eclass, category, "checked"))
+    for category in not_checked:
+        records.append(make_evidence("not_checked", category, "not_checked"))
+    for f in findings:
+        if f.get("evidence_class"):
+            records.append(f)
+    evidence = evidence_summary(records)
+    confidence_summary = {"basis": "local evidence coverage, not AI confidence", "checked": checked_categories, "partially_checked": ["execution_claim_check"], "not_checked": not_checked, "limitations": ["SourcePack does not prove code correctness", "SourcePack does not prove security", "SourcePack does not verify external API behavior unless local evidence exists"]}
+    return {"schema_version": "traffic_report.v1", "sourcepack_version": __version__, "verdict": verdict, "light": light, "headline": headline, "reason_type": reason_type, "commit_policy": commit_policy, "blockers": blockers, "warnings": warnings, "uncertainties": [f for f in warnings if f.get("category") == "uncertainty"], "checked_categories": checked_categories, "checked": checked_categories, "partially_checked": ["execution_claim_check"], "unavailable_evidence": evidence["missing_evidence"], "unsupported_evidence": [f for f in findings if f.get("id") == "unsupported_ecosystem"], "not_checked": not_checked, "confidence_summary": confidence_summary, "evidence": evidence, "next_action": next_action, "report_path": report_path, "findings": findings}
 
 
 def _write_optional_report_file(path: Path, content: str) -> None:

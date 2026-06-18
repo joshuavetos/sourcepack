@@ -316,9 +316,9 @@ def test_validate_mutation_result_rejects_invalid_states(tmp_path):
     assert rcv.validate_mutation_result(repo, scenario, mr).reason == "sha256_unchanged"
     js = rcv.SCENARIO_BY_ID["same_patch_js_dependency_add_plus_import"]
     mr = rcv.MutationResult("applied", True, details={"dependency_preexisting": True, "dependency_added":"a", "import_specifier":"a"})
-    assert rcv.validate_mutation_result(repo, js, mr).reason == "dependency_preexisting"
+    assert rcv.validate_mutation_result(repo, js, mr).reason == "js_package_json_missing"
     mr = rcv.MutationResult("applied", True, details={"dependency_added":"a", "import_specifier":"b"})
-    assert rcv.validate_mutation_result(repo, js, mr).reason == "dependency_import_mismatch"
+    assert rcv.validate_mutation_result(repo, js, mr).reason == "js_package_json_missing"
     pol = rcv.SCENARIO_BY_ID["policy_allow_matching_dependency"]
     mr = rcv.MutationResult("applied", True, details={"policy_exit_code": 1})
     assert rcv.validate_mutation_result(repo, pol, mr).reason == "policy_setup_failed"
@@ -327,4 +327,95 @@ def test_validate_mutation_result_rejects_invalid_states(tmp_path):
     assert rcv.validate_mutation_result(repo, led, mr).reason == "execution_ledger_setup_failed"
     dock = rcv.SCENARIO_BY_ID["docker_compose_missing_file"]
     mr = rcv.MutationResult("applied", True, details={"compose_files_remaining": ["compose.yml"]})
-    assert rcv.validate_mutation_result(repo, dock, mr).reason == "compose_files_still_present"
+    assert rcv.validate_mutation_result(repo, dock, mr).reason == "compose_readme_missing"
+
+
+def _verify_reason(repo, sid, mr):
+    return rcv.verify_scenario_state(repo, rcv.SCENARIO_BY_ID[sid], mr).reason
+
+
+def test_hostile_js_verifier_rejects_lies(tmp_path):
+    repo = make_repo(tmp_path, node=True)
+    sid = "same_patch_js_dependency_add_plus_import"
+    mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID[sid])
+    assert rcv.verify_scenario_state(repo, rcv.SCENARIO_BY_ID[sid], mr).status == "applied"
+    good = mr.details.copy()
+    data = json.loads((repo / "package.json").read_text())
+    data["dependencies"].pop(good["dependency_added"])
+    (repo / "package.json").write_text(json.dumps(data))
+    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=good)) == "js_dependency_not_added_to_dependencies"
+    data["dependencies"][good["dependency_added"]] = "latest"
+    (repo / "package.json").write_text(json.dumps(data))
+    bad = good | {"existing_dependency_sections": {"dependencies": [good["dependency_added"]]}}
+    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == "js_dependency_preexisting"
+    bad = good | {"import_specifier": "other"}
+    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == "js_import_specifier_mismatch"
+    (repo / "index.js").write_text("console.log('no import')\n")
+    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=good)) == "js_source_import_missing"
+    (repo / "index.js").write_text(f"import x from '{good['dependency_added']}';\n")
+    bad = good | {"dependency_added": "react", "import_specifier": "react"}
+    data["dependencies"]["react"] = "latest"; (repo / "package.json").write_text(json.dumps(data))
+    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == "js_dependency_candidate_invalid"
+    bad = good | {"package_json_after_sha256": good["package_json_before_sha256"]}
+    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == "js_package_json_unchanged"
+    bad = good | {"source_after_sha256": good["source_before_sha256"]}
+    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == "js_source_unchanged"
+
+
+def test_hostile_python_verifier_rejects_lies_and_accepts_valid(tmp_path):
+    repo = make_repo(tmp_path)
+    sid = "same_patch_python_dependency_add_plus_import"
+    mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID[sid])
+    assert rcv.verify_scenario_state(repo, rcv.SCENARIO_BY_ID[sid], mr).status == "applied"
+    good = mr.details.copy()
+    (repo / "requirements.txt").write_text("requests\n# fastapi\n")
+    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, str(repo/"app.py"), "a", "b", details=good)) == "python_dependency_not_in_manifest"
+    (repo / "requirements.txt").write_text("requests\nfastapi\n")
+    (repo / "app.py").write_text("print('missing')\n")
+    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, str(repo/"app.py"), "a", "b", details=good)) == "python_import_missing"
+
+
+def test_hostile_docker_verifier_rejects_lies_and_accepts_valid(tmp_path):
+    repo = make_repo(tmp_path, python=False)
+    (repo / "compose.yml").write_text("services: {}\n")
+    sid = "docker_compose_missing_file"
+    mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID[sid])
+    assert rcv.verify_scenario_state(repo, rcv.SCENARIO_BY_ID[sid], mr).status == "applied"
+    good = mr.details.copy()
+    (repo / "compose.yml").write_text("services: {}\n")
+    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, str(repo/"README.md"), "a", "b", details=good)) == "compose_files_still_present"
+    (repo / "compose.yml").unlink()
+    bad = good.copy(); bad.pop("deleted_compose_files")
+    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, str(repo/"README.md"), "a", "b", details=bad)) == "compose_deletion_provenance_missing"
+    (repo / "README.md").write_text("no command\n")
+    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, str(repo/"README.md"), "a", "b", details=good)) == "compose_command_missing"
+
+
+def test_hostile_policy_and_execution_verifiers(tmp_path):
+    repo = make_repo(tmp_path)
+    pol = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID["policy_allow_matching_dependency"])
+    assert rcv.verify_scenario_state(repo, rcv.SCENARIO_BY_ID["policy_allow_matching_dependency"], pol).status == "applied"
+    (repo / ".sourcepack" / "policy" / "allow.jsonl").unlink()
+    assert _verify_reason(repo, "policy_allow_matching_dependency", pol) == "policy_artifact_missing"
+    (tmp_path / "n").mkdir()
+    repo2 = make_repo(tmp_path / "n")
+    non = rcv.apply_mutation(repo2, rcv.SCENARIO_BY_ID["policy_allow_nonmatching_dependency"])
+    (repo2 / "app.py").write_text("import fastapi\n")
+    assert _verify_reason(repo2, "policy_allow_nonmatching_dependency", non) == "policy_imports_missing"
+    (tmp_path / "e").mkdir()
+    repo3 = make_repo(tmp_path / "e")
+    led = rcv.apply_mutation(repo3, rcv.SCENARIO_BY_ID["execution_claim_with_successful_ledger"])
+    assert rcv.verify_scenario_state(repo3, rcv.SCENARIO_BY_ID["execution_claim_with_successful_ledger"], led).status == "applied"
+    (repo3 / ".sourcepack" / "evidence" / "ledger.jsonl").unlink()
+    assert _verify_reason(repo3, "execution_claim_with_successful_ledger", led) == "execution_ledger_artifact_missing"
+    no = rcv.MutationResult("applied", True, str(repo3 / "README.md"), "a", "b")
+    (repo3 / "README.md").write_text("no claim\n")
+    assert _verify_reason(repo3, "execution_claim_without_ledger", no) == "execution_claim_missing"
+
+
+def test_programmatic_and_generic_verifier_rejects_lies(tmp_path):
+    repo = make_repo(tmp_path)
+    mr = rcv.MutationResult("applied", True, details={})
+    assert _verify_reason(repo, "malformed_diff", mr) == "programmatic_patch_text_missing"
+    same = rcv.MutationResult("applied", True, str(repo / "README.md"), "same", "same")
+    assert _verify_reason(repo, "benign_readme_edit", same) == "sha256_unchanged"

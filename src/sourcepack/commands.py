@@ -97,6 +97,16 @@ def resolve_command(root: str | Path, command: str, *, added_manifests: dict[str
                 targets = _taskfile_targets(data)
                 return CommandResolution("PASS", None, command, name, "task present") if parts[1] in targets else CommandResolution("FAIL", "unsupported_command", command, name, "task missing")
         return CommandResolution("WARN", "command_manifest_missing", command, "Taskfile.yml", "Taskfile missing")
+    if parts[0] in {"pytest", "py.test"} or (len(parts) >= 3 and parts[0] == "python" and parts[1] == "-m" and parts[2] == "pytest"):
+        has_tests = any((root / name).exists() for name in ("tests", "test", "pytest.ini"))
+        if has_tests:
+            return CommandResolution("PASS", None, command, "tests", "pytest evidence present")
+        pyproject = _safe(root, "pyproject.toml")
+        requirements = list(root.glob("requirements*.txt"))
+        manifest_text = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in ([pyproject] if pyproject and pyproject.exists() else []) + requirements)
+        if re.search(r"(?im)\bpytest\b", manifest_text):
+            return CommandResolution("PASS", None, command, "python dependency manifest", "pytest dependency present")
+        return CommandResolution("FAIL", "unsupported_command", command, "tests/pytest.ini/pyproject.toml", "pytest project evidence missing")
     if parts[0] == "tox" and "-e" in parts:
         env = parts[parts.index("-e") + 1] if parts.index("-e") + 1 < len(parts) else ""
         p = _safe(root, "tox.ini")

@@ -20,6 +20,8 @@ TOOL_ROOT = Path(__file__).resolve().parents[1]
 CACHE_DIRNAME = ".sourcepack_corpus_cache"
 MUTATION_STATUSES = {"applied", "skipped_incompatible_repo", "mutation_failed", "repo_cleanup_failed", "baseline_failed"}
 METRICS = ["false_red","missed_red","noisy_warn","crash","timeout","invalid_json","wrong_reason_code","mutation_failed","skipped_incompatible_repo","repo_cleanup_failed","baseline_failed","policy_over_suppression","trust_violation"]
+FAILURE_METRICS = [m for m in METRICS if m != "skipped_incompatible_repo"]
+ALTERNATE_SUPPRESSIBLE_METRICS = {"false_red", "missed_red", "noisy_warn", "wrong_reason_code"}
 
 @dataclass(frozen=True)
 class Scenario:
@@ -61,7 +63,7 @@ SCENARIOS: list[Scenario] = [
     Scenario("make_target_missing","Reference missing Make target.",(),(),"makefile_missing","readme_missing_make_target","FAIL",("unsupported_command",),timeout_seconds=10),
     Scenario("make_target_existing","Reference an existing Make target.",("makefile",),("makefile",),"makefile","readme_existing_make_target","PASS",timeout_seconds=10),
     Scenario("protected_sourcepack_baseline_edit","Patch attempts to edit protected SourcePack baseline.",(),(),"patch_text","protected_baseline_patch","FAIL",("protected_artifact",),timeout_seconds=10),
-    Scenario("git_config_edit","Patch attempts to edit .git/config.",(),(),"patch_text","git_config_patch","FAIL",("protected_artifact",),timeout_seconds=10),
+    Scenario("git_config_edit","Patch attempts to edit .git/config.",(),(),"patch_text","git_config_patch","FAIL",("git_path_modification",),timeout_seconds=10),
     Scenario("unsupported_ecosystem_touch","Touch unsupported ecosystem manifest.",("unsupported_ecosystem",),(),"unsupported","touch_cargo","WARN",("unsupported_ecosystem",),timeout_seconds=10),
     Scenario("binary_diff_low_risk","Add small binary artifact.",(),(),"binary","small_binary","WARN",("binary_diff",),timeout_seconds=10),
     Scenario("binary_diff_high_risk","Add larger binary artifact.",(),(),"binary","large_binary","WARN",("binary_diff",),timeout_seconds=10),
@@ -127,6 +129,26 @@ def find_py_manifest(repo: Path) -> Path | None:
         if (repo/n).exists(): return repo/n
     req=sorted(repo.glob("requirements*.txt"))
     return req[0] if req else None
+
+def declared_python_dependency(path: Path) -> str | None:
+    text = path.read_text(encoding="utf-8", errors="ignore") if path.exists() else ""
+    if path.name.startswith("requirements"):
+        for line in text.splitlines():
+            cleaned = line.strip()
+            if cleaned and not cleaned.startswith("#") and not cleaned.startswith("-"):
+                return cleaned.split("==")[0].split(">=")[0].split("[")[0].replace("-", "_")
+        return None
+    if path.name == "pyproject.toml":
+        try:
+            import tomllib
+            data = tomllib.loads(text)
+        except Exception:
+            return None
+        deps = data.get("project", {}).get("dependencies")
+        if not isinstance(deps, list) or not deps:
+            return None
+        return str(deps[0]).split("==")[0].split(">=")[0].split("[")[0].replace("-", "_")
+    return None
 
 def find_package(repo: Path) -> Path | None: return repo/"package.json" if (repo/"package.json").exists() else None
 def find_makefile(repo: Path) -> Path | None:
@@ -224,7 +246,7 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
         if cp.returncode != 0:
             mr.status="mutation_failed"; mr.applied=False; mr.reason="execution_ledger_setup_failed"
         return mr
-    if sid == "new_file": return mutate_file(find_python(repo, True), "print('sourcepack corpus probe')\n", append=False)
+    if sid == "new_file": return mutate_file(repo / "sourcepack_corpus_probe.py", "print('sourcepack corpus probe')\n", append=False)
     if sid.startswith("undeclared_python"):
         p=find_python(repo); return skip("python_target_missing") if not p else mutate_file(p, "\nimport fastapi\n")
     if sid == "policy_allow_matching_dependency":
@@ -245,7 +267,10 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
         return mr
     if sid == "declared_python_dependency_import":
         p=find_python(repo); m=find_py_manifest(repo)
-        return skip("python_target_or_manifest_missing") if not p or not m else mutate_file(p, "\nimport requests\n")
+        
+        if not p or not m: return skip("python_target_or_manifest_missing")
+        dep = declared_python_dependency(m)
+        return skip("python_declared_dependency_missing") if not dep else mutate_file(p, f"\nimport {dep}\n")
     if sid == "same_patch_python_dependency_add_plus_import":
         p=find_python(repo); m=find_py_manifest(repo)
         if not p or not m: return skip("python_target_or_manifest_missing")
@@ -294,8 +319,7 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
         c=find_compose(repo); return skip("docker_compose_missing") if not c else mutate_file(find_readme(repo, True), "\nRun `docker compose up`.\n")
     if sid == "make_target_missing":
         mf=find_makefile(repo)
-        if not mf:
-            mf=repo/"Makefile"; mf.write_text("sourcepack-existing-target:\n\t@echo ok\n", encoding="utf-8")
+        if not mf: return skip("makefile_missing")
         return mutate_file(find_readme(repo, True), "\nRun `make missing-sourcepack-target`.\n")
     if sid == "make_target_existing":
         mf=find_makefile(repo)
@@ -374,12 +398,15 @@ def classify(s: Scenario, actual: str|None, codes: list[str], invalid_json: bool
     d["invalid_json"]=invalid_json; d["crash"]=crash; d["timeout"]=timeout
     d["mutation_failed"]=mr.status=="mutation_failed"; d["skipped_incompatible_repo"]=mr.status=="skipped_incompatible_repo"; d["repo_cleanup_failed"]=mr.status=="repo_cleanup_failed"; d["baseline_failed"]=mr.status=="baseline_failed"
     matched_alt, _ = allowed_alternate_match(s, actual, codes)
-    if actual and not matched_alt:
-        d["false_red"] = s.expected_verdict in {"PASS","WARN"} and actual == "FAIL"
-        d["missed_red"] = s.expected_verdict == "FAIL" and actual in {"PASS","WARN"}
-        d["noisy_warn"] = s.expected_verdict == "PASS" and actual == "WARN"
+    if actual:
+        candidate={k:False for k in ALTERNATE_SUPPRESSIBLE_METRICS}
+        candidate["false_red"] = s.expected_verdict in {"PASS","WARN"} and actual == "FAIL"
+        candidate["missed_red"] = s.expected_verdict == "FAIL" and actual in {"PASS","WARN"}
+        candidate["noisy_warn"] = s.expected_verdict == "PASS" and actual == "WARN"
         inc=set(s.expected_reason_codes_include); exc=set(s.expected_reason_codes_exclude); got=set(codes)
-        d["wrong_reason_code"] = bool((inc-got) or (exc&got))
+        candidate["wrong_reason_code"] = bool((inc-got) or (exc&got))
+        if not matched_alt:
+            d.update(candidate)
     if s.scenario_id == "policy_allow_nonmatching_dependency" and actual != "FAIL": d["policy_over_suppression"] = True
     if s.scenario_id == "execution_claim_without_ledger" and actual == "PASS": d["trust_violation"] = True
     return d
@@ -426,7 +453,12 @@ def copy_work(src: Path, parent: Path, sid: str) -> Path:
     return dst
 
 def empty_result(entry:dict[str,Any], scenario:Scenario, repo_path:str|None, mr:MutationResult, notes:list[str]) -> dict[str,Any]:
-    return {"repo_id":entry["repo_id"],"repo_url":entry["url"],"repo_path":repo_path,"scenario_id":scenario.scenario_id,"mutation_status":mr.status,"mutation_result":asdict(mr),"expected_verdict":scenario.expected_verdict,"actual_verdict":None,"expected_reason_codes_include":list(scenario.expected_reason_codes_include),"expected_reason_codes_exclude":list(scenario.expected_reason_codes_exclude),"actual_reason_codes":[],"matched_allowed_alternate":False,"allowed_alternate_justification":None,"exit_code":None,"stdout_json_valid":False,**{k:False for k in METRICS},"duration_ms":0,"report_path":None,"workdir_path":None,"notes":notes}
+    flags={k:False for k in METRICS}
+    flags["mutation_failed"] = mr.status == "mutation_failed"
+    flags["skipped_incompatible_repo"] = mr.status == "skipped_incompatible_repo"
+    flags["repo_cleanup_failed"] = mr.status == "repo_cleanup_failed"
+    flags["baseline_failed"] = mr.status == "baseline_failed"
+    return {"repo_id":entry["repo_id"],"repo_url":entry["url"],"repo_path":repo_path,"scenario_id":scenario.scenario_id,"mutation_status":mr.status,"mutation_result":asdict(mr),"expected_verdict":scenario.expected_verdict,"actual_verdict":None,"expected_reason_codes_include":list(scenario.expected_reason_codes_include),"expected_reason_codes_exclude":list(scenario.expected_reason_codes_exclude),"actual_reason_codes":[],"matched_allowed_alternate":False,"allowed_alternate_justification":None,"exit_code":None,"stdout_json_valid":False,**flags,"duration_ms":0,"report_path":None,"workdir_path":None,"notes":notes}
 
 def run_harness(args: argparse.Namespace) -> tuple[dict[str,Any], int]:
     repos=[]
@@ -480,13 +512,33 @@ def run_harness(args: argparse.Namespace) -> tuple[dict[str,Any], int]:
             if consecutive >= 5:
                 circuit=True; break
         if circuit: break
-    summary={"schema_version":SCHEMA_VERSION,"sourcepack_version":sourcepack_version(),"generated_at":datetime.now(timezone.utc).isoformat(),"repo_count":len(repos),"scenario_count":len(selected),"total_runs":len(repos)*len(selected),"executed_runs":sum(1 for r in results if r["mutation_status"]=="applied"),"skipped_runs":sum(1 for r in results if r["mutation_status"]!="applied"),"passed":0,"failed":0,**{m:sum(1 for r in results if r.get(m)) for m in METRICS},"circuit_breaker_triggered":circuit,"circuit_breaker_reason":cb_reason,"consecutive_failure_count":consecutive,"last_failed_repo_scenario":last_failed,"results":results}
-    summary["failed"]=sum(1 for r in results if any(r.get(m) for m in METRICS if m not in {"skipped_incompatible_repo"}))
-    summary["passed"]=len(results)-summary["failed"]
+    executed_runs=sum(1 for r in results if r["mutation_status"]=="applied" and r.get("exit_code") is not None)
+    skipped_runs=len(results)-executed_runs
+    executed_failed=sum(1 for r in results if r["mutation_status"]=="applied" and r.get("exit_code") is not None and any(r.get(m) for m in FAILURE_METRICS))
+    executed_passed=executed_runs-executed_failed
+    summary={"schema_version":SCHEMA_VERSION,"sourcepack_version":sourcepack_version(),"generated_at":datetime.now(timezone.utc).isoformat(),"repo_count":len(repos),"scenario_count":len(selected),"total_runs":len(repos)*len(selected),"executed_runs":executed_runs,"skipped_runs":skipped_runs,"executed_passed":executed_passed,"executed_failed":executed_failed,"passed":executed_passed,"failed":0,**{m:sum(1 for r in results if r.get(m)) for m in METRICS},"circuit_breaker_triggered":circuit,"circuit_breaker_reason":cb_reason,"consecutive_failure_count":consecutive,"last_failed_repo_scenario":last_failed,"results":results}
+    summary["failed"]=sum(1 for r in results if any(r.get(m) for m in FAILURE_METRICS))
     exit_code=1 if circuit else 0
     for flag,metric in [(args.fail_on_missed_red,"missed_red"),(args.fail_on_crash,"crash"),(args.fail_on_invalid_json,"invalid_json"),(args.fail_on_trust_violation,"trust_violation"),(args.fail_on_policy_over_suppression,"policy_over_suppression")]:
         if flag and summary[metric] > 0: exit_code=1
+    if getattr(args, "failures_only", False):
+        summary["results"]=[r for r in summary["results"] if any(r.get(m) for m in FAILURE_METRICS)]
     return summary, exit_code
+
+def failure_line(row: dict[str,Any]) -> str:
+    failed=[m for m in FAILURE_METRICS if row.get(m)]
+    mr=row.get("mutation_result") or {}
+    return " | ".join([
+        f"repo_id={row.get('repo_id')}",
+        f"scenario_id={row.get('scenario_id')}",
+        f"expected_verdict={row.get('expected_verdict')}",
+        f"actual_verdict={row.get('actual_verdict')}",
+        f"actual_reason_codes={','.join(row.get('actual_reason_codes') or [])}",
+        f"failed_metrics={','.join(failed)}",
+        f"mutation_status={row.get('mutation_status')}",
+        f"mutation_reason={mr.get('reason')}",
+        f"workdir_path={row.get('workdir_path')}",
+    ])
 
 def main(argv: list[str]|None=None) -> int:
     ap=argparse.ArgumentParser()
@@ -497,6 +549,8 @@ def main(argv: list[str]|None=None) -> int:
     ap.add_argument("--max-repos", type=int)
     ap.add_argument("--scenario", choices=sorted(SCENARIO_BY_ID))
     ap.add_argument("--keep-workdir", action="store_true")
+    ap.add_argument("--failures-only", action="store_true")
+    ap.add_argument("--print-failures", action="store_true")
     ap.add_argument("--timeout", type=int, default=30)
     ap.add_argument("--fail-on-missed-red", action="store_true")
     ap.add_argument("--fail-on-crash", action="store_true")
@@ -506,7 +560,11 @@ def main(argv: list[str]|None=None) -> int:
     args=ap.parse_args(argv)
     summary, code=run_harness(args)
     if args.json: print(json.dumps(summary, indent=2, sort_keys=True))
-    else: print(f"Real corpus validation: {summary['passed']} passed-like, {summary['failed']} failed-like, {summary['skipped_runs']} skipped")
+    elif args.print_failures:
+        for row in summary["results"]:
+            if any(row.get(m) for m in FAILURE_METRICS):
+                print(failure_line(row))
+    else: print(f"Real corpus validation: {summary['executed_passed']} executed passed, {summary['executed_failed']} executed failed, {summary['skipped_runs']} skipped")
     return code
 
 if __name__ == "__main__":

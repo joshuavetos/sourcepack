@@ -180,12 +180,11 @@ def test_makefile_existing_uses_real_parsed_target(tmp_path):
     assert "make build" in (repo / "README.md").read_text()
 
 
-def test_makefile_missing_tests_target_missing_deterministically(tmp_path):
+def test_makefile_missing_requires_existing_makefile_for_target_semantics(tmp_path):
     repo = make_repo(tmp_path, python=False)
     mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID["make_target_missing"])
-    assert mr.applied
-    assert (repo / "Makefile").exists()
-    assert "make missing-sourcepack-target" in (repo / "README.md").read_text()
+    assert mr.status == "skipped_incompatible_repo"
+    assert mr.reason == "makefile_missing"
 
 
 def test_docker_compose_missing_uses_detected_command_form(tmp_path):
@@ -203,3 +202,84 @@ def test_allowed_alternate_outcomes_are_honored():
     flags = rcv.classify(s, "WARN", [], False, False, False, mr)
     assert not flags["noisy_warn"]
     assert rcv.allowed_alternate_match(s, "WARN", [])[0] is True
+
+
+def test_console_script_metadata_points_to_callable():
+    import tomllib
+    import importlib
+    data = tomllib.loads(Path("pyproject.toml").read_text())
+    target = data["project"]["scripts"]["sourcepack"]
+    assert target == "sourcepack.cli:main"
+    module_name, attr = target.split(":", 1)
+    assert callable(getattr(importlib.import_module(module_name), attr))
+
+
+def test_failures_only_json_includes_failures_and_json_only(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    monkeypatch.setattr(rcv, "SCENARIOS", [rcv.SCENARIO_BY_ID["benign_readme_edit"]])
+    monkeypatch.setattr(rcv, "create_baseline", lambda repo, timeout: True)
+    monkeypatch.setattr(rcv, "cleanup_repo", lambda repo: True)
+    monkeypatch.setattr(rcv, "apply_mutation", lambda repo, s: rcv.MutationResult("applied", True))
+    monkeypatch.setattr(rcv, "evaluate", lambda repo, s, timeout: (1, "{}", "", True, {"verdict":"FAIL","findings":[]}, False))
+    args = rcv.argparse.Namespace(repo_list=None, repo=[str(repo)], workdir=str(tmp_path/"w"), json=True, max_repos=None, scenario=None, keep_workdir=False, failures_only=True, print_failures=False, timeout=5, fail_on_missed_red=False, fail_on_crash=False, fail_on_invalid_json=False, fail_on_trust_violation=False, fail_on_policy_over_suppression=False)
+    summary, _ = rcv.run_harness(args)
+    assert summary["results"] and summary["results"][0]["false_red"]
+    assert json.loads(json.dumps(summary))["results"][0]["scenario_id"] == "benign_readme_edit"
+
+
+def test_failures_only_json_excludes_pure_skips(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    monkeypatch.setattr(rcv, "SCENARIOS", [rcv.SCENARIO_BY_ID["make_target_existing"]])
+    args = rcv.argparse.Namespace(repo_list=None, repo=[str(repo)], workdir=str(tmp_path/"w"), json=True, max_repos=None, scenario=None, keep_workdir=False, failures_only=True, print_failures=False, timeout=5, fail_on_missed_red=False, fail_on_crash=False, fail_on_invalid_json=False, fail_on_trust_violation=False, fail_on_policy_over_suppression=False)
+    summary, _ = rcv.run_harness(args)
+    assert summary["skipped_incompatible_repo"] == 1
+    assert summary["results"] == []
+
+
+def test_summary_accounting_separates_skips_and_executed(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    scenarios = [rcv.SCENARIO_BY_ID["benign_readme_edit"], rcv.SCENARIO_BY_ID["make_target_existing"]]
+    monkeypatch.setattr(rcv, "SCENARIOS", scenarios)
+    args = rcv.argparse.Namespace(repo_list=None, repo=[str(repo)], workdir=str(tmp_path/"w"), json=True, max_repos=None, scenario=None, keep_workdir=False, failures_only=False, print_failures=False, timeout=5, fail_on_missed_red=False, fail_on_crash=False, fail_on_invalid_json=False, fail_on_trust_violation=False, fail_on_policy_over_suppression=False)
+    summary, _ = rcv.run_harness(args)
+    assert summary["passed"] == summary["executed_passed"]
+    assert summary["executed_passed"] + summary["executed_failed"] == summary["executed_runs"]
+    assert summary["executed_runs"] + summary["skipped_runs"] == summary["total_runs"]
+    assert summary["skipped_runs"] == 1
+
+
+def test_failure_rows_expose_inspection_fields(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    monkeypatch.setattr(rcv, "SCENARIOS", [rcv.SCENARIO_BY_ID["benign_readme_edit"]])
+    monkeypatch.setattr(rcv, "create_baseline", lambda repo, timeout: True)
+    monkeypatch.setattr(rcv, "cleanup_repo", lambda repo: True)
+    monkeypatch.setattr(rcv, "apply_mutation", lambda repo, s: rcv.MutationResult("applied", True, reason=None))
+    monkeypatch.setattr(rcv, "evaluate", lambda repo, s, timeout: (1, "{}", "", True, {"verdict":"FAIL","findings":[{"id":"unsupported_dependency"}]}, False))
+    args = rcv.argparse.Namespace(repo_list=None, repo=[str(repo)], workdir=str(tmp_path/"w"), json=True, max_repos=None, scenario=None, keep_workdir=False, failures_only=True, print_failures=False, timeout=5, fail_on_missed_red=False, fail_on_crash=False, fail_on_invalid_json=False, fail_on_trust_violation=False, fail_on_policy_over_suppression=False)
+    row = rcv.run_harness(args)[0]["results"][0]
+    assert row["scenario_id"] and row["actual_verdict"] and row["actual_reason_codes"]
+    assert isinstance(row["mutation_result"], dict)
+    assert any(row[m] for m in rcv.FAILURE_METRICS)
+
+
+def test_allowed_alternates_cannot_suppress_hard_failures():
+    alt = ({"verdict":"PASS", "justification":"narrow"},)
+    for sid, metric in [("execution_claim_without_ledger", "trust_violation"), ("policy_allow_nonmatching_dependency", "policy_over_suppression")]:
+        s = rcv.SCENARIO_BY_ID[sid]
+        s = rcv.Scenario(s.scenario_id, s.description, s.applies_to_tags, s.required_files, s.target_heuristic, s.mutation, s.expected_verdict, s.expected_reason_codes_include, s.expected_reason_codes_exclude, alt)
+        assert rcv.classify(s, "PASS", [], False, False, False, rcv.MutationResult("applied", True))[metric]
+    s = rcv.Scenario("x", "", (), (), "", "", "PASS", allowed_alternate_outcomes=alt)
+    for kwargs, metric in [((True, False, False), "invalid_json"), ((False, True, False), "crash"), ((False, False, True), "timeout")]:
+        assert rcv.classify(s, "PASS", [], *kwargs, rcv.MutationResult("applied", True))[metric]
+    for status, metric in [("mutation_failed", "mutation_failed"), ("baseline_failed", "baseline_failed"), ("repo_cleanup_failed", "repo_cleanup_failed")]:
+        assert rcv.classify(s, "PASS", [], False, False, False, rcv.MutationResult(status, False))[metric]
+
+
+def test_policy_nonmatching_cannot_pass_if_unrelated_finding_disappears():
+    flags = rcv.classify(rcv.SCENARIO_BY_ID["policy_allow_nonmatching_dependency"], "PASS", ["policy_override"], False, False, False, rcv.MutationResult("applied", True))
+    assert flags["policy_over_suppression"]
+
+
+def test_execution_without_ledger_cannot_pass_without_trust_violation():
+    flags = rcv.classify(rcv.SCENARIO_BY_ID["execution_claim_without_ledger"], "PASS", [], False, False, False, rcv.MutationResult("applied", True))
+    assert flags["trust_violation"]

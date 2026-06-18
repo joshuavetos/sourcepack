@@ -2954,5 +2954,9 @@ def run_cli(args_list=None):
         return 1
 
 
+def main(argv: list[str] | None = None) -> int:
+    return run_cli(argv)
+
+
 if __name__ == "__main__":
-    raise SystemExit(run_cli())
+    raise SystemExit(main())

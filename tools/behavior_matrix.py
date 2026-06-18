@@ -60,6 +60,8 @@ CANONICAL_REASON_CODES: frozenset[str] = frozenset({
     "git_path_modification", "binary_diff", "malformed_diff",
     "unsupported_ecosystem", "baseline_stale", "dependency_scope_review",
     "js_alias_uncertain", "dependency_manifest_uncertain", "no_diff", "workflow_change",
+    "execution_evidence_missing", "execution_failed", "execution_inconclusive",
+    "execution_evidence_present",
 })
 REASON_CODE_ALIASES: dict[str, str] = {
     "path_escape": "unsafe_path",
@@ -351,6 +353,11 @@ def build_scenarios() -> list[BehaviorScenario]:
     add(53,"metamorphic manifest ordering", "metamorphic", {"app.py":"print(1)\n","pyproject.toml":"[project]\ndependencies=['requests','fastapi']\n"}, (m("append","app.py","import fastapi\n"),), verdict="PASS", exc=("unsupported_dependency",), tags=("invariant_manifest_order",))
     add(54,"metamorphic temp directory independence", "metamorphic", {"app.py":"print(1)\n"}, (m("append","app.py","import fastapi\n"),), verdict="FAIL", inc=("unsupported_dependency",), exit=1, tags=("invariant_tempdir",))
     add(55,"metamorphic human/json reason stable", "metamorphic", app, (m("write","new.py","x=1\n"),), verdict="WARN", inc=("new_file",), tags=("invariant_human_json",))
+    add(56,"execution claim without ledger warns", "execution", {"README.md":"demo\n"}, (m("append","README.md","tests passed\n"),), verdict="WARN", inc=("execution_evidence_missing",))
+    add(57,"execution near miss does not warn", "execution", {"README.md":"demo\n"}, (m("append","README.md","please test; should pass; works toward coverage\n"),), verdict="PASS", exc=("execution_evidence_missing","execution_failed"))
+    add(58,"make target missing command integration", "command", {"README.md":"demo\n","Makefile":"test:\n\ttrue\n"}, (m("append","README.md","make dev\n"),), verdict="FAIL", inc=("unsupported_command",), exit=1)
+    add(59,"make target present command integration", "command", {"README.md":"demo\n","Makefile":"dev:\n\ttrue\n"}, (m("append","README.md","make dev\n"),), verdict="PASS", exc=("unsupported_command",))
+    add(60,"real corpus no-corpus JSON clean", "corpus", app, (), verdict="PASS", exc=("unsupported_dependency",))
     return S
 
 

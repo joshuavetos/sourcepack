@@ -20,6 +20,7 @@ from .ecosystems.python import PY_IMPORT_ALIASES
 from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_paths
 from .reports.json import normalized_finding, traffic_report, write_user_report
 from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code
+from .execution_ledger import execution_findings
 
 try:
     from . import __version__
@@ -962,6 +963,13 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
         py = python_project_evidence(files, deps)
         if not (py["pytest"] or py["tests"] or "pytest" in supported):
             report["unsupported_commands"].append("pytest")
+    packet_contents = _packet_file_contents(packet)
+    make_text = packet_contents.get("Makefile") or packet_contents.get("makefile") or ""
+    make_targets = {m.group(1) for m in re.finditer(r"^([A-Za-z0-9_.:-]+)\s*:", make_text, re.M)}
+    for cmd in sorted(set(re.findall(r"\bmake\s+[A-Za-z0-9_.:-]+", added_text))):
+        target = cmd.split(None, 1)[1]
+        if target not in make_targets:
+            report["unsupported_commands"].append(cmd)
     if not baseline_inventory_loaded:
         outside_context = sorted({
             ch.path for ch in changes
@@ -1728,6 +1736,8 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         rep = traffic_report(verdict, "SourcePack could not fully evaluate this change." if stale_findings else "good to continue.", [normalized_finding("no_diff", "info", "diff", "No uncommitted changes detected."), *stale_findings], ["diff", "baseline freshness"])
     else:
         raw = judge_patch_text(repo / baseline_status["packet_path"], diff_text); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
+        rep = _integrate_execution_findings(repo, diff_text, rep)
+        rep = _apply_local_policy(repo, rep)
         if stale_findings and rep["verdict"] != "FAIL":
             rep = traffic_report("WARN", "SourcePack could not fully evaluate this change.", rep.get("findings", []) + stale_findings, rep.get("checked_categories", []), rep.get("next_action"), reason_type="uncertainty"); rep["raw_patch_judgment"] = raw
         elif stale_findings:
@@ -1743,6 +1753,79 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         rep["note"] = rep_note
     rep["repo_path"] = str(repo)
     return rep
+
+
+def _rebuild_from_findings(rep: dict, findings: list[dict]) -> dict:
+    verdict = "FAIL" if any(f.get("severity") == "error" for f in findings) else "WARN" if any(f.get("severity") == "warn" for f in findings) else "PASS"
+    rebuilt = traffic_report(verdict, findings=findings, checked_categories=rep.get("checked_categories") or rep.get("checked") or [], report_path=rep.get("report_path", ".sourcepack/reports/latest.json"))
+    for key in ("raw_patch_judgment", "policy_overrides"):
+        if key in rep:
+            rebuilt[key] = rep[key]
+    return rebuilt
+
+
+def _integrate_execution_findings(repo: Path, checked_text: str, rep: dict) -> dict:
+    execution = execution_findings(repo, checked_text)
+    if not execution:
+        return rep
+    return _rebuild_from_findings(rep, list(rep.get("findings", [])) + execution)
+
+
+def _policy_entries_for_judgment(repo: Path) -> list[dict]:
+    path = repo / ".sourcepack" / "policy" / "allow.jsonl"
+    if not path.exists():
+        return []
+    entries = []
+    now = utc_now()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
+        expires = entry.get("expires_at")
+        if expires and str(expires) < now:
+            continue
+        entries.append(entry)
+    return entries
+
+
+def _policy_matches(entry: dict, finding: dict) -> bool:
+    scope = entry.get("scope")
+    value = str(entry.get("value") or "")
+    fid = finding.get("id")
+    if fid == "git_path_modification" or str(finding.get("path") or "").startswith(".git/"):
+        return False
+    if scope == "dependency":
+        return fid == "unsupported_dependency" and finding.get("evidence") == value
+    if scope == "command":
+        return fid == "unsupported_command" and finding.get("evidence") == value
+    if scope == "path":
+        if str(finding.get("path") or "") != value:
+            return False
+        if str(value).startswith(".sourcepack/baseline/") and not entry.get("high_risk"):
+            return False
+        return fid not in {"git_path_modification"}
+    return False
+
+
+def _apply_local_policy(repo: Path, rep: dict) -> dict:
+    entries = _policy_entries_for_judgment(repo)
+    if not entries:
+        return rep
+    kept = []
+    overrides = []
+    for finding in rep.get("findings", []):
+        match = next((entry for entry in entries if _policy_matches(entry, finding)), None)
+        if match:
+            overrides.append({"policy_id": match.get("id"), "scope": match.get("scope"), "value": match.get("value"), "reason": match.get("reason"), "suppressed_finding": finding.get("id"), "path": finding.get("path")})
+        else:
+            kept.append(finding)
+    if not overrides:
+        return rep
+    rebuilt = _rebuild_from_findings(rep, kept)
+    rebuilt["policy_overrides"] = overrides
+    rebuilt.setdefault("findings", []).append(normalized_finding("policy_override", "info", "policy", "A local allow policy suppressed a matching finding.", evidence=", ".join(str(o.get("value")) for o in overrides)))
+    return _rebuild_from_findings(rebuilt, rebuilt["findings"])
 
 
 

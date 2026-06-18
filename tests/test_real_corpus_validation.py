@@ -122,3 +122,84 @@ def test_network_unavailable_reported_separately(tmp_path):
     data = json.loads(cp.stdout)
     assert data["results"][0]["notes"][0] in {"network_unavailable", "clone_failed"}
     assert data["crash"] == 0
+
+
+def test_execution_claim_without_ledger_writes_detectable_claim(tmp_path):
+    repo = make_repo(tmp_path)
+    mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID["execution_claim_without_ledger"])
+    assert mr.applied
+    assert "tests passed" in (repo / "README.md").read_text()
+    assert rcv.SCENARIO_BY_ID["execution_claim_without_ledger"].expected_reason_codes_include == ("execution_evidence_missing",)
+
+
+def test_policy_matching_scenario_creates_allow_policy_before_evaluation(tmp_path):
+    repo = make_repo(tmp_path)
+    mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID["policy_allow_matching_dependency"])
+    assert mr.applied
+    assert (repo / ".sourcepack" / "policy" / "allow.jsonl").exists()
+    assert mr.details["policy_allowed_dependency"] == "fastapi"
+    assert "sourcepack allow dependency fastapi" in mr.details["policy_command"]
+    assert "import fastapi" in (repo / "app.py").read_text()
+
+
+def test_policy_nonmatching_scenario_leaves_unrelated_dependency_unsuppressed(tmp_path):
+    repo = make_repo(tmp_path)
+    mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID["policy_allow_nonmatching_dependency"])
+    assert mr.applied
+    text = (repo / "app.py").read_text()
+    assert "import fastapi" in text
+    assert "import flask" in text
+    assert mr.details["policy_allowed_dependency"] == "fastapi"
+    assert mr.details["unsuppressed_dependency"] == "flask"
+
+
+def test_same_patch_python_dependency_mutates_manifest_not_comment(tmp_path):
+    repo = make_repo(tmp_path)
+    mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID["same_patch_python_dependency_add_plus_import"])
+    assert mr.applied
+    assert "fastapi" in (repo / "requirements.txt").read_text()
+    assert "sourcepack corpus dependency" not in (repo / "requirements.txt").read_text()
+    assert mr.details["manifest_before_sha256"] != mr.details["manifest_after_sha256"]
+
+
+def test_same_patch_js_dependency_mutates_package_json(tmp_path):
+    repo = make_repo(tmp_path, node=True)
+    mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID["same_patch_js_dependency_add_plus_import"])
+    assert mr.applied
+    data = json.loads((repo / "package.json").read_text())
+    assert data["dependencies"]["react"] == "latest"
+    assert mr.details["package_json_before_sha256"] != mr.details["package_json_after_sha256"]
+
+
+def test_makefile_existing_uses_real_parsed_target(tmp_path):
+    repo = make_repo(tmp_path, python=False)
+    (repo / "Makefile").write_text(".PHONY: clean\nclean:\n\t@echo clean\nbuild:\n\t@echo build\n")
+    mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID["make_target_existing"])
+    assert mr.applied
+    assert mr.details["make_target"] == "build"
+    assert "make build" in (repo / "README.md").read_text()
+
+
+def test_makefile_missing_tests_target_missing_deterministically(tmp_path):
+    repo = make_repo(tmp_path, python=False)
+    mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID["make_target_missing"])
+    assert mr.applied
+    assert (repo / "Makefile").exists()
+    assert "make missing-sourcepack-target" in (repo / "README.md").read_text()
+
+
+def test_docker_compose_missing_uses_detected_command_form(tmp_path):
+    repo = make_repo(tmp_path, python=False)
+    (repo / "compose.yml").write_text("services: {}\n")
+    mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID["docker_compose_missing_file"])
+    assert mr.applied
+    assert "docker compose up" in (repo / "README.md").read_text()
+    assert not (repo / "compose.yml").exists()
+
+
+def test_allowed_alternate_outcomes_are_honored():
+    s = rcv.Scenario("alt", "", (), (), "", "", "PASS", allowed_alternate_outcomes=({"verdict":"WARN", "reason_codes_exclude":("bad",), "justification":"ok"},))
+    mr = rcv.MutationResult("applied", True)
+    flags = rcv.classify(s, "WARN", [], False, False, False, mr)
+    assert not flags["noisy_warn"]
+    assert rcv.allowed_alternate_match(s, "WARN", [])[0] is True

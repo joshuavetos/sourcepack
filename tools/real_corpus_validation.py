@@ -32,7 +32,7 @@ class Scenario:
     expected_verdict: str
     expected_reason_codes_include: tuple[str, ...] = ()
     expected_reason_codes_exclude: tuple[str, ...] = ()
-    allowed_alternate_outcomes: tuple[dict[str, str], ...] = ()
+    allowed_alternate_outcomes: tuple[dict[str, Any], ...] = ()
     timeout_seconds: int = 20
 
 @dataclass
@@ -50,14 +50,14 @@ SCENARIOS: list[Scenario] = [
     Scenario("new_file","Add a simple new source file.",(),(),"python","create_python_probe","WARN",("new_file",),timeout_seconds=10),
     Scenario("undeclared_python_dependency_import","Import an undeclared Python dependency.",("python",),("python_file",),"python","append_undeclared_python_import","FAIL",("unsupported_dependency",),timeout_seconds=10),
     Scenario("declared_python_dependency_import","Import a dependency declared in a Python manifest.",("python",),("python_file","python_manifest"),"python_manifest","append_declared_python_import","PASS",allowed_alternate_outcomes=({"verdict":"WARN","justification":"Some repos expose ambiguous dependency metadata despite a declaration."},),timeout_seconds=10),
-    Scenario("same_patch_python_dependency_add_plus_import","Add Python dependency declaration and import in the same patch.",("python",),("python_file","python_manifest"),"python_manifest","add_python_dep_and_import","PASS",allowed_alternate_outcomes=({"verdict":"WARN","justification":"Manifest parser may not support every requirements variant."},),timeout_seconds=10),
+    Scenario("same_patch_python_dependency_add_plus_import","Add Python dependency declaration and import in the same patch.",("python",),("python_file","python_manifest"),"python_manifest","add_python_dep_and_import","WARN",("declared_dependency",),timeout_seconds=10),
     Scenario("undeclared_js_dependency_import","Import an undeclared Node dependency.",("node","javascript","typescript"),("js_file","package_json"),"js_ts","append_undeclared_js_import","FAIL",("unsupported_dependency",),timeout_seconds=10),
     Scenario("declared_js_dependency_import","Import an existing package.json dependency.",("node","javascript","typescript"),("js_file","package_json"),"node_manifest","append_declared_js_import","PASS",allowed_alternate_outcomes=({"verdict":"WARN","justification":"Package metadata can be present but not mapped to the selected import form."},),timeout_seconds=10),
-    Scenario("same_patch_js_dependency_add_plus_import","Add package.json dependency and import in one patch.",("node","javascript","typescript"),("js_file","package_json"),"node_manifest","add_js_dep_and_import","PASS",timeout_seconds=10),
+    Scenario("same_patch_js_dependency_add_plus_import","Add package.json dependency and import in one patch.",("node","javascript","typescript"),("js_file","package_json"),"node_manifest","add_js_dep_and_import","WARN",("declared_dependency",),timeout_seconds=10),
     Scenario("missing_npm_script_reference","Reference an npm script that is not declared.",("node",),("package_json",),"node_manifest","readme_missing_npm_script","FAIL",("unsupported_command",),timeout_seconds=10),
     Scenario("existing_npm_script_reference","Reference an existing npm script.",("node",),("package_json",),"node_manifest","readme_existing_npm_script","PASS",timeout_seconds=10),
-    Scenario("docker_compose_missing_file","Reference missing Docker Compose file.",(),(),"docker_compose_missing","readme_missing_compose","FAIL",("missing_file",),timeout_seconds=10),
-    Scenario("docker_compose_existing_file","Touch existing Docker Compose file.",("docker_compose",),("docker_compose",),"docker_compose","append_compose_comment","PASS",allowed_alternate_outcomes=({"verdict":"WARN","justification":"Compose edits may be advisory when not covered by baseline evidence."},),timeout_seconds=10),
+    Scenario("docker_compose_missing_file","Reference Docker Compose when no compose file exists.",(),(),"docker_compose_missing","readme_missing_compose","FAIL",("unsupported_command",),timeout_seconds=10),
+    Scenario("docker_compose_existing_file","Reference an existing Docker Compose command.",("docker_compose",),("docker_compose",),"docker_compose","readme_existing_compose","PASS",timeout_seconds=10),
     Scenario("make_target_missing","Reference missing Make target.",(),(),"makefile_missing","readme_missing_make_target","FAIL",("unsupported_command",),timeout_seconds=10),
     Scenario("make_target_existing","Reference an existing Make target.",("makefile",),("makefile",),"makefile","readme_existing_make_target","PASS",timeout_seconds=10),
     Scenario("protected_sourcepack_baseline_edit","Patch attempts to edit protected SourcePack baseline.",(),(),"patch_text","protected_baseline_patch","FAIL",("protected_artifact",),timeout_seconds=10),
@@ -66,9 +66,9 @@ SCENARIOS: list[Scenario] = [
     Scenario("binary_diff_low_risk","Add small binary artifact.",(),(),"binary","small_binary","WARN",("binary_diff",),timeout_seconds=10),
     Scenario("binary_diff_high_risk","Add larger binary artifact.",(),(),"binary","large_binary","WARN",("binary_diff",),timeout_seconds=10),
     Scenario("malformed_diff","Judge malformed patch text.",(),(),"patch_text","malformed_patch","FAIL",("malformed_diff",),timeout_seconds=10),
-    Scenario("execution_claim_without_ledger","Claim command execution without ledger evidence.",(),(),"readme","execution_claim_no_ledger","WARN",("execution_claim_unverified",),timeout_seconds=10),
-    Scenario("execution_claim_with_successful_ledger","Claim command execution with ledger evidence.",(),(),"readme","execution_claim_with_ledger","PASS",allowed_alternate_outcomes=({"verdict":"WARN","justification":"Ledger support may be absent in older SourcePack builds."},),timeout_seconds=10),
-    Scenario("policy_allow_matching_dependency","Policy allows one matching dependency finding.",("python",),("python_file",),"python","policy_allow_matching_dep","PASS",timeout_seconds=10),
+    Scenario("execution_claim_without_ledger","Claim command execution without ledger evidence.",(),(),"readme","execution_claim_no_ledger","WARN",("execution_evidence_missing",),timeout_seconds=10),
+    Scenario("execution_claim_with_successful_ledger","Claim command execution with ledger evidence.",(),(),"readme","execution_claim_with_ledger","PASS",(),("execution_evidence_missing",),allowed_alternate_outcomes=({"verdict":"WARN","reason_codes_include":("execution_evidence_present",),"reason_codes_exclude":("execution_evidence_missing",),"justification":"Execution evidence may be reported as advisory while still proving ledger support."},),timeout_seconds=10),
+    Scenario("policy_allow_matching_dependency","Policy allows one matching dependency finding.",("python",),("python_file",),"python","policy_allow_matching_dep","PASS",(),("unsupported_dependency",),allowed_alternate_outcomes=({"verdict":"WARN","reason_codes_exclude":("unsupported_dependency",),"justification":"Policy override evidence may keep an advisory report while suppressing the dependency failure."},),timeout_seconds=10),
     Scenario("policy_allow_nonmatching_dependency","Policy must not suppress unrelated dependency finding.",("python",),("python_file",),"python","policy_allow_nonmatching_dep","FAIL",("unsupported_dependency",),timeout_seconds=10),
 ]
 SCENARIO_BY_ID = {s.scenario_id: s for s in SCENARIOS}
@@ -147,28 +147,113 @@ def mutate_file(path: Path, text: str, append: bool=True) -> MutationResult:
     status="applied" if before != after else "mutation_failed"
     return MutationResult(status, status=="applied", str(path), before, after, None if status=="applied" else "sha256_unchanged")
 
+def write_policy_allow(repo: Path, scope: str, value: str, reason: str) -> tuple[bool, dict[str, Any]]:
+    cp = run([sys.executable, "-m", "sourcepack.cli", "allow", scope, value, "--reason", reason], repo, 15)
+    return cp.returncode == 0, {"policy_command": f"sourcepack allow {scope} {value}", "policy_stdout": cp.stdout.strip(), "policy_stderr": cp.stderr.strip(), "policy_exit_code": cp.returncode}
+
+def makefile_targets(path: Path) -> list[str]:
+    targets=[]
+    phony=set()
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        raw=line.split("#",1)[0].rstrip()
+        if not raw or raw.startswith(("\t", " ")) or ":" not in raw or "=" in raw.split(":",1)[0]:
+            continue
+        name, rest = raw.split(":",1)
+        names=[n for n in name.split() if n]
+        if ".PHONY" in names:
+            phony.update(rest.split()); continue
+        for n in names:
+            if n.startswith(".") or "%" in n or "$" in n or "/" in n:
+                continue
+            if n not in phony and n not in targets:
+                targets.append(n)
+    return [t for t in targets if t not in phony]
+
+def add_python_manifest_dependency(path: Path, dep: str) -> MutationResult:
+    before = sha256_path(path)
+    text = path.read_text(encoding="utf-8", errors="ignore") if path.exists() else ""
+    if path.name.startswith("requirements"):
+        if dep not in {line.strip().split("==")[0].split(">=")[0] for line in text.splitlines()}:
+            path.write_text(text.rstrip("\n") + f"\n{dep}\n", encoding="utf-8")
+    elif path.name == "pyproject.toml":
+        try:
+            import tomllib
+            data = tomllib.loads(text)
+        except Exception as exc:
+            return MutationResult("skipped_incompatible_repo", False, str(path), before, before, f"pyproject_parse_failed:{exc}")
+        deps = data.get("project", {}).get("dependencies")
+        if not isinstance(deps, list):
+            return MutationResult("skipped_incompatible_repo", False, str(path), before, before, "project_dependencies_missing_or_unsupported")
+        if dep not in {str(d).split("==")[0].split(">=")[0] for d in deps}:
+            marker = "dependencies"
+            lines = text.splitlines()
+            for i, line in enumerate(lines):
+                if line.strip().startswith(marker) and "[" in line:
+                    if "]" in line:
+                        lines[i] = line.replace("]", f", \"{dep}\"]", 1)
+                    else:
+                        for j in range(i+1, len(lines)):
+                            if "]" in lines[j]:
+                                lines.insert(j, f'  "{dep}",')
+                                break
+                        else:
+                            return MutationResult("skipped_incompatible_repo", False, str(path), before, before, "dependencies_array_not_closed")
+                    path.write_text("\n".join(lines)+"\n", encoding="utf-8")
+                    break
+            else:
+                return MutationResult("skipped_incompatible_repo", False, str(path), before, before, "dependencies_line_not_found")
+    else:
+        return MutationResult("skipped_incompatible_repo", False, str(path), before, before, "unsupported_python_manifest")
+    after = sha256_path(path)
+    return MutationResult("applied" if before != after else "mutation_failed", before != after, str(path), before, after, None if before != after else "sha256_unchanged", {"dependency_added": dep})
+
 def skip(reason: str, details: dict[str,Any]|None=None) -> MutationResult:
     return MutationResult("skipped_incompatible_repo", False, reason=reason, details=details or {})
 
 def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
     sid=scenario.scenario_id
-    if sid in {"benign_readme_edit","execution_claim_without_ledger"}:
+    if sid == "benign_readme_edit":
         return mutate_file(find_readme(repo, True), f"\nSourcePack corpus note for {sid}.\n")
+    if sid == "execution_claim_without_ledger":
+        return mutate_file(find_readme(repo, True), "\ntests passed\n")
     if sid == "execution_claim_with_successful_ledger":
         # Record ledger if available; README mutation remains the evaluated change.
-        run([sys.executable,"-m","sourcepack.cli","exec","--","python","--version"], repo, 20)
-        return mutate_file(find_readme(repo, True), "\nI ran `python --version` successfully.\n")
+        cp = run([sys.executable,"-m","sourcepack.cli","exec","--","python","--version"], repo, 20)
+        mr = mutate_file(find_readme(repo, True), "\nI ran python --version\n")
+        mr.details.update({"ledger_command":"python --version","ledger_exit_code":cp.returncode,"ledger_stdout":cp.stdout.strip(),"ledger_stderr":cp.stderr.strip()})
+        if cp.returncode != 0:
+            mr.status="mutation_failed"; mr.applied=False; mr.reason="execution_ledger_setup_failed"
+        return mr
     if sid == "new_file": return mutate_file(find_python(repo, True), "print('sourcepack corpus probe')\n", append=False)
-    if sid.startswith("undeclared_python") or sid in {"policy_allow_matching_dependency","policy_allow_nonmatching_dependency"}:
-        p=find_python(repo); return skip("python_target_missing") if not p else mutate_file(p, "\nimport definitely_missing_sourcepack_dep\n")
+    if sid.startswith("undeclared_python"):
+        p=find_python(repo); return skip("python_target_missing") if not p else mutate_file(p, "\nimport fastapi\n")
+    if sid == "policy_allow_matching_dependency":
+        p=find_python(repo)
+        if not p: return skip("python_target_missing")
+        ok, details = write_policy_allow(repo, "dependency", "fastapi", "real corpus policy test")
+        if not ok: return MutationResult("mutation_failed", False, reason="policy_setup_failed", details=details)
+        mr = mutate_file(p, "\nimport fastapi\n")
+        mr.details.update(details); mr.details["policy_allowed_dependency"] = "fastapi"
+        return mr
+    if sid == "policy_allow_nonmatching_dependency":
+        p=find_python(repo)
+        if not p: return skip("python_target_missing")
+        ok, details = write_policy_allow(repo, "dependency", "fastapi", "real corpus policy test")
+        if not ok: return MutationResult("mutation_failed", False, reason="policy_setup_failed", details=details)
+        mr = mutate_file(p, "\nimport fastapi\nimport flask\n")
+        mr.details.update(details); mr.details["policy_allowed_dependency"] = "fastapi"; mr.details["unsuppressed_dependency"] = "flask"
+        return mr
     if sid == "declared_python_dependency_import":
         p=find_python(repo); m=find_py_manifest(repo)
         return skip("python_target_or_manifest_missing") if not p or not m else mutate_file(p, "\nimport requests\n")
     if sid == "same_patch_python_dependency_add_plus_import":
         p=find_python(repo); m=find_py_manifest(repo)
         if not p or not m: return skip("python_target_or_manifest_missing")
-        mutate_file(m, "\nrequests\n" if m.name.startswith("requirements") else "\n# sourcepack corpus dependency: requests\n")
-        return mutate_file(p, "\nimport requests\n")
+        dep_mr = add_python_manifest_dependency(m, "fastapi")
+        if not dep_mr.applied: return dep_mr
+        mr = mutate_file(p, "\nimport fastapi\n")
+        mr.details.update({"manifest_path": str(m), "manifest_before_sha256": dep_mr.before_sha256, "manifest_after_sha256": dep_mr.after_sha256, "dependency_added": "fastapi"})
+        return mr
     if sid.startswith("undeclared_js"):
         p=find_js(repo); pkg=find_package(repo)
         return skip("js_target_or_package_json_missing") if not p or not pkg else mutate_file(p, "\nimport missingSourcepackDep from 'missing-sourcepack-dep';\n")
@@ -180,8 +265,17 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
     if sid == "same_patch_js_dependency_add_plus_import":
         p=find_js(repo); pkg=find_package(repo)
         if not p or not pkg: return skip("js_target_or_package_json_missing")
-        data=json.loads(pkg.read_text() or "{}"); data.setdefault("dependencies",{})["left-pad"]="1.3.0"; pkg.write_text(json.dumps(data, indent=2)+"\n")
-        return mutate_file(p, "\nimport leftPad from 'left-pad';\n")
+        before=sha256_path(pkg)
+        try:
+            data=json.loads(pkg.read_text() or "{}")
+        except Exception as exc:
+            return skip("package_json_invalid", {"error": str(exc)})
+        data.setdefault("dependencies",{})["react"]="latest"; pkg.write_text(json.dumps(data, indent=2, sort_keys=True)+"\n", encoding="utf-8")
+        after=sha256_path(pkg)
+        if before == after: return MutationResult("mutation_failed", False, str(pkg), before, after, "package_json_unchanged")
+        mr = mutate_file(p, "\nimport React from 'react';\n")
+        mr.details.update({"package_json_path": str(pkg), "package_json_before_sha256": before, "package_json_after_sha256": after, "dependency_added": "react"})
+        return mr
     if sid in {"missing_npm_script_reference","existing_npm_script_reference"}:
         pkg=find_package(repo)
         if not pkg: return skip("package_json_missing")
@@ -192,12 +286,25 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
             script=sorted(scripts)[0]
         return mutate_file(find_readme(repo, True), f"\nRun `npm run {script}`.\n")
     if sid == "docker_compose_missing_file":
-        return mutate_file(find_readme(repo, True), "\nRun `docker compose -f missing-sourcepack-compose.yml up`.\n")
+        for c in ("compose.yml","compose.yaml","docker-compose.yml","docker-compose.yaml"):
+            path=repo/c
+            if path.exists(): path.unlink()
+        return mutate_file(find_readme(repo, True), "\nRun `docker compose up`.\n")
     if sid == "docker_compose_existing_file":
-        c=find_compose(repo); return skip("docker_compose_missing") if not c else mutate_file(c, "\n# sourcepack corpus compose touch\n")
-    if sid == "make_target_missing": return mutate_file(find_readme(repo, True), "\nRun `make missing-sourcepack-target`.\n")
+        c=find_compose(repo); return skip("docker_compose_missing") if not c else mutate_file(find_readme(repo, True), "\nRun `docker compose up`.\n")
+    if sid == "make_target_missing":
+        mf=find_makefile(repo)
+        if not mf:
+            mf=repo/"Makefile"; mf.write_text("sourcepack-existing-target:\n\t@echo ok\n", encoding="utf-8")
+        return mutate_file(find_readme(repo, True), "\nRun `make missing-sourcepack-target`.\n")
     if sid == "make_target_existing":
-        mf=find_makefile(repo); return skip("makefile_missing") if not mf else mutate_file(find_readme(repo, True), "\nRun `make all`.\n")
+        mf=find_makefile(repo)
+        if not mf: return skip("makefile_missing")
+        targets=makefile_targets(mf)
+        if not targets: return skip("makefile_target_missing")
+        mr=mutate_file(find_readme(repo, True), f"\nRun `make {targets[0]}`.\n")
+        mr.details["make_target"] = targets[0]
+        return mr
     if sid == "unsupported_ecosystem_touch": return mutate_file(repo/"Cargo.toml", "[package]\nname='sourcepack-corpus'\nversion='0.1.0'\n", append=False)
     if sid in {"binary_diff_low_risk","binary_diff_high_risk"}:
         p=repo/("sourcepack_corpus_low.bin" if sid.endswith("low_risk") else "sourcepack_corpus_high.bin"); data=b"\0\1\2" if sid.endswith("low_risk") else bytes(range(256))*64
@@ -232,6 +339,8 @@ def sourcepack_version() -> str:
 def evaluate(repo: Path, scenario: Scenario, timeout: int) -> tuple[int,str,str,bool,dict[str,Any]|None,bool]:
     if scenario.scenario_id in {"protected_sourcepack_baseline_edit","git_config_edit","malformed_diff"}:
         try:
+            if str(TOOL_ROOT / "src") not in sys.path:
+                sys.path.insert(0, str(TOOL_ROOT / "src"))
             from sourcepack.judgment import judge_repo_change
             patch = "@@ nope @@\n+bad\n" if scenario.scenario_id == "malformed_diff" else "diff --git a/.sourcepack/baseline/active.json b/.sourcepack/baseline/active.json\n--- a/.sourcepack/baseline/active.json\n+++ b/.sourcepack/baseline/active.json\n@@ -1 +1 @@\n-{}\n+{ }\n"
             if scenario.scenario_id == "git_config_edit": patch="diff --git a/.git/config b/.git/config\n--- a/.git/config\n+++ b/.git/config\n@@ -1 +1 @@\n-x\n+y\n"
@@ -246,11 +355,26 @@ def evaluate(repo: Path, scenario: Scenario, timeout: int) -> tuple[int,str,str,
         rep=None; valid=False
     return cp.returncode,cp.stdout,cp.stderr,valid,rep,False
 
+def allowed_alternate_match(s: Scenario, actual: str|None, codes: list[str]) -> tuple[bool, str | None]:
+    got=set(codes)
+    for alt in s.allowed_alternate_outcomes:
+        if not alt.get("verdict") or not alt.get("justification"):
+            continue
+        if actual != alt.get("verdict"):
+            continue
+        inc=set(alt.get("reason_codes_include", ()))
+        exc=set(alt.get("reason_codes_exclude", ()))
+        if inc - got or exc & got:
+            continue
+        return True, str(alt.get("justification"))
+    return False, None
+
 def classify(s: Scenario, actual: str|None, codes: list[str], invalid_json: bool, crash: bool, timeout: bool, mr: MutationResult) -> dict[str,bool]:
     d={k:False for k in METRICS}
     d["invalid_json"]=invalid_json; d["crash"]=crash; d["timeout"]=timeout
     d["mutation_failed"]=mr.status=="mutation_failed"; d["skipped_incompatible_repo"]=mr.status=="skipped_incompatible_repo"; d["repo_cleanup_failed"]=mr.status=="repo_cleanup_failed"; d["baseline_failed"]=mr.status=="baseline_failed"
-    if actual:
+    matched_alt, _ = allowed_alternate_match(s, actual, codes)
+    if actual and not matched_alt:
         d["false_red"] = s.expected_verdict in {"PASS","WARN"} and actual == "FAIL"
         d["missed_red"] = s.expected_verdict == "FAIL" and actual in {"PASS","WARN"}
         d["noisy_warn"] = s.expected_verdict == "PASS" and actual == "WARN"
@@ -302,7 +426,7 @@ def copy_work(src: Path, parent: Path, sid: str) -> Path:
     return dst
 
 def empty_result(entry:dict[str,Any], scenario:Scenario, repo_path:str|None, mr:MutationResult, notes:list[str]) -> dict[str,Any]:
-    return {"repo_id":entry["repo_id"],"repo_url":entry["url"],"repo_path":repo_path,"scenario_id":scenario.scenario_id,"mutation_status":mr.status,"mutation_result":asdict(mr),"expected_verdict":scenario.expected_verdict,"actual_verdict":None,"expected_reason_codes_include":list(scenario.expected_reason_codes_include),"expected_reason_codes_exclude":list(scenario.expected_reason_codes_exclude),"actual_reason_codes":[],"exit_code":None,"stdout_json_valid":False,**{k:False for k in METRICS},"duration_ms":0,"report_path":None,"workdir_path":None,"notes":notes}
+    return {"repo_id":entry["repo_id"],"repo_url":entry["url"],"repo_path":repo_path,"scenario_id":scenario.scenario_id,"mutation_status":mr.status,"mutation_result":asdict(mr),"expected_verdict":scenario.expected_verdict,"actual_verdict":None,"expected_reason_codes_include":list(scenario.expected_reason_codes_include),"expected_reason_codes_exclude":list(scenario.expected_reason_codes_exclude),"actual_reason_codes":[],"matched_allowed_alternate":False,"allowed_alternate_justification":None,"exit_code":None,"stdout_json_valid":False,**{k:False for k in METRICS},"duration_ms":0,"report_path":None,"workdir_path":None,"notes":notes}
 
 def run_harness(args: argparse.Namespace) -> tuple[dict[str,Any], int]:
     repos=[]
@@ -338,7 +462,7 @@ def run_harness(args: argparse.Namespace) -> tuple[dict[str,Any], int]:
                             code=None; valid=False; actual=None; codes=[]; invalid=False; crash=False; flags={k:False for k in METRICS}; flags["timeout"]=True
                         else:
                             flags=classify(s,actual,codes,invalid,crash,False,mr)
-                        row={"repo_id":entry["repo_id"],"repo_url":entry["url"],"repo_path":repo_path,"scenario_id":s.scenario_id,"mutation_status":mr.status,"mutation_result":asdict(mr),"expected_verdict":s.expected_verdict,"actual_verdict":actual,"expected_reason_codes_include":list(s.expected_reason_codes_include),"expected_reason_codes_exclude":list(s.expected_reason_codes_exclude),"actual_reason_codes":codes,"exit_code":code,"stdout_json_valid":valid,**flags,"duration_ms":int((time.time()-start)*1000),"report_path":(report or {}).get("report_path") if isinstance(report,dict) else None,"workdir_path":str(work) if args.keep_workdir else None,"notes":[]}
+                        row={"repo_id":entry["repo_id"],"repo_url":entry["url"],"repo_path":repo_path,"scenario_id":s.scenario_id,"mutation_status":mr.status,"mutation_result":asdict(mr),"expected_verdict":s.expected_verdict,"actual_verdict":actual,"expected_reason_codes_include":list(s.expected_reason_codes_include),"expected_reason_codes_exclude":list(s.expected_reason_codes_exclude),"actual_reason_codes":codes,"matched_allowed_alternate":allowed_alternate_match(s,actual,codes)[0],"allowed_alternate_justification":allowed_alternate_match(s,actual,codes)[1],"exit_code":code,"stdout_json_valid":valid,**flags,"duration_ms":int((time.time()-start)*1000),"report_path":(report or {}).get("report_path") if isinstance(report,dict) else None,"workdir_path":str(work) if args.keep_workdir else None,"notes":[]}
             except subprocess.TimeoutExpired:
                 row=empty_result(entry,s,repo_path,mr,["timeout"]); row["timeout"]=True
             except Exception as exc:

@@ -63,6 +63,18 @@ class SourcePackSmokeTest(unittest.TestCase):
             self.assertIn("[REDACTED:openai_key]", context)
             self.assertEqual(run_cli(["verify", str(packet), "--against", str(repo)]), 0)
 
+    def test_doctor_reports_production_readiness_checks(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            rc = run_cli(["doctor", "--strict"])
+
+        output = buffer.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("PASS version:", output)
+        self.assertIn("PASS package_assets:", output)
+        self.assertIn("PASS report_renderers:", output)
+        self.assertIn("Status: READY", output)
+
 
     def test_readme_negative_prose_does_not_create_capability_evidence(self):
         with TemporaryDirectory() as td:

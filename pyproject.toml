@@ -23,3 +23,5 @@ classifiers = [
 
 [project.scripts]
 sourcepack = "sourcepack.cli:main"
+[tool.setuptools.package-data]
+sourcepack = ["assets/*.md"]

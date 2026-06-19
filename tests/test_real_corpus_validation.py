@@ -194,7 +194,9 @@ def test_same_patch_js_dependency_fails_if_candidates_preexist(tmp_path):
     "import 'sourcepack-corpus-js-dep';",
     "const x = require('sourcepack-corpus-js-dep');",
     'let x = require("sourcepack-corpus-js-dep");',
+    "var x = require('sourcepack-corpus-js-dep');",
     "const { x } = require('sourcepack-corpus-js-dep');",
+    "require('sourcepack-corpus-js-dep');",
     'await import("sourcepack-corpus-js-dep");',
     "import('sourcepack-corpus-js-dep').then(m => m);",
 ])
@@ -208,6 +210,12 @@ def test_source_contains_js_import_accepts_structural_forms(source):
     "const msg = 'sourcepack-corpus-js-dep';",
     'const msg = "Install sourcepack-corpus-js-dep";',
     "console.log('sourcepack-corpus-js-dep');",
+    'const msg = "import x from \'sourcepack-corpus-js-dep\';";',
+    'const msg = \'import x from "sourcepack-corpus-js-dep";\';',
+    'const msg = "require(\'sourcepack-corpus-js-dep\')";',
+    'const msg = "import(\'sourcepack-corpus-js-dep\')";',
+    'console.log("import x from \'sourcepack-corpus-js-dep\';");',
+    'console.log("require(\'sourcepack-corpus-js-dep\')");',
     "import x from 'sourcepack-corpus-js-dep-extra';",
     "require('sourcepack-corpus-js-dep-extra');",
     "import('sourcepack-corpus-js-dep-extra');",
@@ -215,6 +223,19 @@ def test_source_contains_js_import_accepts_structural_forms(source):
 def test_source_contains_js_import_rejects_non_structural_or_substring_forms(source):
     assert not rcv.source_contains_js_import(source, "sourcepack-corpus-js-dep")
 
+
+
+def test_scenario_audit_matches_scenario_registry():
+    scenario_ids = {s.scenario_id for s in rcv.SCENARIOS}
+    assert set(rcv.SCENARIO_AUDIT) == scenario_ids
+    for scenario in rcv.SCENARIOS:
+        audit = rcv.SCENARIO_AUDIT[scenario.scenario_id]
+        assert audit["scenario_id"] == scenario.scenario_id
+        assert audit["expected_verdict"] == scenario.expected_verdict
+        assert tuple(audit["expected_reason_codes_include"]) == scenario.expected_reason_codes_include
+        assert tuple(audit["expected_reason_codes_exclude"]) == scenario.expected_reason_codes_exclude
+        assert audit.get("mutation_kind") in rcv.SCENARIO_AUDIT_ALLOWED_MUTATION_KINDS
+        assert audit.get("independent_proof")
 
 def test_makefile_existing_uses_real_parsed_target(tmp_path):
     repo = make_repo(tmp_path, python=False)
@@ -410,6 +431,18 @@ def _valid_js_mutation(tmp_path):
     return repo, sid, mr.details.copy()
 
 
+@pytest.mark.parametrize("mutate, expected", [
+    (lambda repo, good: ({k: v for k, v in good.items() if k != "dependency_added"}), "js_dependency_added_missing"),
+    (lambda repo, good: (good | {"dependency_added": "lodash", "import_specifier": "lodash"}), "js_dependency_candidate_invalid"),
+    (lambda repo, good: (good | {"dependency_added": "react", "import_specifier": "react"}), "js_dependency_candidate_invalid"),
+    (lambda repo, good: (good | {"existing_dependency_sections": {"dependencies": [good["dependency_added"]]}}), "js_dependency_preexisting"),
+])
+def test_hostile_js_verifier_rejects_dependency_metadata_in_check_order(tmp_path, mutate, expected):
+    repo, sid, good = _valid_js_mutation(tmp_path)
+    bad = mutate(repo, good)
+    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == expected
+
+
 def test_hostile_js_verifier_rejects_missing_dependency_in_package_json(tmp_path):
     repo, sid, good = _valid_js_mutation(tmp_path)
     data = json.loads((repo / "package.json").read_text())
@@ -418,10 +451,11 @@ def test_hostile_js_verifier_rejects_missing_dependency_in_package_json(tmp_path
     assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=good)) == "js_dependency_not_added_to_dependencies"
 
 
-def test_hostile_js_verifier_rejects_preexisting_dependency_section(tmp_path):
+@pytest.mark.parametrize("value", [True, None])
+def test_hostile_js_verifier_rejects_dependency_preexisting_flag_invalid(tmp_path, value):
     repo, sid, good = _valid_js_mutation(tmp_path)
-    bad = good | {"existing_dependency_sections": {"dependencies": [good["dependency_added"]]}}
-    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == "js_dependency_preexisting"
+    bad = good | {"dependency_preexisting": value}
+    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == "js_dependency_preexisting_flag_invalid"
 
 
 def test_hostile_js_verifier_rejects_import_specifier_mismatch(tmp_path):
@@ -434,20 +468,14 @@ def test_hostile_js_verifier_rejects_import_specifier_mismatch(tmp_path):
     "// import x from 'sourcepack-corpus-js-dep';\n",
     "/* import x from 'sourcepack-corpus-js-dep'; */\n",
     "const msg = 'sourcepack-corpus-js-dep';\n",
+    "const msg = \"import x from 'sourcepack-corpus-js-dep';\";\n",
+    "const msg = \"require('sourcepack-corpus-js-dep')\";\n",
+    "const msg = \"import('sourcepack-corpus-js-dep')\";\n",
 ])
 def test_hostile_js_verifier_rejects_non_import_dependency_mentions(tmp_path, source):
     repo, sid, good = _valid_js_mutation(tmp_path)
     (repo / "index.js").write_text(source.replace("sourcepack-corpus-js-dep", good["dependency_added"]))
     assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=good)) == "js_source_import_missing"
-
-
-def test_hostile_js_verifier_rejects_react_candidate(tmp_path):
-    repo, sid, good = _valid_js_mutation(tmp_path)
-    bad = good | {"dependency_added": "react", "import_specifier": "react"}
-    data = json.loads((repo / "package.json").read_text())
-    data["dependencies"]["react"] = "latest"; (repo / "package.json").write_text(json.dumps(data))
-    (repo / "index.js").write_text("import x from 'react';\n")
-    assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == "js_dependency_candidate_invalid"
 
 
 def test_hostile_js_verifier_rejects_package_json_unchanged_sha(tmp_path):
@@ -460,7 +488,6 @@ def test_hostile_js_verifier_rejects_source_unchanged_sha(tmp_path):
     repo, sid, good = _valid_js_mutation(tmp_path)
     bad = good | {"source_after_sha256": good["source_before_sha256"]}
     assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == "js_source_unchanged"
-
 
 def test_hostile_python_verifier_rejects_lies_and_accepts_valid(tmp_path):
     repo = make_repo(tmp_path)

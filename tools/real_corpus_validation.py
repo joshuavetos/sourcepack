@@ -74,6 +74,282 @@ SCENARIOS: list[Scenario] = [
     Scenario("policy_allow_matching_dependency","Policy allows one matching dependency finding.",("python",),("python_file",),"python","policy_allow_matching_dep","PASS",(),("unsupported_dependency",),allowed_alternate_outcomes=({"verdict":"WARN","reason_codes_exclude":("unsupported_dependency",),"justification":"Policy override evidence may keep an advisory report while suppressing the dependency failure."},),timeout_seconds=10),
     Scenario("policy_allow_nonmatching_dependency","Policy must not suppress unrelated dependency finding.",("python",),("python_file",),"python","policy_allow_nonmatching_dep","FAIL",("unsupported_dependency",),timeout_seconds=10),
 ]
+SCENARIO_AUDIT_ALLOWED_MUTATION_KINDS = {
+    "file_mutation",
+    "programmatic_patch_text",
+    "policy_setup_plus_file_mutation",
+    "ledger_setup_plus_file_mutation",
+    "binary_file_mutation",
+    "unsupported_ecosystem_marker",
+}
+
+SCENARIO_AUDIT: dict[str, dict[str, Any]] = {
+    "benign_readme_edit": {
+        "scenario_id": "benign_readme_edit",
+        "repo_condition_created": 'Edit README prose only.',
+        "independent_proof": "Verifier checks mutation 'append_readme' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "PASS",
+        "expected_reason_codes_include": (),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'readme' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'append_readme' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "file_mutation",
+    },
+    "new_file": {
+        "scenario_id": "new_file",
+        "repo_condition_created": 'Add a simple new source file.',
+        "independent_proof": "Verifier checks mutation 'create_python_probe' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "WARN",
+        "expected_reason_codes_include": ('new_file',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'python' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'create_python_probe' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "file_mutation",
+    },
+    "undeclared_python_dependency_import": {
+        "scenario_id": "undeclared_python_dependency_import",
+        "repo_condition_created": 'Import an undeclared Python dependency.',
+        "independent_proof": "Verifier checks mutation 'append_undeclared_python_import' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "FAIL",
+        "expected_reason_codes_include": ('unsupported_dependency',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'python' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'append_undeclared_python_import' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "file_mutation",
+    },
+    "declared_python_dependency_import": {
+        "scenario_id": "declared_python_dependency_import",
+        "repo_condition_created": 'Import a dependency declared in a Python manifest.',
+        "independent_proof": "Verifier checks mutation 'append_declared_python_import' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "PASS",
+        "expected_reason_codes_include": (),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'python_manifest' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'append_declared_python_import' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "file_mutation",
+    },
+    "same_patch_python_dependency_add_plus_import": {
+        "scenario_id": "same_patch_python_dependency_add_plus_import",
+        "repo_condition_created": 'Add Python dependency declaration and import in the same patch.',
+        "independent_proof": "Verifier checks mutation 'add_python_dep_and_import' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "WARN",
+        "expected_reason_codes_include": ('declared_dependency',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'python_manifest' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'add_python_dep_and_import' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "programmatic_patch_text",
+    },
+    "undeclared_js_dependency_import": {
+        "scenario_id": "undeclared_js_dependency_import",
+        "repo_condition_created": 'Import an undeclared Node dependency.',
+        "independent_proof": "Verifier checks mutation 'append_undeclared_js_import' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "FAIL",
+        "expected_reason_codes_include": ('unsupported_dependency',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'js_ts' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'append_undeclared_js_import' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "file_mutation",
+    },
+    "declared_js_dependency_import": {
+        "scenario_id": "declared_js_dependency_import",
+        "repo_condition_created": 'Import an existing package.json dependency.',
+        "independent_proof": "Verifier checks mutation 'append_declared_js_import' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "PASS",
+        "expected_reason_codes_include": (),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'node_manifest' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'append_declared_js_import' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "file_mutation",
+    },
+    "same_patch_js_dependency_add_plus_import": {
+        "scenario_id": "same_patch_js_dependency_add_plus_import",
+        "repo_condition_created": 'Add package.json dependency and import in one patch.',
+        "independent_proof": "Verifier checks mutation 'add_js_dep_and_import' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "WARN",
+        "expected_reason_codes_include": ('declared_dependency',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'node_manifest' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'add_js_dep_and_import' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "programmatic_patch_text",
+    },
+    "missing_npm_script_reference": {
+        "scenario_id": "missing_npm_script_reference",
+        "repo_condition_created": 'Reference an npm script that is not declared.',
+        "independent_proof": "Verifier checks mutation 'readme_missing_npm_script' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "FAIL",
+        "expected_reason_codes_include": ('unsupported_command',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'node_manifest' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'readme_missing_npm_script' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "file_mutation",
+    },
+    "existing_npm_script_reference": {
+        "scenario_id": "existing_npm_script_reference",
+        "repo_condition_created": 'Reference an existing npm script.',
+        "independent_proof": "Verifier checks mutation 'readme_existing_npm_script' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "PASS",
+        "expected_reason_codes_include": (),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'node_manifest' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'readme_existing_npm_script' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "file_mutation",
+    },
+    "docker_compose_missing_file": {
+        "scenario_id": "docker_compose_missing_file",
+        "repo_condition_created": 'Reference Docker Compose when no compose file exists.',
+        "independent_proof": "Verifier checks mutation 'readme_missing_compose' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "FAIL",
+        "expected_reason_codes_include": ('unsupported_command',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'docker_compose_missing' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'readme_missing_compose' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "programmatic_patch_text",
+    },
+    "docker_compose_existing_file": {
+        "scenario_id": "docker_compose_existing_file",
+        "repo_condition_created": 'Reference an existing Docker Compose command.',
+        "independent_proof": "Verifier checks mutation 'readme_existing_compose' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "PASS",
+        "expected_reason_codes_include": (),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'docker_compose' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'readme_existing_compose' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "file_mutation",
+    },
+    "make_target_missing": {
+        "scenario_id": "make_target_missing",
+        "repo_condition_created": 'Reference missing Make target.',
+        "independent_proof": "Verifier checks mutation 'readme_missing_make_target' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "FAIL",
+        "expected_reason_codes_include": ('unsupported_command',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'makefile_missing' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'readme_missing_make_target' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "file_mutation",
+    },
+    "make_target_existing": {
+        "scenario_id": "make_target_existing",
+        "repo_condition_created": 'Reference an existing Make target.',
+        "independent_proof": "Verifier checks mutation 'readme_existing_make_target' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "PASS",
+        "expected_reason_codes_include": (),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'makefile' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'readme_existing_make_target' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "file_mutation",
+    },
+    "protected_sourcepack_baseline_edit": {
+        "scenario_id": "protected_sourcepack_baseline_edit",
+        "repo_condition_created": 'Patch attempts to edit protected SourcePack baseline.',
+        "independent_proof": "Verifier checks mutation 'protected_baseline_patch' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "FAIL",
+        "expected_reason_codes_include": ('protected_artifact',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'patch_text' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'protected_baseline_patch' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "programmatic_patch_text",
+    },
+    "git_config_edit": {
+        "scenario_id": "git_config_edit",
+        "repo_condition_created": 'Patch attempts to edit .git/config.',
+        "independent_proof": "Verifier checks mutation 'git_config_patch' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "FAIL",
+        "expected_reason_codes_include": ('git_path_modification',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'patch_text' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'git_config_patch' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "programmatic_patch_text",
+    },
+    "unsupported_ecosystem_touch": {
+        "scenario_id": "unsupported_ecosystem_touch",
+        "repo_condition_created": 'Touch unsupported ecosystem manifest.',
+        "independent_proof": "Verifier checks mutation 'touch_cargo' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "WARN",
+        "expected_reason_codes_include": ('unsupported_ecosystem',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'unsupported' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'touch_cargo' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "unsupported_ecosystem_marker",
+    },
+    "binary_diff_low_risk": {
+        "scenario_id": "binary_diff_low_risk",
+        "repo_condition_created": 'Add small binary artifact.',
+        "independent_proof": "Verifier checks mutation 'small_binary' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "WARN",
+        "expected_reason_codes_include": ('binary_diff',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'binary' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'small_binary' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "binary_file_mutation",
+    },
+    "binary_diff_high_risk": {
+        "scenario_id": "binary_diff_high_risk",
+        "repo_condition_created": 'Add larger binary artifact.',
+        "independent_proof": "Verifier checks mutation 'large_binary' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "WARN",
+        "expected_reason_codes_include": ('binary_diff',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'binary' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'large_binary' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "binary_file_mutation",
+    },
+    "malformed_diff": {
+        "scenario_id": "malformed_diff",
+        "repo_condition_created": 'Judge malformed patch text.',
+        "independent_proof": "Verifier checks mutation 'malformed_patch' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "FAIL",
+        "expected_reason_codes_include": ('malformed_diff',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'patch_text' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'malformed_patch' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "programmatic_patch_text",
+    },
+    "execution_claim_without_ledger": {
+        "scenario_id": "execution_claim_without_ledger",
+        "repo_condition_created": 'Claim command execution without ledger evidence.',
+        "independent_proof": "Verifier checks mutation 'execution_claim_no_ledger' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "WARN",
+        "expected_reason_codes_include": ('execution_evidence_missing',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'readme' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'execution_claim_no_ledger' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "file_mutation",
+    },
+    "execution_claim_with_successful_ledger": {
+        "scenario_id": "execution_claim_with_successful_ledger",
+        "repo_condition_created": 'Claim command execution with ledger evidence.',
+        "independent_proof": "Verifier checks mutation 'execution_claim_with_ledger' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "PASS",
+        "expected_reason_codes_include": (),
+        "expected_reason_codes_exclude": ('execution_evidence_missing',),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'readme' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'execution_claim_with_ledger' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "ledger_setup_plus_file_mutation",
+    },
+    "policy_allow_matching_dependency": {
+        "scenario_id": "policy_allow_matching_dependency",
+        "repo_condition_created": 'Policy allows one matching dependency finding.',
+        "independent_proof": "Verifier checks mutation 'policy_allow_matching_dep' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "PASS",
+        "expected_reason_codes_include": (),
+        "expected_reason_codes_exclude": ('unsupported_dependency',),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'python' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'policy_allow_matching_dep' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "policy_setup_plus_file_mutation",
+    },
+    "policy_allow_nonmatching_dependency": {
+        "scenario_id": "policy_allow_nonmatching_dependency",
+        "repo_condition_created": 'Policy must not suppress unrelated dependency finding.',
+        "independent_proof": "Verifier checks mutation 'policy_allow_nonmatching_dep' creates repo state before SourcePack evaluation.",
+        "expected_verdict": "FAIL",
+        "expected_reason_codes_include": ('unsupported_dependency',),
+        "expected_reason_codes_exclude": (),
+        "skip_conditions": "Scenario may skip only when required files for target heuristic 'python' are absent or incompatible.",
+        "mutation_failure_conditions": "Mutation fails if 'policy_allow_nonmatching_dep' cannot create a changed, independently verifiable repo state.",
+        "mutation_kind": "policy_setup_plus_file_mutation",
+    }
+}
+
 SCENARIO_BY_ID = {s.scenario_id: s for s in SCENARIOS}
 
 def sha256_path(path: Path) -> str | None:
@@ -374,17 +650,37 @@ def _strip_js_comments(source_text: str) -> str:
     without_block = re.sub(r"/\*.*?\*/", "", source_text, flags=re.DOTALL)
     return re.sub(r"//[^\n\r]*", "", without_block)
 
+def _single_line_string_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for match in re.finditer(r"(['\"])(?:\\.|(?!\1)[^\\\r\n])*\1", text):
+        spans.append(match.span())
+    return spans
+
+
+def _inside_span(position: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= position < end for start, end in spans)
+
+
 def source_contains_js_import(source_text: str, dependency: str) -> bool:
     escaped = re.escape(dependency)
-    quoted_dep = rf'([\'"]){escaped}\1'
+    quoted_dep = rf"(['\"]){escaped}\1"
     text = _strip_js_comments(source_text)
-    patterns = (
-        rf"\bimport\s+(?!\()(?:(?:[\s\S]*?)\s+from\s+){quoted_dep}",
-        rf"\bimport\s*{quoted_dep}",
-        rf"\brequire\s*\(\s*{quoted_dep}\s*\)",
-        rf"\bimport\s*\(\s*{quoted_dep}\s*\)",
+    string_spans = _single_line_string_spans(text)
+    import_from = re.compile(rf"\bimport\s+(?!\()(?:[\s\S]*?)\s+from\s+{quoted_dep}", re.MULTILINE)
+    import_side_effect = re.compile(rf"\bimport\s+{quoted_dep}", re.MULTILINE)
+    call_patterns = (
+        re.compile(rf"\brequire\s*\(\s*{quoted_dep}\s*\)", re.MULTILINE),
+        re.compile(rf"\bimport\s*\(\s*{quoted_dep}\s*\)", re.MULTILINE),
     )
-    return any(re.search(pattern, text, flags=re.MULTILINE) for pattern in patterns)
+    for pattern in (import_from, import_side_effect):
+        for match in pattern.finditer(text):
+            if not _inside_span(match.start(), string_spans):
+                return True
+    for pattern in call_patterns:
+        for match in pattern.finditer(text):
+            if not _inside_span(match.start(), string_spans):
+                return True
+    return False
 
 def mutation_validation_failed(mutation_result: MutationResult, reason: str, details: dict[str, Any] | None = None) -> MutationResult:
     failure_details = dict(details or {})
@@ -434,7 +730,7 @@ def verify_scenario_state(repo: Path, scenario: Scenario, mr: MutationResult) ->
         return mr
     d = mr.details or {}
     sid = scenario.scenario_id
-    if mr.before_sha256 is not None and mr.after_sha256 == mr.before_sha256:
+    if sid != "same_patch_js_dependency_add_plus_import" and mr.before_sha256 is not None and mr.after_sha256 == mr.before_sha256:
         return mutation_validation_failed(mr, "sha256_unchanged")
     if sid == "same_patch_js_dependency_add_plus_import":
         pkg = _rel_or_abs(repo, d.get("package_json_path")); src = _rel_or_abs(repo, d.get("source_path")); dep = d.get("dependency_added")

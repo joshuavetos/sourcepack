@@ -246,3 +246,40 @@ Before public alpha, verify:
 ## CI and editor planning
 
 See `docs/ci.md` for CI usage and `docs/vscode-extension-plan.md` for the VS Code extension plan.
+
+## GitHub Action
+
+SourcePack includes a composite GitHub Action that runs the existing `sourcepack` CLI in CI. It packages the CLI behavior; it does not create a second implementation of SourcePack judgment logic.
+
+Minimal workflow:
+
+```yaml
+name: SourcePack
+
+on:
+  pull_request:
+
+jobs:
+  sourcepack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+        with:
+          mode: ci
+          # fail-on-warn: 'true'
+```
+
+Baseline trust rule: CI consumes `.sourcepack/baseline/`. CI does not create, refresh, bless, or update trusted baseline state automatically. If the baseline is missing, the Action fails closed with `SourcePack baseline not found` and explains that CI will not create or update trusted baseline state automatically. Maintainers should create or refresh baselines locally or in a separate trusted maintainer-controlled setup workflow before relying on PR checks.
+
+The Action writes report artifacts to `sourcepack-report` by default, including `sourcepack.json`, `sourcepack.md`, `sourcepack.stderr.txt`, `sourcepack.stdout.txt`, and `sourcepack-command.txt` when available. `RED`/`FAIL` exits nonzero. `WARN` follows the selected CLI mode: `ci` and `strict` fail on WARN, while `local` does not unless `fail-on-warn: 'true'` is set.
+
+Before pushing, run SourcePack locally with:
+
+```bash
+sourcepack --version
+sourcepack doctor
+sourcepack diff . --json
+```
+
+Current limitations: PR commenting is future work and is not implemented by this Action. Unsupported ecosystems remain YELLOW/WARN unless SourcePack core supports them.

@@ -1,0 +1,206 @@
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+ACTION = ROOT / "action.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "sourcepack.yml"
+WRAPPER = ROOT / "scripts" / "sourcepack_action.py"
+
+
+def load_action():
+    text = ACTION.read_text(encoding="utf-8")
+    data = {"inputs": {}, "runs": {"using": None, "steps": []}}
+    section = None
+    current_input = None
+    in_steps = False
+    current_step = None
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        line = raw.strip()
+        if indent == 0 and line.endswith(":"):
+            section = line[:-1]
+            in_steps = False
+            continue
+        if section == "inputs" and indent == 2 and line.endswith(":"):
+            current_input = line[:-1]
+            data["inputs"][current_input] = {}
+            continue
+        if section == "inputs" and current_input and indent == 4 and ":" in line:
+            key, value = line.split(":", 1)
+            data["inputs"][current_input][key] = value.strip().strip("'")
+            continue
+        if section == "runs" and indent == 2 and line.startswith("using:"):
+            data["runs"]["using"] = line.split(":", 1)[1].strip()
+            continue
+        if section == "runs" and indent == 2 and line == "steps:":
+            in_steps = True
+            continue
+        if section == "runs" and in_steps and indent == 4 and line.startswith("- "):
+            current_step = {}
+            data["runs"]["steps"].append(current_step)
+            content = line[2:]
+            if ":" in content:
+                key, value = content.split(":", 1)
+                current_step[key] = value.strip()
+            continue
+        if section == "runs" and in_steps and current_step is not None and indent == 6 and ":" in line:
+            key, value = line.split(":", 1)
+            current_step[key] = value.strip()
+    return data
+
+
+def action_text() -> str:
+    return ACTION.read_text(encoding="utf-8")
+
+
+def test_action_yml_exists_and_parses_as_yaml():
+    data = load_action()
+    assert data["runs"]["using"] == "composite"
+
+
+def test_required_inputs_exist():
+    inputs = load_action()["inputs"]
+    required = {
+        "mode",
+        "sourcepack-version",
+        "python-version",
+        "baseline-path",
+        "report-dir",
+        "json",
+        "markdown",
+        "fail-on-warn",
+        "run-doctor",
+        "upload-artifact",
+        "comment-pr",
+    }
+    assert required <= set(inputs)
+    assert inputs["mode"]["default"] == "ci"
+    assert inputs["baseline-path"]["default"] == ".sourcepack/baseline"
+
+
+def test_action_does_not_create_or_update_baseline_trust():
+    text = action_text()
+    forbidden = ["sourcepack init", "sourcepack baseline", "baseline --force"]
+    assert [token for token in forbidden if token in text] == []
+
+
+def test_action_references_version_and_conditional_doctor():
+    data = load_action()
+    text = action_text()
+    assert "sourcepack --version" in text
+    doctor_steps = [step for step in data["runs"]["steps"] if "sourcepack doctor" in str(step)]
+    assert doctor_steps
+    assert all("run-doctor" in step.get("if", "") for step in doctor_steps)
+
+
+def test_action_verifies_baseline_before_diff_execution():
+    text = action_text()
+    baseline_index = text.index("SourcePack baseline not found")
+    diff_index = text.index("sourcepack_action.py")
+    assert baseline_index < diff_index
+    assert "CI will not create or update trusted baseline state automatically." in text
+
+
+def test_action_writes_or_preserves_report_output():
+    text = action_text()
+    assert "sourcepack-report" in text
+    assert "sourcepack.stderr.txt" in text
+    assert "sourcepack.stdout.txt" in text
+    assert "sourcepack-command.txt" in text
+    assert "upload-artifact" in text
+
+
+def test_example_workflow_exists_and_does_not_create_baseline_during_pr():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "workflow_dispatch:" in text
+    assert "# pull_request:" in text
+    assert "uses: ./" in text
+    assert "sourcepack baseline" not in text
+    assert "sourcepack init" not in text
+    assert "baseline --force" not in text
+
+
+def load_wrapper():
+    spec = importlib.util.spec_from_file_location("sourcepack_action", WRAPPER)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_wrapper_missing_baseline_returns_nonzero_and_message(tmp_path, capsys):
+    module = load_wrapper()
+    code = module.main(["--repo", str(tmp_path), "--baseline-path", ".sourcepack/baseline", "--report-dir", "reports"])
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "SourcePack baseline not found" in captured.err
+    assert "CI will not create or update trusted baseline state automatically." in captured.err
+    assert (tmp_path / "reports" / "sourcepack.stderr.txt").exists()
+
+
+def test_wrapper_creates_report_dir_and_captures_command_output(tmp_path, monkeypatch):
+    baseline = tmp_path / ".sourcepack" / "baseline"
+    baseline.mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "sourcepack"
+    fake.write_text("#!/bin/sh\necho '{\"verdict\":\"PASS\"}'\necho err >&2\nexit 0\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    module = load_wrapper()
+    code = module.main(["--repo", str(tmp_path), "--baseline-path", ".sourcepack/baseline", "--report-dir", "reports"])
+    assert code == 0
+    report_dir = tmp_path / "reports"
+    assert (report_dir / "sourcepack-command.txt").read_text(encoding="utf-8").startswith("sourcepack diff")
+    assert "PASS" in (report_dir / "sourcepack.stdout.txt").read_text(encoding="utf-8")
+    assert "err" in (report_dir / "sourcepack.stderr.txt").read_text(encoding="utf-8")
+    assert (report_dir / "sourcepack.json").exists()
+    assert (report_dir / "sourcepack.md").exists()
+
+
+def os_path() -> str:
+    import os
+
+    return os.environ.get("PATH", "")
+
+
+def test_wrapper_fail_on_warn_is_explicit_in_command(tmp_path, monkeypatch):
+    baseline = tmp_path / ".sourcepack" / "baseline"
+    baseline.mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "sourcepack"
+    fake.write_text("#!/bin/sh\necho '{\"verdict\":\"WARN\"}'\nexit 0\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    module = load_wrapper()
+    code = module.main([
+        "--repo", str(tmp_path),
+        "--baseline-path", ".sourcepack/baseline",
+        "--report-dir", "reports",
+        "--mode", "local",
+        "--fail-on-warn", "true",
+    ])
+    assert code == 0
+    command = (tmp_path / "reports" / "sourcepack-command.txt").read_text(encoding="utf-8")
+    assert "--strict" in command
+
+
+def test_wrapper_does_not_import_or_duplicate_core_judgment_logic():
+    tree = WRAPPER.read_text(encoding="utf-8")
+    forbidden = [
+        "sourcepack.judgment",
+        "sourcepack.dependencies",
+        "sourcepack.baseline import",
+        "def judge_",
+        "def parse_unified_diff",
+    ]
+    assert [token for token in forbidden if token in tree] == []
+
+
+def test_wrapper_py_compiles():
+    subprocess.run([sys.executable, "-m", "py_compile", str(WRAPPER)], check=True)

@@ -482,29 +482,68 @@ def _inside_span(position: int, spans: list[tuple[int, int]]) -> bool:
     return any(start <= position < end for start, end in spans)
 
 
+def _js_static_import_statements(text: str) -> list[tuple[int, str]]:
+    statements: list[tuple[int, str]] = []
+    lines = text.splitlines(keepends=True)
+    offset = 0
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        line_start = offset
+        offset += len(line)
+        index += 1
+        if not re.match(r"^[ \t]*import\s+(?!\()", line):
+            continue
+
+        statement = line
+        brace_balance = line.count("{") - line.count("}")
+        has_from = re.search(r"\bfrom\b", line) is not None
+        has_semicolon = ";" in line
+        while not has_from and not has_semicolon and index < len(lines):
+            next_line = lines[index]
+            next_stripped = next_line.strip()
+            if not next_stripped:
+                statement += next_line
+                offset += len(next_line)
+                index += 1
+                continue
+            is_continuation = (
+                brace_balance > 0
+                or statement.rstrip().endswith((",", "{"))
+                or next_line.startswith((" ", "\t"))
+                or next_stripped.startswith(("}", ","))
+            )
+            if not is_continuation:
+                break
+            statement += next_line
+            brace_balance += next_line.count("{") - next_line.count("}")
+            has_from = re.search(r"\bfrom\b", next_line) is not None
+            has_semicolon = ";" in next_line
+            offset += len(next_line)
+            index += 1
+
+        statements.append((line_start, statement))
+    return statements
+
+
 def source_contains_js_import(source_text: str, dependency: str) -> bool:
     escaped = re.escape(dependency)
     quoted_dep = rf"(['\"]){escaped}\1"
     text = _strip_js_comments(source_text)
     string_spans = _single_line_string_spans(text)
 
-    # Static import-from must start at a logical line and may span normal
-    # import specifier blocks, but it must not cross a statement terminator
-    # before the import's own ``from`` clause. This prevents matching
-    # ``import x from 'other'; const msg = "from 'dep'"``.
     import_from = re.compile(
-        rf"^[ \t]*import\s+(?!\()(?:[^;]*?)\s+from\s+{quoted_dep}",
-        re.MULTILINE,
+        rf"^\s*import\s+(?!\()(?:[\s\S]*?)\s+from\s+{quoted_dep}\s*;?\s*$"
     )
-    import_side_effect = re.compile(rf"^[ \t]*import\s+{quoted_dep}", re.MULTILINE)
+    import_side_effect = re.compile(rf"^\s*import\s+{quoted_dep}\s*;?\s*$")
     call_patterns = (
         re.compile(rf"\brequire\s*\(\s*{quoted_dep}\s*\)", re.MULTILINE),
         re.compile(rf"\bimport\s*\(\s*{quoted_dep}\s*\)", re.MULTILINE),
     )
-    for pattern in (import_from, import_side_effect):
-        for match in pattern.finditer(text):
-            if not _inside_span(match.start(), string_spans):
-                return True
+    for start, statement in _js_static_import_statements(text):
+        static_import_match = import_from.search(statement) or import_side_effect.search(statement)
+        if static_import_match and not _inside_span(start, string_spans):
+            return True
     for pattern in call_patterns:
         for match in pattern.finditer(text):
             if not _inside_span(match.start(), string_spans):

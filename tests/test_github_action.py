@@ -5,7 +5,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTION = ROOT / "action.yml"
-WORKFLOW = ROOT / ".github" / "workflows" / "sourcepack.yml"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "sourcepack.yml"
+EXAMPLE_WORKFLOW = ROOT / "docs" / "examples" / "sourcepack-action.yml"
 WRAPPER = ROOT / "scripts" / "sourcepack_action.py"
 
 
@@ -82,6 +83,37 @@ def test_required_inputs_exist():
     assert inputs["baseline-path"]["default"] == ".sourcepack/baseline"
 
 
+
+def run_bodies(text: str) -> list[str]:
+    bodies: list[str] = []
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        raw = lines[index]
+        stripped = raw.strip()
+        if stripped.startswith("run:"):
+            indent = len(raw) - len(raw.lstrip(" "))
+            if stripped == "run: |":
+                index += 1
+                body: list[str] = []
+                while index < len(lines):
+                    body_raw = lines[index]
+                    body_indent = len(body_raw) - len(body_raw.lstrip(" "))
+                    if body_raw.strip() and body_indent <= indent:
+                        break
+                    body.append(body_raw)
+                    index += 1
+                bodies.append("\n".join(body))
+                continue
+            bodies.append(stripped.split(":", 1)[1].strip())
+        index += 1
+    return bodies
+
+
+def test_action_does_not_interpolate_inputs_inside_shell_run_bodies():
+    offenders = [body for body in run_bodies(action_text()) if "${{ inputs." in body]
+    assert offenders == []
+
 def test_action_does_not_create_or_update_baseline_trust():
     text = action_text()
     forbidden = ["sourcepack init", "sourcepack baseline", "baseline --force"]
@@ -114,8 +146,32 @@ def test_action_writes_or_preserves_report_output():
     assert "upload-artifact" in text
 
 
+def test_ci_workflow_keeps_existing_validation_gates():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    required = [
+        "push:",
+        "pull_request:",
+        "matrix:",
+        "ubuntu-latest",
+        "windows-latest",
+        "python -m py_compile src/sourcepack/cli.py",
+        "python -m unittest",
+        "pytest -q tests/test_behavior_matrix.py",
+        "pytest -q tests/test_golden_demo.py",
+        "pytest -q tests/test_readme_truth.py",
+        "pytest -q",
+        "python tools/behavior_matrix.py",
+        "python tools/behavior_matrix.py --json",
+        "python tools/golden_demo.py --clean",
+        "sourcepack doctor",
+        "sourcepack demo",
+        "python tools/release_smoke.py",
+    ]
+    assert [token for token in required if token not in text] == []
+
+
 def test_example_workflow_exists_and_does_not_create_baseline_during_pr():
-    text = WORKFLOW.read_text(encoding="utf-8")
+    text = EXAMPLE_WORKFLOW.read_text(encoding="utf-8")
     assert "workflow_dispatch:" in text
     assert "# pull_request:" in text
     assert "uses: ./" in text

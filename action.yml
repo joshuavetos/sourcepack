@@ -54,10 +54,12 @@ runs:
         python-version: ${{ inputs.python-version }}
     - name: Install SourcePack
       shell: bash
+      env:
+        SOURCEPACK_VERSION: ${{ inputs.sourcepack-version }}
       run: |
         set -euo pipefail
-        if [ -n "${{ inputs.sourcepack-version }}" ]; then
-          python -m pip install "sourcepack==${{ inputs.sourcepack-version }}"
+        if [ -n "$SOURCEPACK_VERSION" ]; then
+          python -m pip install "sourcepack==$SOURCEPACK_VERSION"
         else
           python -m pip install -e "$GITHUB_ACTION_PATH"
         fi
@@ -70,29 +72,39 @@ runs:
       run: sourcepack doctor
     - name: Verify SourcePack baseline
       shell: bash
+      env:
+        BASELINE_PATH: ${{ inputs.baseline-path }}
+        REPORT_DIR: ${{ inputs.report-dir }}
       run: |
         set -euo pipefail
-        if [ ! -d "${{ inputs.baseline-path }}" ]; then
-          mkdir -p "${{ inputs.report-dir }}"
-          printf '%s\n' 'SourcePack baseline not found: ${{ inputs.baseline-path }}' \
+        if [ ! -d "$BASELINE_PATH" ]; then
+          mkdir -p "$REPORT_DIR"
+          printf '%s\n' "SourcePack baseline not found: $BASELINE_PATH" \
             'CI will not create or update trusted baseline state automatically.' \
             'Create or refresh the baseline only from a trusted maintainer-controlled workflow or local maintainer environment.' \
-            | tee "${{ inputs.report-dir }}/sourcepack.stderr.txt" >&2
-          printf '%s\n' 'baseline preflight' > "${{ inputs.report-dir }}/sourcepack-command.txt"
-          : > "${{ inputs.report-dir }}/sourcepack.stdout.txt"
+            | tee "$REPORT_DIR/sourcepack.stderr.txt" >&2
+          printf '%s\n' 'baseline preflight' > "$REPORT_DIR/sourcepack-command.txt"
+          : > "$REPORT_DIR/sourcepack.stdout.txt"
           exit 2
         fi
     - name: Run SourcePack diff
       shell: bash
+      env:
+        SOURCEPACK_MODE: ${{ inputs.mode }}
+        BASELINE_PATH: ${{ inputs.baseline-path }}
+        REPORT_DIR: ${{ inputs.report-dir }}
+        SOURCEPACK_JSON: ${{ inputs.json }}
+        SOURCEPACK_MARKDOWN: ${{ inputs.markdown }}
+        FAIL_ON_WARN: ${{ inputs.fail-on-warn }}
       run: |
         set -euo pipefail
         python "$GITHUB_ACTION_PATH/scripts/sourcepack_action.py" \
-          --mode "${{ inputs.mode }}" \
-          --baseline-path "${{ inputs.baseline-path }}" \
-          --report-dir "${{ inputs.report-dir }}" \
-          --json "${{ inputs.json }}" \
-          --markdown "${{ inputs.markdown }}" \
-          --fail-on-warn "${{ inputs.fail-on-warn }}"
+          --mode "$SOURCEPACK_MODE" \
+          --baseline-path "$BASELINE_PATH" \
+          --report-dir "$REPORT_DIR" \
+          --json "$SOURCEPACK_JSON" \
+          --markdown "$SOURCEPACK_MARKDOWN" \
+          --fail-on-warn "$FAIL_ON_WARN"
     - name: Upload SourcePack reports
       if: ${{ always() && inputs.upload-artifact == 'true' }}
       uses: actions/upload-artifact@v4

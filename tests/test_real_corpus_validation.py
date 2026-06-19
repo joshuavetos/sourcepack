@@ -186,6 +186,36 @@ def test_same_patch_js_dependency_fails_if_candidates_preexist(tmp_path):
     assert mr.reason == "js_dependency_candidate_preexisting"
 
 
+@pytest.mark.parametrize("source", [
+    "import x from 'sourcepack-corpus-js-dep';",
+    'import { x } from "sourcepack-corpus-js-dep";',
+    "import {\n  x,\n  y\n} from 'sourcepack-corpus-js-dep';",
+    "import * as x from 'sourcepack-corpus-js-dep';",
+    "import 'sourcepack-corpus-js-dep';",
+    "const x = require('sourcepack-corpus-js-dep');",
+    'let x = require("sourcepack-corpus-js-dep");',
+    "const { x } = require('sourcepack-corpus-js-dep');",
+    'await import("sourcepack-corpus-js-dep");',
+    "import('sourcepack-corpus-js-dep').then(m => m);",
+])
+def test_source_contains_js_import_accepts_structural_forms(source):
+    assert rcv.source_contains_js_import(source, "sourcepack-corpus-js-dep")
+
+
+@pytest.mark.parametrize("source", [
+    "// import x from 'sourcepack-corpus-js-dep';",
+    "/* import x from 'sourcepack-corpus-js-dep'; */",
+    "const msg = 'sourcepack-corpus-js-dep';",
+    'const msg = "Install sourcepack-corpus-js-dep";',
+    "console.log('sourcepack-corpus-js-dep');",
+    "import x from 'sourcepack-corpus-js-dep-extra';",
+    "require('sourcepack-corpus-js-dep-extra');",
+    "import('sourcepack-corpus-js-dep-extra');",
+])
+def test_source_contains_js_import_rejects_non_structural_or_substring_forms(source):
+    assert not rcv.source_contains_js_import(source, "sourcepack-corpus-js-dep")
+
+
 def test_makefile_existing_uses_real_parsed_target(tmp_path):
     repo = make_repo(tmp_path, python=False)
     (repo / "Makefile").write_text(".PHONY: clean\nclean:\n\t@echo clean\nbuild:\n\t@echo build\n")
@@ -243,6 +273,32 @@ def test_failures_only_json_includes_failures_and_json_only(tmp_path, monkeypatc
     summary, _ = rcv.run_harness(args)
     assert summary["results"] and summary["results"][0]["false_red"]
     assert json.loads(json.dumps(summary))["results"][0]["scenario_id"] == "benign_readme_edit"
+
+
+def test_run_harness_verifier_failure_blocks_evaluation_and_reports_mutation_failure(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    calls = []
+    monkeypatch.setattr(rcv, "SCENARIOS", [rcv.SCENARIO_BY_ID["benign_readme_edit"]])
+    monkeypatch.setattr(rcv, "create_baseline", lambda repo, timeout: True)
+    monkeypatch.setattr(rcv, "cleanup_repo", lambda repo: True)
+    monkeypatch.setattr(rcv, "apply_mutation", lambda repo, s: rcv.MutationResult("applied", True))
+
+    def fake_verify(repo, scenario, mr):
+        calls.append("verify")
+        return rcv.MutationResult("mutation_failed", False, reason="verifier_rejected")
+
+    def fake_evaluate(repo, scenario, timeout):
+        calls.append("evaluate")
+        raise AssertionError("evaluate must not run after verifier mutation failure")
+
+    monkeypatch.setattr(rcv, "verify_scenario_state", fake_verify)
+    monkeypatch.setattr(rcv, "evaluate", fake_evaluate)
+    args = rcv.argparse.Namespace(repo_list=None, repo=[str(repo)], workdir=str(tmp_path/"w"), json=True, max_repos=None, scenario=None, keep_workdir=False, failures_only=True, print_failures=False, timeout=5, fail_on_missed_red=False, fail_on_crash=False, fail_on_invalid_json=False, fail_on_trust_violation=False, fail_on_policy_over_suppression=False)
+    summary, _ = rcv.run_harness(args)
+    assert calls == ["verify"]
+    assert summary["results"][0]["mutation_status"] == "mutation_failed"
+    assert summary["results"][0]["mutation_result"]["reason"] == "verifier_rejected"
+    assert summary["results"][0]["mutation_failed"] is True
 
 
 def test_failures_only_json_excludes_pure_skips(tmp_path, monkeypatch):
@@ -330,34 +386,78 @@ def test_validate_mutation_result_rejects_invalid_states(tmp_path):
     assert rcv.validate_mutation_result(repo, dock, mr).reason == "compose_readme_missing"
 
 
+@pytest.mark.parametrize("mr", [
+    rcv.MutationResult("applied", False),
+    rcv.MutationResult("mutation_failed", True),
+])
+def test_validate_mutation_result_rejects_status_applied_inconsistency(tmp_path, mr):
+    repo = make_repo(tmp_path)
+    scenario = rcv.SCENARIO_BY_ID["benign_readme_edit"]
+    result = rcv.validate_mutation_result(repo, scenario, mr)
+    assert result.status == "mutation_failed"
+    assert result.reason == "mutation_status_applied_inconsistent"
+
+
 def _verify_reason(repo, sid, mr):
     return rcv.verify_scenario_state(repo, rcv.SCENARIO_BY_ID[sid], mr).reason
 
 
-def test_hostile_js_verifier_rejects_lies(tmp_path):
+def _valid_js_mutation(tmp_path):
     repo = make_repo(tmp_path, node=True)
     sid = "same_patch_js_dependency_add_plus_import"
     mr = rcv.apply_mutation(repo, rcv.SCENARIO_BY_ID[sid])
     assert rcv.verify_scenario_state(repo, rcv.SCENARIO_BY_ID[sid], mr).status == "applied"
-    good = mr.details.copy()
+    return repo, sid, mr.details.copy()
+
+
+def test_hostile_js_verifier_rejects_missing_dependency_in_package_json(tmp_path):
+    repo, sid, good = _valid_js_mutation(tmp_path)
     data = json.loads((repo / "package.json").read_text())
     data["dependencies"].pop(good["dependency_added"])
     (repo / "package.json").write_text(json.dumps(data))
     assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=good)) == "js_dependency_not_added_to_dependencies"
-    data["dependencies"][good["dependency_added"]] = "latest"
-    (repo / "package.json").write_text(json.dumps(data))
+
+
+def test_hostile_js_verifier_rejects_preexisting_dependency_section(tmp_path):
+    repo, sid, good = _valid_js_mutation(tmp_path)
     bad = good | {"existing_dependency_sections": {"dependencies": [good["dependency_added"]]}}
     assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == "js_dependency_preexisting"
+
+
+def test_hostile_js_verifier_rejects_import_specifier_mismatch(tmp_path):
+    repo, sid, good = _valid_js_mutation(tmp_path)
     bad = good | {"import_specifier": "other"}
     assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == "js_import_specifier_mismatch"
-    (repo / "index.js").write_text("console.log('no import')\n")
+
+
+@pytest.mark.parametrize("source", [
+    "// import x from 'sourcepack-corpus-js-dep';\n",
+    "/* import x from 'sourcepack-corpus-js-dep'; */\n",
+    "const msg = 'sourcepack-corpus-js-dep';\n",
+])
+def test_hostile_js_verifier_rejects_non_import_dependency_mentions(tmp_path, source):
+    repo, sid, good = _valid_js_mutation(tmp_path)
+    (repo / "index.js").write_text(source.replace("sourcepack-corpus-js-dep", good["dependency_added"]))
     assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=good)) == "js_source_import_missing"
-    (repo / "index.js").write_text(f"import x from '{good['dependency_added']}';\n")
+
+
+def test_hostile_js_verifier_rejects_react_candidate(tmp_path):
+    repo, sid, good = _valid_js_mutation(tmp_path)
     bad = good | {"dependency_added": "react", "import_specifier": "react"}
+    data = json.loads((repo / "package.json").read_text())
     data["dependencies"]["react"] = "latest"; (repo / "package.json").write_text(json.dumps(data))
+    (repo / "index.js").write_text("import x from 'react';\n")
     assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == "js_dependency_candidate_invalid"
+
+
+def test_hostile_js_verifier_rejects_package_json_unchanged_sha(tmp_path):
+    repo, sid, good = _valid_js_mutation(tmp_path)
     bad = good | {"package_json_after_sha256": good["package_json_before_sha256"]}
     assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == "js_package_json_unchanged"
+
+
+def test_hostile_js_verifier_rejects_source_unchanged_sha(tmp_path):
+    repo, sid, good = _valid_js_mutation(tmp_path)
     bad = good | {"source_after_sha256": good["source_before_sha256"]}
     assert _verify_reason(repo, sid, rcv.MutationResult("applied", True, details=bad)) == "js_source_unchanged"
 

@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -369,6 +370,22 @@ def apply_mutation(repo: Path, scenario: Scenario) -> MutationResult:
         return MutationResult("applied", True, None, None, hashlib.sha256(sid.encode()).hexdigest(), details={"programmatic_patch_text": True})
     return MutationResult("mutation_failed", False, reason="unknown_scenario")
 
+def _strip_js_comments(source_text: str) -> str:
+    without_block = re.sub(r"/\*.*?\*/", "", source_text, flags=re.DOTALL)
+    return re.sub(r"//[^\n\r]*", "", without_block)
+
+def source_contains_js_import(source_text: str, dependency: str) -> bool:
+    escaped = re.escape(dependency)
+    quoted_dep = rf'([\'"]){escaped}\1'
+    text = _strip_js_comments(source_text)
+    patterns = (
+        rf"\bimport\s+(?!\()(?:(?:[\s\S]*?)\s+from\s+){quoted_dep}",
+        rf"\bimport\s*{quoted_dep}",
+        rf"\brequire\s*\(\s*{quoted_dep}\s*\)",
+        rf"\bimport\s*\(\s*{quoted_dep}\s*\)",
+    )
+    return any(re.search(pattern, text, flags=re.MULTILINE) for pattern in patterns)
+
 def mutation_validation_failed(mutation_result: MutationResult, reason: str, details: dict[str, Any] | None = None) -> MutationResult:
     failure_details = dict(details or {})
     failure_details["original_mutation_result"] = asdict(mutation_result)
@@ -411,6 +428,8 @@ def _ledger_artifact_exists(repo: Path) -> bool:
     return (repo / ".sourcepack" / "evidence" / "ledger.jsonl").exists()
 
 def verify_scenario_state(repo: Path, scenario: Scenario, mr: MutationResult) -> MutationResult:
+    if (mr.status == "applied" and mr.applied != True) or (mr.status != "applied" and mr.applied == True):
+        return mutation_validation_failed(mr, "mutation_status_applied_inconsistent")
     if mr.status != "applied":
         return mr
     d = mr.details or {}
@@ -435,7 +454,7 @@ def verify_scenario_state(repo: Path, scenario: Scenario, mr: MutationResult) ->
         if dep not in (data.get("dependencies") or {}): return mutation_validation_failed(mr, "js_dependency_not_added_to_dependencies")
         if d.get("dependency_preexisting") is not False: return mutation_validation_failed(mr, "js_dependency_preexisting_flag_invalid")
         if d.get("import_specifier") != dep: return mutation_validation_failed(mr, "js_import_specifier_mismatch")
-        if f"'{dep}'" not in _read(src) and f'"{dep}"' not in _read(src): return mutation_validation_failed(mr, "js_source_import_missing")
+        if not source_contains_js_import(_read(src), str(dep)): return mutation_validation_failed(mr, "js_source_import_missing")
         if d.get("package_json_before_sha256") == d.get("package_json_after_sha256") or sha256_path(pkg) == d.get("package_json_before_sha256"): return mutation_validation_failed(mr, "js_package_json_unchanged")
         if d.get("source_before_sha256") == d.get("source_after_sha256") or sha256_path(src) == d.get("source_before_sha256"): return mutation_validation_failed(mr, "js_source_unchanged")
     if sid == "same_patch_python_dependency_add_plus_import":
@@ -632,7 +651,7 @@ def run_harness(args: argparse.Namespace) -> tuple[dict[str,Any], int]:
                     mr=MutationResult("baseline_failed",False,reason="sourcepack_baseline_failed"); row=empty_result(entry,s,repo_path,mr,["baseline creation failed"])
                 else:
                     mr=verify_scenario_state(work, s, apply_mutation(work,s))
-                    if not mr.applied: row=empty_result(entry,s,repo_path,mr,[mr.reason or mr.status])
+                    if not (mr.status == "applied" and mr.applied == True): row=empty_result(entry,s,repo_path,mr,[mr.reason or mr.status])
                     else:
                         try:
                             code,out,err,valid,report,_ = evaluate(work,s,min(args.timeout,s.timeout_seconds))

@@ -1,0 +1,20 @@
+name: SourcePack Action Example
+
+on:
+  workflow_dispatch:
+  # Enable pull_request only after .sourcepack/baseline is committed or provided
+  # by a separate trusted maintainer-controlled setup workflow.
+  # pull_request:
+
+jobs:
+  sourcepack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run SourcePack
+        uses: ./
+        with:
+          mode: ci
+          # fail-on-warn: 'true'
+          upload-artifact: 'true'

@@ -220,6 +220,7 @@ def test_source_contains_js_import_accepts_structural_forms(source):
     "require('sourcepack-corpus-js-dep-extra');",
     "import('sourcepack-corpus-js-dep-extra');",
     'import x from \'other\'; const msg = "from \'sourcepack-corpus-js-dep\'";',
+    'import x from \'other\'\nconst msg = "from \'sourcepack-corpus-js-dep\'";',
 ])
 def test_source_contains_js_import_rejects_non_structural_or_substring_forms(source):
     assert not rcv.source_contains_js_import(source, "sourcepack-corpus-js-dep")
@@ -507,6 +508,7 @@ def test_hostile_js_verifier_rejects_import_specifier_mismatch(tmp_path):
     "const msg = \"import('sourcepack-corpus-js-dep')\";\n",
     "console.log('sourcepack-corpus-js-dep');\n",
     "import x from 'other'; const msg = \"from 'sourcepack-corpus-js-dep'\";\n",
+    "import x from 'other'\nconst msg = \"from 'sourcepack-corpus-js-dep'\";\n",
 ])
 def test_hostile_js_verifier_rejects_non_import_dependency_mentions(tmp_path, source):
     repo, sid, good = _valid_js_mutation(tmp_path)

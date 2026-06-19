@@ -219,6 +219,7 @@ def test_source_contains_js_import_accepts_structural_forms(source):
     "import x from 'sourcepack-corpus-js-dep-extra';",
     "require('sourcepack-corpus-js-dep-extra');",
     "import('sourcepack-corpus-js-dep-extra');",
+    'import x from \'other\'; const msg = "from \'sourcepack-corpus-js-dep\'";',
 ])
 def test_source_contains_js_import_rejects_non_structural_or_substring_forms(source):
     assert not rcv.source_contains_js_import(source, "sourcepack-corpus-js-dep")
@@ -235,7 +236,18 @@ def test_scenario_audit_matches_scenario_registry():
         assert tuple(audit["expected_reason_codes_include"]) == scenario.expected_reason_codes_include
         assert tuple(audit["expected_reason_codes_exclude"]) == scenario.expected_reason_codes_exclude
         assert audit.get("mutation_kind") in rcv.SCENARIO_AUDIT_ALLOWED_MUTATION_KINDS
-        assert audit.get("independent_proof")
+        proof = audit.get("independent_proof")
+        assert proof
+        assert not isinstance(proof, str)
+        assert isinstance(proof, tuple)
+        assert set(proof) <= rcv.SCENARIO_AUDIT_ALLOWED_PROOFS
+        assert all("Verifier checks mutation" not in item for item in proof)
+    assert rcv.SCENARIO_AUDIT["same_patch_python_dependency_add_plus_import"]["mutation_kind"] == "multi_file_mutation"
+    assert rcv.SCENARIO_AUDIT["same_patch_js_dependency_add_plus_import"]["mutation_kind"] == "multi_file_mutation"
+    assert rcv.SCENARIO_AUDIT["docker_compose_missing_file"]["mutation_kind"] == "delete_plus_file_mutation"
+    assert rcv.SCENARIO_AUDIT["protected_sourcepack_baseline_edit"]["mutation_kind"] == "programmatic_patch_text"
+    assert rcv.SCENARIO_AUDIT["git_config_edit"]["mutation_kind"] == "programmatic_patch_text"
+    assert rcv.SCENARIO_AUDIT["malformed_diff"]["mutation_kind"] == "programmatic_patch_text"
 
 def test_makefile_existing_uses_real_parsed_target(tmp_path):
     repo = make_repo(tmp_path, python=False)
@@ -419,6 +431,27 @@ def test_validate_mutation_result_rejects_status_applied_inconsistency(tmp_path,
     assert result.reason == "mutation_status_applied_inconsistent"
 
 
+@pytest.mark.parametrize("mr", [
+    rcv.MutationResult("applied", False),
+    rcv.MutationResult("mutation_failed", True),
+])
+def test_inconsistent_mutation_state_is_explicit_metric(tmp_path, monkeypatch, mr):
+    repo = make_repo(tmp_path)
+    monkeypatch.setattr(rcv, "SCENARIOS", [rcv.SCENARIO_BY_ID["benign_readme_edit"]])
+    monkeypatch.setattr(rcv, "create_baseline", lambda repo, timeout: True)
+    monkeypatch.setattr(rcv, "cleanup_repo", lambda repo: True)
+    monkeypatch.setattr(rcv, "apply_mutation", lambda repo, s: mr)
+    monkeypatch.setattr(rcv, "evaluate", lambda repo, s, timeout: (_ for _ in ()).throw(AssertionError("evaluate must not run")))
+    args = rcv.argparse.Namespace(repo_list=None, repo=[str(repo)], workdir=str(tmp_path/"w"), json=True, max_repos=None, scenario=None, keep_workdir=False, failures_only=True, print_failures=False, timeout=5, fail_on_missed_red=False, fail_on_crash=False, fail_on_invalid_json=False, fail_on_trust_violation=False, fail_on_policy_over_suppression=False)
+    summary, _ = rcv.run_harness(args)
+    row = summary["results"][0]
+    assert row["mutation_result"]["reason"] == "mutation_status_applied_inconsistent"
+    assert row["mutation_failed"] is True
+    assert row["mutation_status_applied_inconsistent"] is True
+    assert summary["mutation_failed"] == 1
+    assert summary["mutation_status_applied_inconsistent"] == 1
+
+
 def _verify_reason(repo, sid, mr):
     return rcv.verify_scenario_state(repo, rcv.SCENARIO_BY_ID[sid], mr).reason
 
@@ -433,6 +466,7 @@ def _valid_js_mutation(tmp_path):
 
 @pytest.mark.parametrize("mutate, expected", [
     (lambda repo, good: ({k: v for k, v in good.items() if k != "dependency_added"}), "js_dependency_added_missing"),
+    (lambda repo, good: (good | {"dependency_added": ""}), "js_dependency_added_missing"),
     (lambda repo, good: (good | {"dependency_added": "lodash", "import_specifier": "lodash"}), "js_dependency_candidate_invalid"),
     (lambda repo, good: (good | {"dependency_added": "react", "import_specifier": "react"}), "js_dependency_candidate_invalid"),
     (lambda repo, good: (good | {"existing_dependency_sections": {"dependencies": [good["dependency_added"]]}}), "js_dependency_preexisting"),
@@ -471,6 +505,8 @@ def test_hostile_js_verifier_rejects_import_specifier_mismatch(tmp_path):
     "const msg = \"import x from 'sourcepack-corpus-js-dep';\";\n",
     "const msg = \"require('sourcepack-corpus-js-dep')\";\n",
     "const msg = \"import('sourcepack-corpus-js-dep')\";\n",
+    "console.log('sourcepack-corpus-js-dep');\n",
+    "import x from 'other'; const msg = \"from 'sourcepack-corpus-js-dep'\";\n",
 ])
 def test_hostile_js_verifier_rejects_non_import_dependency_mentions(tmp_path, source):
     repo, sid, good = _valid_js_mutation(tmp_path)

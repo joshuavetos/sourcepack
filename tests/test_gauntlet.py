@@ -354,5 +354,36 @@ diff --git a/README.md b/README.md
             self.assertEqual(validate_baseline(repo)["state"], "corrupt")
 
 
+    def test_ugly_repo_mixed_layout_docs_workflow_deleted_binary_and_unsupported(self):
+        with TemporaryDirectory() as td:
+            repo = self.make_repo(Path(td), {
+                "package.json": '{"devDependencies":{"eslint":"latest"}}\n',
+                "pyproject.toml": '[project]\nname="ugly"\n[project.optional-dependencies]\ndev=["pytest"]\n',
+                "src/ugly/__init__.py": "VALUE = 1\n",
+                "packages/web/package.json": '{"dependencies":{"react":"latest"}}\n',
+                "README.md": "Run pytest and npm test.\n",
+                "docs/guide.md": "guide\n",
+                ".github/workflows/ci.yml": "name: ci\non: [push]\n",
+                "legacy.txt": "delete me\n",
+                "blob.bin": b"\x00\x01\x02\x03",
+                "Cargo.toml": "[package]\nname='unsupported'\nversion='0.1.0'\n",
+            })
+            (repo / "src" / "ugly" / "feature.py").write_text("import requests\n", encoding="utf-8")
+            (repo / "docs" / "guide.md").write_text("guide v2\n", encoding="utf-8")
+            (repo / ".github" / "workflows" / "ci.yml").write_text("name: ci\non: [push, pull_request]\n", encoding="utf-8")
+            (repo / "legacy.txt").unlink()
+            (repo / "generated.dat").write_bytes(b"\x00\x01generated")
+            code, data = self.diff_json(repo)
+            self.assertEqual(code, 1)
+            finding_ids = self.ids(data)
+            self.assertIn("unsupported_dependency", finding_ids)
+            self.assertIn("new_file", finding_ids)
+            self.assertIn("deleted_file", finding_ids)
+            self.assertIn("workflow_change", finding_ids)
+            self.assertIn("binary_diff", finding_ids)
+            self.assertIn("unsupported_ecosystem", finding_ids)
+
+
 if __name__ == "__main__":
     unittest.main()
+

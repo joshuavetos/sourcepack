@@ -8,6 +8,7 @@ from pathlib import Path
 from sourcepack import __version__
 from sourcepack.paths import ensure_sourcepack_dirs
 from sourcepack.reports.html import render_report_html
+from sourcepack.reports.sarif import render_sarif
 from sourcepack.reports.markdown import LIGHT_BY_VERDICT, render_traffic
 from sourcepack.reason_codes import normalize_reason_code, is_canonical_reason_code
 from sourcepack.evidence import REPLAY_BUNDLE_SCHEMA_VERSION, attach_evidence_to_finding, evidence_summary, make_evidence, make_evidence_item
@@ -179,6 +180,8 @@ def write_user_report(repo: str | Path, report: dict, stem: str = "report") -> N
     json_text = json.dumps(full, indent=2)
     md_text = render_traffic(full, verbose=True)
     paths["latest_json"].write_text(json_text, encoding="utf-8")
+    sarif_text = json.dumps(render_sarif(full), indent=2)
+    _write_optional_report_file(paths["latest_sarif"], sarif_text)
     _write_optional_report_file(paths["latest_md"], md_text)
     try:
         html_text = render_report_html(full)

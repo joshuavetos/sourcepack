@@ -55,3 +55,28 @@ def test_policy_cannot_suppress_git_path_finding(tmp_path):
     from sourcepack.judgment import judge_repo_change
     judgment = judge_repo_change(tmp_path, patch_text=patch)
     assert "git_path_modification" in {f["id"] for f in judgment.report["findings"]}
+
+
+def test_policy_config_ignored_paths_require_reason_and_do_not_suppress_protected(tmp_path):
+    init_repo(tmp_path)
+    policy_dir = tmp_path / ".sourcepack"
+    policy_dir.mkdir(exist_ok=True)
+    (policy_dir / "policy.json").write_text(json.dumps({
+        "schema_version": "sourcepack.policy.v1",
+        "ignored_paths": [
+            {"pattern": "docs/**", "reason": "docs-only reviewed separately"},
+            {"pattern": ".sourcepack/baseline/**", "reason": "dangerous"},
+            {"pattern": "bad/**"}
+        ],
+        "prompt_context_authoritative": True,
+        "baseline_required_in_ci": False,
+    }), encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "note.md").write_text("new docs\n", encoding="utf-8")
+    code, data = report(tmp_path)
+    assert code == 0
+    assert "new_file" not in {f["id"] for f in data["findings"] if f.get("path") == "docs/note.md"}
+    assert data["policy_config_ignores"][0]["reason"] == "docs-only reviewed separately"
+    assert any("prompt_context_authoritative" in w for w in data["policy_config_warnings"])
+    assert any("baseline_required_in_ci_false" in w for w in data["policy_config_warnings"])
+    assert any("policy_ignore_unsafe" in w for w in data["policy_config_warnings"])

@@ -18,3 +18,11 @@ jobs:
           mode: ci
           # fail-on-warn: 'true'
           upload-artifact: 'true'
+          sarif: 'true'
+      # Optional if your repository has enabled code scanning and you accept
+      # uploading local SourcePack report contents.
+      # - name: Upload SourcePack SARIF
+      #   if: always()
+      #   uses: github/codeql-action/upload-sarif@v3
+      #   with:
+      #     sarif_file: sourcepack-report/sourcepack.sarif.json

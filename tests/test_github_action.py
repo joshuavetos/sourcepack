@@ -73,6 +73,7 @@ def test_required_inputs_exist():
         "report-dir",
         "json",
         "markdown",
+        "sarif",
         "fail-on-warn",
         "run-doctor",
         "upload-artifact",

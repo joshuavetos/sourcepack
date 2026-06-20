@@ -308,3 +308,11 @@ SourcePack reason codes explain why a repo-state transition is PASS, WARN, or FA
 # What SourcePack is not claiming
 
 Reason codes explain local evidence transitions. SourcePack reason-code output does not prove code correctness, does not prove dependency safety, does not prove runtime success, and does not prove semantic validity. Human-readable messages are remediation aids; canonical reason-code IDs remain the stable machine-readable identifiers.
+
+## policy_config_warning
+
+**Severity:** WARN.
+
+A `.sourcepack/policy.json` entry attempted an unsupported or unsafe policy setting. SourcePack reports the warning and preserves the bounded trust model. Examples include attempts to make prompt context authoritative, disable CI baseline requirements, ignore protected trust artifacts, or define an ignore rule without a reason.
+
+**Fix:** Remove or correct the unsafe policy entry. Ignore rules must use normalized relative paths and include an explicit reason. Policy config cannot suppress protected artifact, unsafe path, path escape, or `.git/**` findings.

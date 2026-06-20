@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report-dir", default="sourcepack-report")
     parser.add_argument("--json", default="true")
     parser.add_argument("--markdown", default="true")
+    parser.add_argument("--sarif", default="true")
     parser.add_argument("--fail-on-warn", default="false")
     parser.add_argument("--repo", default=".")
     args = parser.parse_args(argv)
@@ -53,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     stderr_log = report_dir / "sourcepack.stderr.txt"
     json_report = report_dir / "sourcepack.json"
     markdown_report = report_dir / "sourcepack.md"
+    sarif_report = report_dir / "sourcepack.sarif.json"
 
     if not baseline.exists():
         message = (
@@ -86,6 +88,9 @@ def main(argv: list[str] | None = None) -> int:
     latest_json = repo / ".sourcepack" / "reports" / "latest.json"
     if latest_json.exists():
         shutil.copyfile(latest_json, json_report)
+    latest_sarif = repo / ".sourcepack" / "reports" / "latest.sarif.json"
+    if _truthy(args.sarif) and latest_sarif.exists():
+        shutil.copyfile(latest_sarif, sarif_report)
 
     if _truthy(args.markdown):
         verdict = _verdict_from_json(json_report) or "UNKNOWN"

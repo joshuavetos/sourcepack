@@ -30,6 +30,7 @@ def sourcepack_paths(repo: str | Path) -> dict[str, Path]:
         "latest_json": reports / "latest.json",
         "latest_md": reports / "latest.md",
         "latest_html": reports / "latest.html",
+        "latest_sarif": reports / "latest.sarif.json",
         "latest_diff_json": reports / "latest_diff.json",
         "latest_prompt_json": reports / "latest_prompt.json",
         "latest_baseline_json": reports / "latest_baseline.json",

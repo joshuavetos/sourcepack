@@ -20,7 +20,7 @@ from .baseline import BaselineLockError, acquire_baseline_lock, baseline_corrupt
 from .ecosystems.python import PY_IMPORT_ALIASES
 from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_paths
 from .reports.json import normalized_finding, traffic_report, write_user_report
-from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code
+from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code, load_policy_config, finding_ignored_by_policy
 from .execution_ledger import execution_findings
 from .commands import resolve_command
 from .dependencies import resolve_js_import, resolve_python_import
@@ -1792,6 +1792,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         raw = judge_patch_text(repo / baseline_status["packet_path"], diff_text); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
         rep = _integrate_execution_findings(repo, diff_text, rep)
         rep = _apply_local_policy(repo, rep)
+        rep = _apply_policy_config(repo, rep)
         if stale_findings and rep["verdict"] != "FAIL":
             rep = traffic_report("WARN", "SourcePack could not fully evaluate this change.", rep.get("findings", []) + stale_findings, rep.get("checked_categories", []), rep.get("next_action"), reason_type="uncertainty"); rep["raw_patch_judgment"] = raw
         elif stale_findings:
@@ -1812,7 +1813,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
 def _rebuild_from_findings(rep: dict, findings: list[dict]) -> dict:
     verdict = "FAIL" if any(f.get("severity") == "error" for f in findings) else "WARN" if any(f.get("severity") == "warn" for f in findings) else "PASS"
     rebuilt = traffic_report(verdict, findings=findings, checked_categories=rep.get("checked_categories") or rep.get("checked") or [], report_path=rep.get("report_path", ".sourcepack/reports/latest.json"))
-    for key in ("raw_patch_judgment", "policy_overrides"):
+    for key in ("raw_patch_judgment", "policy_overrides", "policy_config", "policy_config_ignores", "policy_config_warnings"):
         if key in rep:
             rebuilt[key] = rep[key]
     return rebuilt
@@ -1882,10 +1883,31 @@ def _apply_local_policy(repo: Path, rep: dict) -> dict:
     return _rebuild_from_findings(rebuilt, rebuilt["findings"])
 
 
-
-
-
-
+def _apply_policy_config(repo: Path, rep: dict) -> dict:
+    config = load_policy_config(repo)
+    kept = []
+    ignored = []
+    for finding in rep.get("findings", []):
+        match = finding_ignored_by_policy(finding, config)
+        if match:
+            ignored.append({"suppressed_finding": finding.get("id"), **match})
+        else:
+            kept.append(finding)
+    if ignored:
+        rebuilt = _rebuild_from_findings(rep, kept)
+        rebuilt["policy_config"] = {"path": ".sourcepack/policy.json", "schema_version": config.schema_version, "report_formats": list(config.report_formats)}
+        rebuilt["policy_config_ignores"] = ignored
+        rebuilt.setdefault("findings", []).append(normalized_finding("policy_override", "info", "policy", "Project policy ignored matching low-risk path findings.", evidence=", ".join(i["path"] for i in ignored)))
+        rep = _rebuild_from_findings(rebuilt, rebuilt["findings"] )
+    else:
+        rep = dict(rep)
+        rep["policy_config"] = {"path": ".sourcepack/policy.json", "schema_version": config.schema_version, "report_formats": list(config.report_formats)}
+    if config.warnings:
+        findings = list(rep.get("findings", []))
+        findings.extend(normalized_finding("policy_config_warning", "warn", "policy", warning) for warning in config.warnings)
+        rep = _rebuild_from_findings(rep, findings)
+        rep["policy_config_warnings"] = list(config.warnings)
+    return rep
 
 
 def write_auto_report(repo: Path, report: dict, details: dict) -> None:

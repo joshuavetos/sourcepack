@@ -48,6 +48,7 @@ class ReasonCode(StrEnum):
     EXECUTION_EVIDENCE_PRESENT = "execution_evidence_present"
     EXECUTION_FAILED = "execution_failed"
     EXECUTION_INCONCLUSIVE = "execution_inconclusive"
+    POLICY_CONFIG_WARNING = "policy_config_warning"
 
 
 _CANONICAL = {code.value for code in ReasonCode}

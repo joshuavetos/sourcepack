@@ -29,6 +29,10 @@ inputs:
     description: Write a minimal markdown summary around existing SourcePack CLI output.
     required: false
     default: 'true'
+  sarif:
+    description: Preserve SARIF report output when the installed SourcePack version writes it.
+    required: false
+    default: 'true'
   fail-on-warn:
     description: Make WARN fail the action outside modes that already fail on WARN.
     required: false
@@ -95,6 +99,7 @@ runs:
         REPORT_DIR: ${{ inputs.report-dir }}
         SOURCEPACK_JSON: ${{ inputs.json }}
         SOURCEPACK_MARKDOWN: ${{ inputs.markdown }}
+        SOURCEPACK_SARIF: ${{ inputs.sarif }}
         FAIL_ON_WARN: ${{ inputs.fail-on-warn }}
       run: |
         set -euo pipefail
@@ -104,6 +109,7 @@ runs:
           --report-dir "$REPORT_DIR" \
           --json "$SOURCEPACK_JSON" \
           --markdown "$SOURCEPACK_MARKDOWN" \
+          --sarif "$SOURCEPACK_SARIF" \
           --fail-on-warn "$FAIL_ON_WARN"
     - name: Upload SourcePack reports
       if: ${{ always() && inputs.upload-artifact == 'true' }}

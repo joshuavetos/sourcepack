@@ -77,3 +77,23 @@ Run setup from a reviewed local state. If the tree contains unreviewed AI change
 - Committing baseline changes without review.
 - Using SourcePack as proof of runtime correctness.
 - Using SourcePack as a dependency safety scanner.
+
+## Policy config v1
+
+Project policy config lives at `.sourcepack/policy.json`. It is intentionally bounded:
+
+```json
+{
+  "schema_version": "sourcepack.policy.v1",
+  "strict_default": true,
+  "fail_on_warn_in_ci": true,
+  "ignored_paths": [
+    {"pattern": "docs/**", "reason": "docs-only generated examples reviewed separately"}
+  ],
+  "report_formats": ["json", "markdown", "html", "sarif"],
+  "baseline_required_in_ci": true,
+  "prompt_context_authoritative": false
+}
+```
+
+Ignored paths require a normalized relative pattern and a reason. Ignore rules cannot suppress `.git/**`, `.sourcepack/baseline/**`, unsafe path, path escape, or protected artifact findings. Attempts to make prompt context authoritative or to disable CI baseline requirements are reported as policy warnings and do not change the trust model.

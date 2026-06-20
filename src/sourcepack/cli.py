@@ -2952,24 +2952,26 @@ def run_cli(args_list=None):
             instructions_path.write_text(text, encoding="utf-8")
             print(text, end=""); return 0
         if args.command == "demo":
-            demo_repo = Path("examples/demo_repo")
-            fake_answer = Path("examples/fake_ai_answer.md")
-            if not demo_repo.exists() or not fake_answer.exists():
-                print("ERROR: examples/demo_repo and examples/fake_ai_answer.md are required", file=sys.stderr); return 1
-            tmp = Path(tempfile.mkdtemp(prefix="sourcepack_demo_"))
-            packet = tmp / "packet"
-            judgment = tmp / "judgment"
-            PacketWriter(packet, SourceScanner(demo_repo).scan(), force=True).write_all()
-            if not verify_packet(packet): return 1
-            judge_ai_answer(packet, fake_answer, judgment)
-            fake_patch = Path("examples/fake_ai_patch.diff")
-            if fake_patch.exists():
-                patch_judgment = tmp / "patch_judgment"
-                judge_patch(packet, fake_patch, patch_judgment)
-                print(f"Demo patch judgment: {patch_judgment}")
-            print(f"Demo packet: {packet}")
-            print(f"Demo judgment: {judgment}")
-            return 0
+            examples_root = resources.files("sourcepack") / "examples"
+            with resources.as_file(examples_root) as examples_path:
+                demo_repo = examples_path / "demo_repo"
+                fake_answer = examples_path / "fake_ai_answer.md"
+                if not demo_repo.exists() or not fake_answer.exists():
+                    print("ERROR: packaged examples/demo_repo and examples/fake_ai_answer.md are required", file=sys.stderr); return 1
+                tmp = Path(tempfile.mkdtemp(prefix="sourcepack_demo_"))
+                packet = tmp / "packet"
+                judgment = tmp / "judgment"
+                PacketWriter(packet, SourceScanner(demo_repo).scan(), force=True).write_all()
+                if not verify_packet(packet): return 1
+                judge_ai_answer(packet, fake_answer, judgment)
+                fake_patch = examples_path / "fake_ai_patch.diff"
+                if fake_patch.exists():
+                    patch_judgment = tmp / "patch_judgment"
+                    judge_patch(packet, fake_patch, patch_judgment)
+                    print(f"Demo patch judgment: {patch_judgment}")
+                print(f"Demo packet: {packet}")
+                print(f"Demo judgment: {judgment}")
+                return 0
         if args.command == "verify":
             return 0 if verify_packet(args.packet, args.against) else 1
         if args.command == "judge":

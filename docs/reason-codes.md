@@ -303,3 +303,8 @@ SourcePack reason codes explain why a repo-state transition is PASS, WARN, or FA
 - **Local behavior:** WARN; SourcePack does not fake a PASS from uncertain command evidence.
 - **Common cause:** Dynamic tox/nox configuration or an unsupported command parser.
 - **Likely fix:** Run the command locally with `sourcepack exec -- ...` and/or make the project command declaration explicit.
+
+
+# What SourcePack is not claiming
+
+Reason codes explain local evidence transitions. SourcePack reason-code output does not prove code correctness, does not prove dependency safety, does not prove runtime success, and does not prove semantic validity. Human-readable messages are remediation aids; canonical reason-code IDs remain the stable machine-readable identifiers.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sourcepack"
-version = "1.10.0a0"
+version = "1.10.0a1"
 description = "Local-first guardrail for unsupported AI repository assumptions before commit."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,4 +23,4 @@ classifiers = [
 [project.scripts]
 sourcepack = "sourcepack.cli:main"
 [tool.setuptools.package-data]
-sourcepack = ["assets/*.md"]
+sourcepack = ["assets/*.md", "examples/*.md", "examples/*.diff", "examples/demo_repo/**/*.md", "examples/demo_repo/**/*.py", "examples/demo_repo/**/*.toml"]

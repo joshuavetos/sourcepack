@@ -1,0 +1,20 @@
+diff --git a/sourcepack/server.py b/sourcepack/server.py
+index 0000000..1111111 100644
+--- a/sourcepack/server.py
++++ b/sourcepack/server.py
+@@ -0,0 +1,5 @@
++from fastapi import FastAPI
++
++app = FastAPI()
++
++# run with docker compose up
+diff --git a/docs/setup.md b/docs/setup.md
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/docs/setup.md
+@@ -0,0 +1,4 @@
++# Setup
++
++Run `docker compose up`.
++Edit `frontend/App.tsx` to change the UI.

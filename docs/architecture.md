@@ -53,3 +53,13 @@ The intended flow is:
 7. Report renderers write JSON, Markdown, and HTML without changing the verdict.
 
 Prompt context is intentionally outside this enforcement evidence path.
+
+## Evidence graph and replay bundle
+
+SourcePack reports include an additive evidence graph for explanation and reconstructability. Canonical evidence items are defined in `src/sourcepack/evidence.py` and carry stable IDs plus bounded local observations such as category, source type, path, optional line range, observed value, normalized value, reason-code support/contradiction links, uncertainty, and metadata.
+
+The evidence graph is not a new authority. Local project evidence remains the only enforcement authority; prompt context and AI answers remain advisory. Evidence items make it easier to inspect why SourcePack emitted a verdict, but they do not prove code correctness, security, runtime success, external API truth, dependency safety, or user intent.
+
+JSON reports also include an additive replay bundle assembled by `src/sourcepack/reports/json.py`. The bundle records SourcePack version, replay schema version, generation timestamp when available, command/policy mode when provided, verdict, exit code when provided, normalized reason codes, checked and not-checked categories, findings, warnings, blockers, uncertainties, evidence items, reason-code-to-evidence mappings, and safe metadata about baselines, prompt context, patches, and environment when present. Replay/audit data reconstructs SourcePack's decision path, not reality itself, and avoids secrets or full file contents beyond information SourcePack already intentionally reports.
+
+JSON compatibility is additive: existing fields are not removed or renamed. The evidence graph fields (`evidence_items`, `reason_code_evidence`, and `replay_bundle`) are optional for older reports and mode-dependent for callers that build partial reports directly.

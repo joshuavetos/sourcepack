@@ -10,7 +10,7 @@ from sourcepack.paths import ensure_sourcepack_dirs
 from sourcepack.reports.html import render_report_html
 from sourcepack.reports.markdown import LIGHT_BY_VERDICT, render_traffic
 from sourcepack.reason_codes import normalize_reason_code, is_canonical_reason_code
-from sourcepack.evidence import attach_evidence_to_finding, evidence_summary, make_evidence
+from sourcepack.evidence import REPLAY_BUNDLE_SCHEMA_VERSION, attach_evidence_to_finding, evidence_summary, make_evidence, make_evidence_item
 
 SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
 
@@ -24,6 +24,66 @@ def normalized_finding(fid: str, severity: str, category: str, message: str, pat
         raise ValueError(f"unknown SourcePack reason code: {fid}")
     return {"id": code, "severity": severity, "category": category, "path": path, "message": message, "evidence": evidence, "suggestion": suggestion}
 
+
+
+def _finding_evidence_item(finding: dict) -> dict:
+    fid = str(finding.get("id") or "")
+    category = str(finding.get("category") or fid or "finding")
+    path = finding.get("path") if finding.get("path") is not None else None
+    observed = finding.get("evidence") if finding.get("evidence") is not None else path
+    source_type = str(finding.get("evidence_class") or category or "finding")
+    uncertainty = finding.get("message") if finding.get("severity") == "warn" and category == "uncertainty" else None
+    item = make_evidence_item(
+        fid or category,
+        source_type,
+        path=path,
+        observed_value=str(observed) if observed is not None else None,
+        normalized_value=str(path or observed) if (path or observed) is not None else None,
+        supports=[fid] if fid else [],
+        contradicts=[fid] if finding.get("severity") == "error" and fid else [],
+        uncertainty=uncertainty,
+        metadata={"finding_id": fid, "severity": finding.get("severity"), "category": category},
+    )
+    return item.to_dict()
+
+
+def _dedupe_evidence_items(items: list[dict]) -> list[dict]:
+    by_id = {item["evidence_id"]: item for item in items}
+    return [by_id[k] for k in sorted(by_id)]
+
+
+def build_replay_bundle(report: dict, *, generated_at: str | None = None, exit_code: int | None = None, command_mode: str | None = None, policy_mode: str | None = None) -> dict:
+    findings = list(report.get("findings", []))
+    evidence_items = _dedupe_evidence_items([_finding_evidence_item(f) for f in findings])
+    reason_to_evidence: dict[str, list[str]] = {}
+    for item in evidence_items:
+        code = str(item.get("metadata", {}).get("finding_id") or item.get("category") or "")
+        if code:
+            reason_to_evidence.setdefault(code, []).append(item["evidence_id"])
+    for code in list(reason_to_evidence):
+        reason_to_evidence[code] = sorted(set(reason_to_evidence[code]))
+    return {
+        "schema_version": REPLAY_BUNDLE_SCHEMA_VERSION,
+        "sourcepack_version": report.get("sourcepack_version", __version__),
+        "generated_at": generated_at or report.get("generated_at"),
+        "command_mode": command_mode or report.get("command_mode"),
+        "policy_mode": policy_mode or report.get("policy_mode"),
+        "verdict": report.get("verdict"),
+        "exit_code": exit_code if exit_code is not None else report.get("exit_code"),
+        "normalized_reason_codes": sorted(reason_to_evidence),
+        "checked_categories": report.get("checked_categories", []),
+        "not_checked": report.get("not_checked", []),
+        "findings": findings,
+        "warnings": report.get("warnings", []),
+        "blockers": report.get("blockers", []),
+        "uncertainties": report.get("uncertainties", []),
+        "evidence_items": evidence_items,
+        "reason_code_evidence": reason_to_evidence,
+        "baseline_metadata": report.get("baseline_metadata", {}),
+        "prompt_context_metadata": report.get("prompt_context_metadata", {}),
+        "patch_metadata": report.get("patch_metadata", {}),
+        "environment_metadata": report.get("environment_metadata", {}),
+    }
 
 def normalize_finding_evidence(finding: dict) -> dict:
     if finding.get("evidence_class"):
@@ -89,7 +149,16 @@ def traffic_report(verdict: str, headline: str | None = None, findings: list[dic
     partial = sorted({f["category"] for f in findings if f.get("checked_status") == "partially_checked"} | ({"execution_claim_check"} if any(f.get("category") == "execution" for f in findings) else set()))
     checked_names = sorted(set(checked_categories) | {f["category"] for f in findings if f.get("checked_status") == "checked"})
     confidence_summary = {"basis": "local evidence coverage, not AI confidence", "checked": checked_names, "partially_checked": partial, "not_checked": not_checked, "limitations": ["SourcePack does not prove code correctness", "SourcePack does not prove security", "SourcePack does not verify external API behavior unless local evidence exists"]}
-    return {"schema_version": "traffic_report.v1", "sourcepack_version": __version__, "verdict": verdict, "light": light, "headline": headline, "reason_type": reason_type, "commit_policy": commit_policy, "blockers": blockers, "warnings": warnings, "uncertainties": [f for f in warnings if f.get("category") == "uncertainty"], "checked_categories": checked_names, "checked": checked_names, "partially_checked": partial, "unavailable_evidence": evidence["missing_evidence"], "unsupported_evidence": [f for f in findings if f.get("id") == "unsupported_ecosystem"], "not_checked": not_checked, "confidence_summary": confidence_summary, "evidence": evidence, "next_action": next_action, "report_path": report_path, "findings": findings}
+    base_report = {"schema_version": "traffic_report.v1", "sourcepack_version": __version__, "verdict": verdict, "light": light, "headline": headline, "reason_type": reason_type, "commit_policy": commit_policy, "blockers": blockers, "warnings": warnings, "uncertainties": [f for f in warnings if f.get("category") == "uncertainty"], "checked_categories": checked_names, "checked": checked_names, "partially_checked": partial, "unavailable_evidence": evidence["missing_evidence"], "unsupported_evidence": [f for f in findings if f.get("id") == "unsupported_ecosystem"], "not_checked": not_checked, "confidence_summary": confidence_summary, "evidence": evidence, "next_action": next_action, "report_path": report_path, "findings": findings}
+    evidence_items = _dedupe_evidence_items([_finding_evidence_item(f) for f in findings])
+    reason_code_evidence = {}
+    for item in evidence_items:
+        code = item.get("metadata", {}).get("finding_id") or item.get("category")
+        reason_code_evidence.setdefault(code, []).append(item["evidence_id"])
+    base_report["evidence_items"] = evidence_items
+    base_report["reason_code_evidence"] = {k: sorted(set(v)) for k, v in sorted(reason_code_evidence.items())}
+    base_report["replay_bundle"] = build_replay_bundle(base_report)
+    return base_report
 
 
 def _write_optional_report_file(path: Path, content: str) -> None:
@@ -105,6 +174,8 @@ def write_user_report(repo: str | Path, report: dict, stem: str = "report") -> N
     full.setdefault("sourcepack_version", __version__)
     full.setdefault("schema_version", "traffic_report.v1")
     full["generated_at"] = utc_now()
+    if "replay_bundle" in full:
+        full["replay_bundle"] = build_replay_bundle(full, generated_at=full["generated_at"], exit_code=full.get("exit_code"), command_mode=full.get("command_mode"), policy_mode=full.get("policy_mode"))
     json_text = json.dumps(full, indent=2)
     md_text = render_traffic(full, verbose=True)
     paths["latest_json"].write_text(json_text, encoding="utf-8")

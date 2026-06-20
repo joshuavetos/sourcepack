@@ -94,3 +94,18 @@ def test_core_invariant_tags_present():
         "invariant_tempdir",
         "invariant_human_json",
     } <= tags
+
+
+def test_behavior_matrix_reports_include_replay_evidence_for_representative_cases():
+    data = run_matrix()
+    covered = set()
+    for result in data["results"]:
+        report = result.get("report") or {}
+        reason_map = report.get("reason_code_evidence") or report.get("traffic", {}).get("reason_code_evidence") or {}
+        replay = report.get("replay_bundle") or report.get("traffic", {}).get("replay_bundle") or {}
+        for code in {"missing_file", "unsupported_dependency", "unsupported_command", "protected_artifact", "unsupported_ecosystem", "binary_diff"}:
+            if code in reason_map:
+                assert reason_map[code]
+                assert replay.get("schema_version") == "sourcepack.replay_bundle.v1"
+                covered.add(code)
+    assert {"missing_file", "unsupported_dependency", "unsupported_command", "protected_artifact"} <= covered

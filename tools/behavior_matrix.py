@@ -94,6 +94,9 @@ class NormalizedReport(TypedDict):
     warnings: list[dict[str, Any]]
     blockers: list[dict[str, Any]]
     uncertainties: list[dict[str, Any]]
+    evidence_items: list[dict[str, Any]]
+    reason_code_evidence: dict[str, list[str]]
+    replay_bundle: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -233,6 +236,8 @@ def normalize_report(raw: dict[str, Any], exit_code: int) -> NormalizedReport:
         "checked": list(traffic.get("checked") or traffic.get("checked_categories") or []), "not_checked": list(traffic.get("not_checked") or []),
         "findings": list(traffic.get("findings") or []), "warnings": list(traffic.get("warnings") or []),
         "blockers": list(traffic.get("blockers") or []), "uncertainties": list(traffic.get("uncertainties") or []),
+        "evidence_items": list(traffic.get("evidence_items") or []), "reason_code_evidence": dict(traffic.get("reason_code_evidence") or {}),
+        "replay_bundle": dict(traffic.get("replay_bundle") or {}),
     }
 
 

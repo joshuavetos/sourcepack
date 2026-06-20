@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,18 +24,29 @@ def main() -> int:
         work = Path(td)
         dist = work / "dist"
         dist.mkdir()
-        run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(dist), str(ROOT)], ROOT)
+        run([sys.executable, "-m", "build", "--outdir", str(dist), str(ROOT)], ROOT)
         wheels = sorted(dist.glob("sourcepack-*.whl"))
+        sdists = sorted(dist.glob("sourcepack-*.tar.gz"))
         if not wheels:
             raise SystemExit("no SourcePack wheel was built")
-        env = work / "venv"
-        venv.EnvBuilder(with_pip=True).create(env)
-        exe = env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        sourcepack = env / ("Scripts/sourcepack.exe" if os.name == "nt" else "bin/sourcepack")
-        run([str(exe), "-m", "pip", "install", "--no-index", str(wheels[-1])], work)
-        run([str(sourcepack), "--version"], work)
-        run([str(sourcepack), "doctor"], work)
-        run([str(sourcepack), "demo"], ROOT)
+        if not sdists:
+            raise SystemExit("no SourcePack sdist was built")
+
+        def smoke_artifact(artifact: Path, name: str) -> None:
+            env = work / f"venv_{name}"
+            venv.EnvBuilder(with_pip=True).create(env)
+            exe = env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            sourcepack = env / ("Scripts/sourcepack.exe" if os.name == "nt" else "bin/sourcepack")
+            run([str(exe), "-m", "pip", "install", str(artifact)], work)
+            run([str(exe), "-c", "import sourcepack; print(sourcepack.__version__)"], work)
+            run([str(sourcepack), "--version"], work)
+            run([str(sourcepack), "doctor"], work)
+            run([str(sourcepack), "demo"], ROOT)
+
+        smoke_artifact(wheels[-1], "wheel")
+        smoke_artifact(sdists[-1], "sdist")
+
+        sourcepack = work / "venv_wheel" / ("Scripts/sourcepack.exe" if os.name == "nt" else "bin/sourcepack")
         repo = work / "repo"
         repo.mkdir()
         run(["git", "init"], repo)

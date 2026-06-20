@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from typing import Iterable
+import hashlib
+import json
+from typing import Any, Iterable
 
 EVIDENCE_SCHEMA_VERSION = "sourcepack.evidence.v1"
+EVIDENCE_ITEM_SCHEMA_VERSION = "sourcepack.evidence_item.v1"
+REPLAY_BUNDLE_SCHEMA_VERSION = "sourcepack.replay_bundle.v1"
 
 
 class EvidenceClass(StrEnum):
@@ -44,6 +48,51 @@ ENFORCEMENT_CAPABLE = {
     EvidenceClass.GIT_METADATA,
     EvidenceClass.USER_CONFIG,
 }
+
+
+@dataclass(frozen=True)
+class EvidenceItem:
+    evidence_id: str
+    category: str
+    source_type: str
+    path: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    observed_value: str | None = None
+    normalized_value: str | None = None
+    supports: list[str] = field(default_factory=list)
+    contradicts: list[str] = field(default_factory=list)
+    uncertainty: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def _stable_payload(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def evidence_item_id(payload: dict[str, Any]) -> str:
+    stable = {k: v for k, v in payload.items() if k != "evidence_id" and v not in (None, [], {})}
+    return "ev_" + hashlib.sha256(_stable_payload(stable).encode("utf-8")).hexdigest()[:16]
+
+
+def make_evidence_item(category: str, source_type: str, *, path: str | None = None, line_start: int | None = None, line_end: int | None = None, observed_value: str | None = None, normalized_value: str | None = None, supports: Iterable[str] | None = None, contradicts: Iterable[str] | None = None, uncertainty: str | None = None, metadata: dict[str, Any] | None = None) -> EvidenceItem:
+    payload = {
+        "category": str(category),
+        "source_type": str(source_type),
+        "path": path,
+        "line_start": line_start,
+        "line_end": line_end,
+        "observed_value": observed_value,
+        "normalized_value": normalized_value,
+        "supports": sorted(str(x) for x in (supports or [])),
+        "contradicts": sorted(str(x) for x in (contradicts or [])),
+        "uncertainty": uncertainty,
+        "metadata": metadata or {},
+    }
+    return EvidenceItem(evidence_id=evidence_item_id(payload), **payload)
 
 
 @dataclass(frozen=True)

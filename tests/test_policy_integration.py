@@ -80,3 +80,61 @@ def test_policy_config_ignored_paths_require_reason_and_do_not_suppress_protecte
     assert any("prompt_context_authoritative" in w for w in data["policy_config_warnings"])
     assert any("baseline_required_in_ci_false" in w for w in data["policy_config_warnings"])
     assert any("policy_ignore_unsafe" in w for w in data["policy_config_warnings"])
+
+
+def test_policy_ignored_paths_allowlist_only_blocks_unsafe_reason_codes():
+    from sourcepack.policy import PolicyConfig, finding_ignored_by_policy
+
+    config = PolicyConfig(ignored_paths=({"pattern": "docs/**", "reason": "reviewed docs"},))
+    assert finding_ignored_by_policy({"id": "new_file", "path": "docs/new.md"}, config) is not None
+    blocked = {
+        "unsupported_dependency",
+        "declared_dependency",
+        "unsupported_command",
+        "missing_file",
+        "baseline_missing",
+        "baseline_stale",
+        "baseline_corrupt",
+        "baseline_failed",
+        "protected_artifact",
+        "git_path_modification",
+        "unsafe_path",
+        "path_escape",
+        "malformed_diff",
+        "binary_diff",
+        "unsupported_ecosystem",
+        "workflow_change",
+        "policy_config_warning",
+        "policy_override",
+        "execution_evidence_missing",
+        "execution_evidence_present",
+        "execution_failed",
+        "execution_inconclusive",
+        "future_unknown_reason",
+    }
+    for fid in blocked:
+        assert finding_ignored_by_policy({"id": fid, "path": "docs/new.md"}, config) is None, fid
+
+
+def test_policy_config_reserved_fields_emit_warnings_without_authority(tmp_path):
+    from sourcepack.policy import load_policy_config
+
+    policy_dir = tmp_path / ".sourcepack"
+    policy_dir.mkdir()
+    (policy_dir / "policy.json").write_text(json.dumps({
+        "schema_version": "sourcepack.policy.v1",
+        "strict_default": False,
+        "fail_on_warn_in_ci": False,
+        "protected_paths": ["docs/protected/**"],
+        "report_formats": ["json"],
+        "baseline_required_in_ci": False,
+        "prompt_context_authoritative": True,
+    }), encoding="utf-8")
+    config = load_policy_config(tmp_path)
+    warnings = set(config.warnings)
+    assert "policy_config_ignored:prompt_context_authoritative" in warnings
+    assert "policy_config_ignored:baseline_required_in_ci_false" in warnings
+    assert "policy_config_reserved:strict_default" in warnings
+    assert "policy_config_reserved:fail_on_warn_in_ci" in warnings
+    assert "policy_config_reserved:protected_paths" in warnings
+    assert "policy_config_reserved:report_formats" in warnings

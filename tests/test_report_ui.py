@@ -25,3 +25,24 @@ def test_write_user_report_writes_sarif(tmp_path):
     data = __import__("json").loads(sarif.read_text(encoding="utf-8"))
     assert data["version"] == "2.1.0"
     assert data["runs"][0]["results"][0]["ruleId"] == "missing_file"
+
+
+def test_sarif_severity_mapping_paths_and_pathless_findings(tmp_path):
+    from sourcepack.reports.json import normalized_finding
+    report = traffic_report("FAIL", findings=[
+        normalized_finding("missing_file", "error", "file", "missing", "src/nope.py"),
+        normalized_finding("new_file", "warn", "file", "new", "docs/new.md"),
+        normalized_finding("no_diff", "info", "diff", "ok"),
+    ])
+    write_user_report(tmp_path, report, "x")
+    data = json.loads((tmp_path / ".sourcepack" / "reports" / "latest.sarif.json").read_text(encoding="utf-8"))
+    results = data["runs"][0]["results"]
+    by_rule = {result["ruleId"]: result for result in results}
+    assert by_rule["missing_file"]["level"] == "error"
+    assert by_rule["new_file"]["level"] == "warning"
+    assert by_rule["no_diff"]["level"] == "note"
+    assert by_rule["missing_file"]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "src/nope.py"
+    assert "locations" not in by_rule["no_diff"]
+    assert (tmp_path / ".sourcepack" / "reports" / "latest.json").exists()
+    assert (tmp_path / ".sourcepack" / "reports" / "latest.md").exists()
+    assert (tmp_path / ".sourcepack" / "reports" / "latest.html").exists()

@@ -313,6 +313,6 @@ Reason codes explain local evidence transitions. SourcePack reason-code output d
 
 **Severity:** WARN.
 
-A `.sourcepack/policy.json` entry attempted an unsupported or unsafe policy setting. SourcePack reports the warning and preserves the bounded trust model. Examples include attempts to make prompt context authoritative, disable CI baseline requirements, ignore protected trust artifacts, or define an ignore rule without a reason.
+A `.sourcepack/policy.json` entry attempted an unsupported or unsafe policy setting. SourcePack reports the warning and preserves the bounded trust model. Examples include attempts to make prompt context authoritative, disable CI baseline requirements, set reserved fields that are not enforced by policy config v1, ignore protected trust artifacts, or define an ignore rule without a reason.
 
-**Fix:** Remove or correct the unsafe policy entry. Ignore rules must use normalized relative paths and include an explicit reason. Policy config cannot suppress protected artifact, unsafe path, path escape, or `.git/**` findings.
+**Fix:** Remove or correct the unsafe policy entry. Ignore rules must use normalized relative paths and include an explicit reason. Policy config can suppress only explicitly allowlisted low-risk findings; the current allowlist is `new_file`. It cannot suppress dependency, command, baseline, protected artifact, unsafe path, malformed diff, binary diff, unsupported ecosystem, workflow, execution-evidence, unknown future reason-code, path escape, or `.git/**` findings.

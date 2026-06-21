@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         _write(command_log, "baseline preflight\n")
         _write(stdout_log, "")
         _write(stderr_log, message)
-        _write(markdown_report, f"# SourcePack\n\n```text\n{message}```\n")
+        _write(markdown_report, f"# SourcePack\n\n```text\n{message}\n```\n")
         print(message, file=sys.stderr, end="")
         return 2
 

@@ -261,3 +261,49 @@ def test_wrapper_does_not_import_or_duplicate_core_judgment_logic():
 
 def test_wrapper_py_compiles():
     subprocess.run([sys.executable, "-m", "py_compile", str(WRAPPER)], check=True)
+
+
+def test_wrapper_sarif_true_copies_existing_latest_sarif(tmp_path, monkeypatch):
+    baseline = tmp_path / ".sourcepack" / "baseline"
+    baseline.mkdir(parents=True)
+    reports = tmp_path / ".sourcepack" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "latest.sarif.json").write_text('{"version":"2.1.0"}', encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "sourcepack"
+    fake.write_text("#!/bin/sh\necho '{\"verdict\":\"PASS\"}'\nexit 0\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    module = load_wrapper()
+    code = module.main(["--repo", str(tmp_path), "--report-dir", "out", "--sarif", "true"])
+    assert code == 0
+    assert (tmp_path / "out" / "sourcepack.sarif.json").read_text(encoding="utf-8") == '{"version":"2.1.0"}'
+
+
+def test_wrapper_sarif_false_and_missing_sarif_do_not_fail_or_copy(tmp_path, monkeypatch):
+    baseline = tmp_path / ".sourcepack" / "baseline"
+    baseline.mkdir(parents=True)
+    reports = tmp_path / ".sourcepack" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "latest.sarif.json").write_text('{"version":"2.1.0"}', encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "sourcepack"
+    fake.write_text("#!/bin/sh\necho '{\"verdict\":\"PASS\"}'\nexit 0\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    module = load_wrapper()
+    assert module.main(["--repo", str(tmp_path), "--report-dir", "out", "--sarif", "false"]) == 0
+    assert not (tmp_path / "out" / "sourcepack.sarif.json").exists()
+    (reports / "latest.sarif.json").unlink()
+    assert module.main(["--repo", str(tmp_path), "--report-dir", "out2", "--sarif", "true"]) == 0
+    assert not (tmp_path / "out2" / "sourcepack.sarif.json").exists()
+
+
+def test_wrapper_missing_baseline_markdown_fence_is_valid(tmp_path, capsys):
+    module = load_wrapper()
+    assert module.main(["--repo", str(tmp_path), "--report-dir", "reports"]) != 0
+    _ = capsys.readouterr()
+    text = (tmp_path / "reports" / "sourcepack.md").read_text(encoding="utf-8")
+    assert text.endswith("\n```\n")

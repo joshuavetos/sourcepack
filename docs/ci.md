@@ -15,7 +15,7 @@ Hosted CI result: unavailable from this environment.
 
 ## GitHub Action reports
 
-The composite action consumes an existing `.sourcepack/baseline/` and fails closed when it is missing. It does not run `sourcepack init` or `sourcepack baseline` in CI.
+The composite action consumes an existing committed `.sourcepack/baseline/` and fails closed when it is missing. It does not run `sourcepack init` or `sourcepack baseline` in CI.
 
 Reports are written to `sourcepack-report/` by default:
 
@@ -24,7 +24,7 @@ Reports are written to `sourcepack-report/` by default:
 - `sourcepack.sarif.json` when the installed SourcePack writes SARIF.
 - stdout, stderr, and command logs for CI troubleshooting.
 
-SARIF is only a report format. It does not add a new judgment engine and does not change SourcePack's PASS/WARN/FAIL policy.
+SARIF is only a report format. It does not add a new judgment engine, does not change SourcePack's PASS/WARN/FAIL policy, and does not alter reason codes or verdicts.
 
 If you choose to upload SARIF in GitHub code scanning, use the generated file only after deciding that report contents are acceptable for your repository:
 

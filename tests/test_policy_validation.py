@@ -81,17 +81,19 @@ def test_policy_validate_non_object_root_nonzero(tmp_path):
 
 
 def test_policy_validate_invalid_and_unsafe_ignored_entries_are_reported(tmp_path):
-    write_policy(tmp_path, {"ignored_paths": ["bad", {"reason": "missing pattern"}, {"pattern": "docs/**"}, {"pattern": "", "reason": "empty"}, {"pattern": "docs/**", "reason": ""}, {"pattern": ".git/config", "reason": "unsafe"}, {"pattern": ".sourcepack/baseline/**", "reason": "unsafe"}, {"pattern": "docs/**", "reason": "ok"}]})
+    write_policy(tmp_path, {"ignored_paths": ["bad", {"reason": "missing pattern"}, {"pattern": "docs/**"}, {"pattern": "", "reason": "empty"}, {"pattern": "docs/**", "reason": ""}, {"pattern": ".git", "reason": "unsafe"}, {"pattern": ".git/config", "reason": "unsafe"}, {"pattern": ".sourcepack/baseline", "reason": "unsafe"}, {"pattern": ".sourcepack/baseline/**", "reason": "unsafe"}, {"pattern": "docs/**", "reason": "ok"}]})
     cp = run_cli(tmp_path, "policy", "validate", str(tmp_path), "--json")
     data = json.loads(cp.stdout)
     assert cp.returncode == 0
     warnings = "\n".join(data["warnings"])
     assert "policy_ignore_invalid:not_object" in warnings
     assert "policy_ignore_invalid:pattern_and_reason_required" in warnings
+    assert "policy_ignore_unsafe:.git" in warnings
     assert "policy_ignore_unsafe:.git/config" in warnings
+    assert "policy_ignore_unsafe:.sourcepack/baseline" in warnings
     assert "policy_ignore_unsafe:.sourcepack/baseline/**" in warnings
     assert data["effective_ignored_paths"] == [{"pattern": "docs/**", "reason": "ok"}]
-    assert len(data["ignored_invalid_entries"]) == 7
+    assert len(data["ignored_invalid_entries"]) == 9
 
 
 def test_policy_validate_reserved_and_dangerous_fields_warn_without_authority(tmp_path):
@@ -134,5 +136,8 @@ def test_policy_ignored_paths_allowlist_and_future_reason_remain_unsuppressible(
 
     config = PolicyConfig(ignored_paths=({"pattern": "docs/**", "reason": "reviewed"},))
     assert finding_ignored_by_policy({"id": "new_file", "path": "docs/a.md"}, config)
+    unsafe_config = PolicyConfig(ignored_paths=({"pattern": ".git", "reason": "unsafe"}, {"pattern": ".sourcepack/baseline", "reason": "unsafe"}))
+    assert finding_ignored_by_policy({"id": "new_file", "path": ".git/config"}, unsafe_config) is None
+    assert finding_ignored_by_policy({"id": "new_file", "path": ".sourcepack/baseline/active.json"}, unsafe_config) is None
     for reason in ["unsupported_dependency", "git_path_modification", "baseline_missing", "future_unknown_reason"]:
         assert finding_ignored_by_policy({"id": reason, "path": "docs/a.md"}, config) is None

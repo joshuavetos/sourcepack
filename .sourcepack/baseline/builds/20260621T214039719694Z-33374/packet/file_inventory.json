@@ -1,0 +1,882 @@
+{
+  "schema_version": "sourcepack.file_inventory.v1",
+  "generated_at": "2026-06-21T21:40:39.935946+00:00",
+  "source": "git_ls_files",
+  "files": [
+    {
+      "relative_path": ".github/workflows/release-smoke.yml",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "2312cb601c5d74f69a91bfaed3d86099fc103ab8708b694ea5722c91c61231f9",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".github/workflows/sourcepack.yml",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "2e39dba3348cc596e050f4d382f93fd323b9df1aa784b51f1110d71fda4ec0e2",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".gitignore",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "3fb869e145a238e453a26d20960bf6f055dec5839009eef7a5d594c9098bd42f",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".sourcepack/baseline/active.json",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "19201c76922fd29bf4c7bf02058d3b4243d7a82245479135edb0ff20a329c66e",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".sourcepack/baseline/builds/20260621T213531705694Z-23135/metadata.json",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "7cba4caf70a675f6720322047fd9be21037e6c389adc0046927e32864c21741b",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".sourcepack/baseline/builds/20260621T213531705694Z-23135/packet/ai_instructions.md",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "717767d5fab946c2b209fd62abf000e6f8a9927cccaa5cc608b90b3077af882e",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".sourcepack/baseline/builds/20260621T213531705694Z-23135/packet/context.md",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "7be80e033b034736489e9f4de376b509ba32ba248ec9a38cca510d54598b0b7c",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".sourcepack/baseline/builds/20260621T213531705694Z-23135/packet/context.xml",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "db0b09d4e4638c6cff93e40b18a4b5741921d7568ccef00e6ee31161f3c4641f",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".sourcepack/baseline/builds/20260621T213531705694Z-23135/packet/file_inventory.json",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "1162719e1945be62e06a099dc83686efc58e02bad06a6ea375d896df7c37038c",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".sourcepack/baseline/builds/20260621T213531705694Z-23135/packet/file_tree.txt",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "cf5bad1eb5b924ca52714297fb772dc568d4a260097e2909a6366403c0bc1fef",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".sourcepack/baseline/builds/20260621T213531705694Z-23135/packet/ignored_files.txt",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "60ffffcd30e290ccc303c031790066d856257a8acc919f873d9daefda0abe438",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".sourcepack/baseline/builds/20260621T213531705694Z-23135/packet/manifest.json",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "f99578e1aca971f2b21cc738e410a15c7785f4f4ab8224676a06050257dfbaaa",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".sourcepack/baseline/builds/20260621T213531705694Z-23135/packet/reality_map.json",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "c68fe3cc3fd1182544d75e419506507e991a13eee71c1461aabe2b7e6680569c",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".sourcepack/baseline/builds/20260621T213531705694Z-23135/packet/receipt.json",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "fe5a4024b99515eed45fea9bff9a6b5f8914c6e8a34c47e12ba39888347e9c16",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".sourcepack/baseline/builds/20260621T213531705694Z-23135/packet/redactions.json",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "3616fb466385f85db850131534a1716817c1c8774319a3334b256110e083bb7b",
+      "file_type": "text"
+    },
+    {
+      "relative_path": ".sourcepack/baseline/builds/20260621T213531705694Z-23135/packet/token_report.json",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "73b2bf36d6ed91420529ee3b86e21b900fa78d259c75899ac86bbcc6f2ac212d",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "LICENSE",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "a2730ad6bff3e6035045902c31f49c201f04567029d75ad0114b7939d56c9dbb",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "README.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "fe490d6caf6b1d90f2e66a38aa6506125c7d80e1fa41dbe7ce2cfd65bf80f604",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "SECURITY.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "0ff61055843766dc02dfe08a53fc86ee1dd4c4d37d1eb54810eb651c200806ba",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "action.yml",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "04cdf1bee42adb8c1403cc67abbd120d50708a05dca90c6d5099115d852e037d",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "corpus/repos.example.json",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "a271995a2ec3f3b9cb371da6708c72f71ebbcaf1aef7d36b8446a7f3db2ebf98",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/ai-agent-workflow.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "1b6efd44adf7a49a493ba6d1f6a1ac2aae2684dbe6355525b4ace8fc1e3df80c",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/architecture.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "54f531cad41cbb92a9596832fed15ccca4855934a8e18bc91c0be5e887d619ad",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/assets/README.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "13995111442538dc5288bca959c75195f58364d6c29dde81982da610cb990ab4",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/baseline-lifecycle.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "cbd48dd976ba7a183cb4812bb1ad12995cb7c73f4b171a87df39ad190487df8e",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/ci.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "873f6c9911e58c636c76911925f8f4b430f5294506ac2631b14eb2753b621b0f",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/examples/sourcepack-action.yml",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "d8a29fd970e20de33ffb4d71c798167fc63e1603e3fe6223cdb00ec8b0151007",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/limitations.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "606eba16d63400de25c8849584b22869ebadaef134fb44f75175fc5e443cc7fc",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/public-alpha-readiness.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "3e37d4c85234598ff137522f69d98c4ff7aa62e2e4ad72a2a81df741d9bf67af",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/real-corpus-validation.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "bdc11fac49b01ff91e275aeb4b7278165b8bf511d7cb6e4774d5fdeab01364b1",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/reason-codes.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "813d8152134d32adc5e367dabd8903d00b164f83a87f9cae31786209b1e66d10",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/release-checklist.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "e5ac9316e5cadcd65f31d95c7bbef1da18e660281a107caf42c6ef42632d0ee1",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/releases/v1.10.0a0-publish-checklist.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "4bf72df6bd078483a51487686d8298aa37e917afc5a8449e64d8ca828f9b69ff",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/releases/v1.10.0a0.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "201f4761c2e67b8040ca46af4ce86c851582b6d9d299f707aa41c1dff458695c",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/systemic-upgrade-status.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "b00f03f0f68430b18d6de053b61ff28054fa2fdd3c475d4a6e7ef58cef18b194",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/threat-model.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "b14b3b5f214e70cd857e7c928ac1dde9d6a1de224be631c65b99ead705d343d6",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "docs/vscode-extension-plan.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "709dca029b5c72bee19b8d300652e933b1b8ca6d7b9dba858de768095253a7a6",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "examples/demo_repo/.env",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "9afd0036b4d1406c6b4a6c4082c874befcf4fa1fd8d0dc66ab155d5c88c8f623",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "examples/demo_repo/README.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "a7e1752b33efa2da5769f5e7aeb6e23498350f9c59a902341f8863a58c607900",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "examples/demo_repo/pyproject.toml",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "8bcd24bacf5a5936e911c814331afe1fab6bf036fcda5983c6eb143a89013cb9",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "examples/demo_repo/sourcepack/cli.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "27fae75b5f5b55d891fc89682bae49ff7f47f6bcd7b6c188fdb011be5e3c4a92",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "examples/demo_repo/sourcepack/judge.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "409cce4f25abdd804048f4c0630d237e19a0b37a6e4b7feb946fd19cd98b9ffc",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "examples/demo_repo/sourcepack/verify.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "1fe61bada9b2a55f096e3f103d43730040a0eb39ecd8d6048a7e64367ff69ebc",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "examples/demo_repo/tests/test_verify.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "cb2d232eb2353dd9807728eb487b3fbc42fc8112d96cd49fbbaec6c2b428bc68",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "examples/fake_ai_answer.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "889eeb9a7fd4438cdfa852e8c1f97d4dd9b1c336bc2a7a51237e811692bfa0aa",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "examples/fake_ai_patch.diff",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "c3eca6e0edcf6492cadf1bb88ff40373bbd6f7ee5af2c281d96455ae0ab50c18",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "pyproject.toml",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "8162ff815846149f6434583ae1bf096181d3c2cd2890d7fffdeaabd6b3644b65",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "pytest.ini",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "4d5193eb36807e4622451417a9fe7bea71e7307137cd05cc214332e514fd9527",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "schemas/judgment_report.schema.json",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "9bee37d95c5a9ebe7c8ece691e4ac171153aa99bbdf013aec4e85ec6cba57ab1",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "schemas/patch_judgment_report.schema.json",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "c88958c2c935ac166482d63368ce49c571ad790fc385f4a926de1644e8ac39c4",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "schemas/reality_map.schema.json",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "4cffbfc8bad68d1128fb6deab240b94b7fa3c963b92a382bccf3c15918e2aad8",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "schemas/receipt.schema.json",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "76774812cc7324913497884a566901d5e0a0ce731cac744bcecf0a8bc340e0c4",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "scripts/__init__.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "scripts/release_smoke.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "e3c41aa86a62ef32f6df56e6fc57961b465426134f50190025a6e719baedd0de",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "scripts/sourcepack_action.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "86c8e08db8c359b295fa1dec94f44bded893529ffdcb8bbbd4812f9aec041622",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/__init__.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "4391f5708ed823139f42acbe4bd4e1c23d7f8bcd49c775a595972007ed8b63df",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/assets/__init__.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "4c82669d1812be30d4255337f24946320810a891a7cd4384c0cfcb0763454570",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/assets/audit_template.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "363a4b24c719686ddcde6f4ddd12e13b2537301c3c85f6c3a7e126611b83c116",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/assets/packet_instructions.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "fe7b53dce16afd545a64b74794639557bb5abd570e8e2750682a5275eab57dfc",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/baseline.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "ed00d0ec6267b969db542935104274e9974e4a3725f83a3de0352afd3ab7013b",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/cli.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "382f6febe80e881f76588da153980e146227861b464c57198c250b06a970214d",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/commands.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "34482d60d8a2cff0c1dad9715ee052d14ad7f686e8bb9b49ca0150ef6bed9cd2",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/dependencies.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "cc3f5af5a95790b1f4dfa53f23d63dbcb006d866377f24991563f2a0b34353e1",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/diff_parser.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "56ee3f55c4a4f420682dc7a28f64f8d4dbb3e2fecd403daf6ad71d9ce76dd554",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/ecosystems/__init__.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "6589fde5184d12c464fdbd7189c50b182b82ff45b717c222a44f86fbdba75426",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/ecosystems/generic.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "b5f0696b6977c62996daaf2513e3bcc6049174686d7071af69f33d2addb76bbd",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/ecosystems/node.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "ca37c2810efb59edfc963521117ea0af12768c41436a2c0a3df1e396dae4f6a3",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/ecosystems/python.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "4367d9b593851e50cc1aea0a1a655ae9d343fcb9164131b64f324ee6c891d860",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/errors.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "67c0c7dcdcdd89883c38ad4d9f9cc84023dea6cd94ea9a5377c9bcb213b33e23",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/evidence.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "57cce10ee364f439ea45e5f83bae3dc515e8090c9f9495cf39816336e220392b",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/examples/demo_repo/.env",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "9afd0036b4d1406c6b4a6c4082c874befcf4fa1fd8d0dc66ab155d5c88c8f623",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/examples/demo_repo/README.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "a7e1752b33efa2da5769f5e7aeb6e23498350f9c59a902341f8863a58c607900",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/examples/demo_repo/pyproject.toml",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "8bcd24bacf5a5936e911c814331afe1fab6bf036fcda5983c6eb143a89013cb9",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/examples/demo_repo/sourcepack/cli.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "27fae75b5f5b55d891fc89682bae49ff7f47f6bcd7b6c188fdb011be5e3c4a92",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/examples/demo_repo/sourcepack/judge.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "409cce4f25abdd804048f4c0630d237e19a0b37a6e4b7feb946fd19cd98b9ffc",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/examples/demo_repo/sourcepack/verify.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "1fe61bada9b2a55f096e3f103d43730040a0eb39ecd8d6048a7e64367ff69ebc",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/examples/demo_repo/tests/test_verify.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "cb2d232eb2353dd9807728eb487b3fbc42fc8112d96cd49fbbaec6c2b428bc68",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/examples/fake_ai_answer.md",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "889eeb9a7fd4438cdfa852e8c1f97d4dd9b1c336bc2a7a51237e811692bfa0aa",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/examples/fake_ai_patch.diff",
+      "included_in_prompt_context": false,
+      "source": "git_ls_files",
+      "sha256": "c3eca6e0edcf6492cadf1bb88ff40373bbd6f7ee5af2c281d96455ae0ab50c18",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/execution_ledger.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "9a2ddb19207d1bbee97945c09293bcafce5a562181ea64f124bdca33d9b4a514",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/git.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "260e7d3d958ec63b9705aba7ed47c00679ab50ca6f9d276d95332320e2f4acd3",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/judgment.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "65370e37be8eb5a6608cc7adc5b59ae16af238dad34ca3bd9741bf878c5b50b9",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/packet.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "c16e59f4b1ec3791bc716a7ed20a431e1ba96bf03dc155ff51fa1a2d1fac96b4",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/paths.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "8d45ded4126c3230b6ada620eb493e34e4ca571bcedb10ac8bdbea4fbb594a7d",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/policy.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "63304511062d704a1ba624187a410dbdaf261c1cf362b10eb9810cefa79fe932",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/reason_codes.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "d7a76939ef6bac2d142670e8df736e306cf3f7f322a508fb6e65d406d2d32dcc",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/replay.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "6a4b3770496e9e51e56a5c893864f72e8b32459d8d4f31bee962d1f7cccc0a47",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/reports/__init__.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "5f8862cf0d7ba09c9fd8dec3bacabc5e84a1a3017d182ad3f7d6f5b011cbae40",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/reports/html.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "742cabc329ec1c893048158167a4fcb99b2b7ba602a93cce016e93d5bed866b9",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/reports/json.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "e6a01f30ca28f26a2a51711079fdbb3b0abb6be170fafef9e9e4dfa3c5a98458",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/reports/markdown.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "1d1bb8e68d0cc0a0a29f713795b1b1b524f42c17fc6a05f381c9be2d2667fec7",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/reports/sarif.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "24645dc7b6cbb76f176c3929c3500a05fc44486636fe2cbb9e55e70550171193",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "src/sourcepack/schemas.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "14b5eea7e92278818d97c60103d6e9aed1fca12a3dfd39598e413a5f43ed6d4d",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/__init__.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "d1ea17b40bff9ad853be4aaac80d3d9abce3db729a880212c41a848912c2324b",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/simulation_helpers.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "63bb5c420f625ce5364720f37eea2ba46d2e21ee4fa00c31307ed2fb06885789",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_baseline_integrity.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "30adaf72766b8f550f7350400f0df47464c404ffe22e63b5e5f19299f17fd56d",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_baseline_lifecycle_cli.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "01b1e1f216054fb8aa00f48f25260838fcb56b58b95313c52428b8c1aa35199b",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_behavior_matrix.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "e5bc0e39671206c13bca84b259e31be51f910359b724509d1dc340b91045f860",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_ci_docs_truth.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "e8a2dd0bb40984d37aa1d3e982f16aad92cc9e62aaf289a9c4ad237f4c5e586b",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_command_resolver.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "7656eeaa3a9dee55d5a3a29ec13fb8538433326705a5dbec662899ba587d6052",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_confidence_report.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "58023e6ecf0f256c5f7f4e0e679894b1a08222f0eeff50218525a8059f764e9f",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_dependency_resolver.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "b54635c6a352179f720abbf022bebeeb790aa21b5ef0e054c6018fad37b2bf33",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_engine_inversion.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "18c8abff8e0f3c61619b2c4b8f16469cff5fff71eabd754c2e35a9c09a03cb14",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_evidence_model.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "6d2cc3ebf680840ab6fa632f660e4bc2f22c927cb3fcb6df4a49a557da08fa6a",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_execution_ledger.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "04d0eb77a1faddaf7be5368ef5fde686a090a81e167093408be6dcc63b41c245",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_final_boss_integration.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "6d5ac9c3b7a224477c679dbc574be933510d465a58326f6434c9b04e7dde147c",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_gauntlet.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "3f7ece379810265514bc24f7381e6c8cf0ef5f376a44d915cf264df5af38f411",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_github_action.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "59d31a1897ddcb1d9827a41cf034a6c903aa45a2d6df89eff80ed0d5c7a610a3",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_golden_demo.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "b8508efb07cfd538fa3a40fceed037e239ec9be0b221414031b52bb275c042e3",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_local_policy.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "53bfc0400027f3509631ed6dd7663a1fdf3eff74c05fc8ce4e50309c9f28bdc9",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_policy_integration.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "994e3c82f1f31a57afbda5600102dcbc0ae9ae44291324a7f9313585013e7ddf",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_policy_validation.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "a708a58c9233772efe6e411d0fd752a0a7fe024102215ae6c67a14abeca68b72",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_readme_truth.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "ecaba3f3573f4029a49c60aee9ed6b5d00e3d94d974bd6c8b116ae0a4ed95632",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_real_corpus_validation.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "991ff066463a7f0bb2595947a407984c093840ead936353f073ebd22a9fd6fec",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_reason_code_docs.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "e6b85b98b427bce6328b3ae951612c4a4817fb3cb8936e4d6a94aa5ea153dda4",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_release_docs.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "dd1d32ed324c8fb7c16527b45972e4ad952a9d9e74dbc20719d157fa7ebecb96",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_release_smoke.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "310a70ae112177deef029d7e54dd40d4ddf54b5f1291b6aa06fe005436bb1ae1",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_replay_audit.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "e7384cd0bcd5e208f8b2000b650863163ae97c8fcc0e53f46f19acfd7876e2f1",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_report_ui.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "2ef38855ebeb2244554f155e008ba37c7a6364175b7a65e431367303375da60d",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_simulation_harness.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "885cf7c205dae3b6259bb9ba06071187226dc43570cac4a012e825147362a8d9",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tests/test_smoke.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "d65832df8c665bc7700c5bc6385c5ba861ba0472b3b2b0841eb699160018cdd9",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tools/behavior_matrix.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "fd9710d6e74406cb0e1fb73827107716752d5bdfe5679515860d68e08b728015",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tools/golden_demo.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "1dd7967d77f50d33e253ab20d1f990ce733a3ac2249ceac03468b88d0f6c7b83",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tools/real_corpus_validation.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "9435797831f4d56f11b03b53775b6fc0b511a18feae458c8bc9ca4aedd2f74a4",
+      "file_type": "text"
+    },
+    {
+      "relative_path": "tools/release_smoke.py",
+      "included_in_prompt_context": true,
+      "source": "git_ls_files",
+      "sha256": "8d4d64d2b821aca37bfcc5b00fafc2011c48bdc3fa871facf98915cd51fe3778",
+      "file_type": "text"
+    }
+  ]
+}

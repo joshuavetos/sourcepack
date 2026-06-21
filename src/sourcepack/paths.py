@@ -59,7 +59,7 @@ def ensure_gitignore_entry(repo: str | Path) -> tuple[bool, str | None]:
             return True, None
         data = path.read_bytes()
         text = data.decode("utf-8")
-        if any(line.strip() in {".sourcepack", ".sourcepack/"} for line in text.splitlines()):
+        if any(line.strip() in {".sourcepack", ".sourcepack/", ".sourcepack/*"} for line in text.splitlines()):
             return False, None
         newline = "\r\n" if b"\r\n" in data else "\n"
         addition = ("" if text.endswith(("\n", "\r\n")) or not text else newline) + ".sourcepack/" + newline

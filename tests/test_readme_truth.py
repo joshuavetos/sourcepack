@@ -63,3 +63,18 @@ def test_readme_links_reason_codes_and_reports_commands() -> None:
     assert "docs/reason-codes.md" in text
     assert "sourcepack report open" in text
     assert "sourcepack report path" in text
+
+
+def test_readme_dogfooding_claim_preserves_sourcepack_limitations() -> None:
+    text = readme()
+    assert "sourcepack diff . --ci --json" in text
+    assert "committed `.sourcepack/baseline/` state" in text
+    for forbidden in [
+        "proves correctness",
+        "proves security",
+        "proves runtime success",
+        "proves dependency safety",
+        "proves external API truth",
+        "proves user intent",
+    ]:
+        assert forbidden not in text.lower()

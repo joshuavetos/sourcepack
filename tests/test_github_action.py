@@ -171,6 +171,23 @@ def test_ci_workflow_keeps_existing_validation_gates():
     assert [token for token in required if token not in text] == []
 
 
+
+def test_sourcepack_workflow_dogfoods_committed_baseline_without_creating_trust_state():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "sourcepack diff . --ci --json" in text
+    assert "sourcepack baseline" not in text
+    assert "sourcepack init" not in text
+    assert "--refresh" not in text
+    assert "baseline --force" not in text
+
+
+def test_sourcepack_workflow_runs_gate_after_install_before_validation_gates():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    install_index = text.index("Install package and test dependencies")
+    gate_index = text.index("sourcepack diff . --ci --json")
+    tests_index = text.index("Full pytest suite")
+    assert install_index < gate_index < tests_index
+
 def test_example_workflow_exists_and_does_not_create_baseline_during_pr():
     text = EXAMPLE_WORKFLOW.read_text(encoding="utf-8")
     assert "workflow_dispatch:" in text

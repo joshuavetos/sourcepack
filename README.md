@@ -97,7 +97,7 @@ With SourcePack:
 
 ## Baseline lifecycle
 
-SourcePack enforcement depends on a reviewed `.sourcepack/baseline/`, while `.sourcepack/prompt/` remains AI guidance only. CI should consume committed baseline state and must not create or update trusted baseline state automatically. See [`docs/baseline-lifecycle.md`](docs/baseline-lifecycle.md) for safe local and PR flows.
+SourcePack enforcement depends on a reviewed `.sourcepack/baseline/`, while `.sourcepack/prompt/` remains AI guidance only. CI should consume committed baseline state and must not create or update trusted baseline state automatically. See [`docs/baseline-lifecycle.md`](docs/baseline-lifecycle.md) for safe local and PR flows. SourcePack now dogfoods this model: its own CI runs `sourcepack diff . --ci --json` against committed `.sourcepack/baseline/` state, and AI-assisted PRs should report that gate verdict, reason codes, and report path.
 
 ## AI-agent workflow guidance
 

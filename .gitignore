@@ -1,3 +1,5 @@
-.sourcepack/
+.sourcepack/*
+!.sourcepack/baseline/
+!.sourcepack/baseline/**
 examples/golden/output/
 .sourcepack_corpus_cache/

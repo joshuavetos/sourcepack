@@ -1,0 +1,16 @@
+{
+  "redactions": [
+    {
+      "pattern": "openai_key",
+      "span_start": 1078,
+      "span_end": 1110,
+      "file": "tests/test_smoke.py"
+    },
+    {
+      "pattern": "openai_key",
+      "span_start": 2930,
+      "span_end": 2962,
+      "file": "tests/test_smoke.py"
+    }
+  ]
+}

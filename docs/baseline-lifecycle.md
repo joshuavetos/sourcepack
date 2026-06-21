@@ -78,6 +78,12 @@ Run setup from a reviewed local state. If the tree contains unreviewed AI change
 - Using SourcePack as proof of runtime correctness.
 - Using SourcePack as a dependency safety scanner.
 
+## SourcePack self-dogfooding
+
+SourcePack dogfoods its own enforcement model by committing `.sourcepack/baseline/` and running `sourcepack diff . --ci --json` in CI after package installation. The CI gate consumes the committed baseline only; it does not create, refresh, repair, bless, or update `.sourcepack/baseline/`, and it fails closed if the committed baseline is missing or corrupt.
+
+Maintainers who need to refresh SourcePack's own baseline should first verify a reviewed clean state with the project test, behavior-matrix, and release-smoke gates. Only after those gates pass should they run `sourcepack baseline . --refresh`, review the resulting `.sourcepack/baseline/` changes, and commit them intentionally. AI-assisted PRs should report the SourcePack gate verdict, reason codes, and report path alongside the normal test results.
+
 ## Policy config v1
 
 Project policy config lives at `.sourcepack/policy.json`. Policy config v1 is intentionally limited and cannot change the baseline/prompt trust model. The only enforced setting is `ignored_paths`, and it can suppress only explicitly allowlisted low-risk findings. The current allowlist is `new_file`.

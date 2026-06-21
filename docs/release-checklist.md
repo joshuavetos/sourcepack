@@ -18,7 +18,7 @@ python -m pip install build twine setuptools wheel
 python scripts/release_smoke.py
 ```
 
-The script removes `dist/`, `build/`, and `*.egg-info` artifacts before building. Cleanup failure is a release blocker.
+The script removes `dist/`, `build/`, and root-level `*.egg-info` artifacts plus the build-backend-generated `src/sourcepack.egg-info` artifact before building. It does not recursively delete nested fixture, vendored, virtualenv, or test-repository `*.egg-info` directories. Cleanup failure is a release blocker.
 
 The script builds deterministic artifacts with `python -m build --no-isolation`, so the maintainer-controlled environment is the build environment. Do not reuse artifacts from an earlier build step.
 
@@ -42,7 +42,7 @@ sourcepack demo
 
 ## Build wheel/sdist
 
-`python scripts/release_smoke.py` removes `dist/`, `build/`, and root `*.egg-info`, then builds exactly one wheel and one sdist with `python -m build --no-isolation`. Do not reuse artifacts from earlier build steps.
+`python scripts/release_smoke.py` removes `dist/`, `build/`, and root-level `*.egg-info` artifacts plus `src/sourcepack.egg-info`, then builds exactly one wheel and one sdist with `python -m build --no-isolation`. Do not reuse artifacts from earlier build steps.
 
 ## Wheel install smoke
 
@@ -113,7 +113,7 @@ Record:
 - Confirm maintainer approval.
 - Confirm PyPI credentials and target repository.
 - Upload only after wheel and sdist smoke pass.
-- Verify the published project page and install command after publication.
+- Verify the public PyPI project page and install from public PyPI after publication.
 
 ## Rollback notes
 

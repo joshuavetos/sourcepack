@@ -62,7 +62,10 @@ def clean_build_outputs(root: Path = ROOT) -> None:
             shutil.rmtree(path)
         if path.exists():
             raise ReleaseSmokeError(f"unable to remove build output: {path}")
-    for path in root.rglob("*.egg-info"):
+    egg_info_paths = [*root.glob("*.egg-info"), root / "src" / "sourcepack.egg-info"]
+    for path in egg_info_paths:
+        if not path.exists():
+            continue
         if path.is_dir():
             shutil.rmtree(path)
         else:
@@ -71,24 +74,55 @@ def clean_build_outputs(root: Path = ROOT) -> None:
             raise ReleaseSmokeError(f"unable to remove egg-info artifact: {path}")
 
 
+def collect_dist_artifacts(dist: Path = DIST) -> list[Path]:
+    artifacts = sorted(path for path in dist.iterdir() if path.is_file()) if dist.exists() else []
+    if not artifacts:
+        raise ReleaseSmokeError(f"no built artifacts found in {dist}; cannot run twine check")
+    return artifacts
+
+
 def build_clean_artifacts() -> None:
     clean_build_outputs(ROOT)
     run([sys.executable, "-m", "build", "--no-isolation"], ROOT)
-    run([sys.executable, "-m", "twine", "check", "dist/*"], ROOT)
+    artifacts = collect_dist_artifacts(DIST)
+    run([sys.executable, "-m", "twine", "check", *(str(path) for path in artifacts)], ROOT)
 
 
-def _wheel_metadata_version(wheel: Path) -> str:
+def _check_package_metadata(metadata, artifact: Path, label: str) -> tuple[str, str]:
+    name = metadata.get("Name")
+    version = metadata.get("Version")
+    if name != PACKAGE_NAME:
+        raise ReleaseSmokeError(f"{label} metadata package name mismatch in {artifact}: expected {PACKAGE_NAME!r}, found {name!r}")
+    if not version:
+        raise ReleaseSmokeError(f"missing Version in {label} metadata for {artifact}")
+    return name, version
+
+
+def _wheel_metadata(wheel: Path) -> tuple[str, str]:
     with zipfile.ZipFile(wheel) as zf:
         metadata_names = [name for name in zf.namelist() if name.endswith(".dist-info/METADATA")]
         if len(metadata_names) != 1:
             raise ReleaseSmokeError(f"expected exactly one wheel METADATA file in {wheel}, found {metadata_names}")
         metadata = Parser().parsestr(zf.read(metadata_names[0]).decode("utf-8"))
-    version = metadata.get("Version")
-    if not version:
-        raise ReleaseSmokeError(
-            "Unable to resolve SourcePack version from packaging metadata; release smoke cannot validate artifacts."
-        )
-    return version
+    return _check_package_metadata(metadata, wheel, "wheel")
+
+
+def _sdist_metadata(sdist: Path) -> tuple[str, str]:
+    with tarfile.open(sdist, "r:gz") as tf:
+        metadata_names = [
+            member
+            for member in tf.getmembers()
+            if member.isfile()
+            and len(PurePosixPath(member.name).parts) == 2
+            and PurePosixPath(member.name).name == "PKG-INFO"
+        ]
+        if len(metadata_names) != 1:
+            raise ReleaseSmokeError(f"expected exactly one top-level sdist PKG-INFO file in {sdist}, found {[m.name for m in metadata_names]}")
+        metadata_file = tf.extractfile(metadata_names[0])
+        if metadata_file is None:
+            raise ReleaseSmokeError(f"unable to read sdist PKG-INFO in {sdist}")
+        metadata = Parser().parsestr(metadata_file.read().decode("utf-8"))
+    return _check_package_metadata(metadata, sdist, "sdist")
 
 
 def verify_expected_artifacts(dist: Path = DIST) -> tuple[str, Path, Path]:
@@ -98,7 +132,13 @@ def verify_expected_artifacts(dist: Path = DIST) -> tuple[str, Path, Path]:
         raise ReleaseSmokeError(
             f"expected exactly one SourcePack wheel and one sdist in {dist}; found wheels={wheels}, sdists={sdists}"
         )
-    version = _wheel_metadata_version(wheels[0])
+    _wheel_name, wheel_version = _wheel_metadata(wheels[0])
+    _sdist_name, sdist_version = _sdist_metadata(sdists[0])
+    if wheel_version != sdist_version:
+        raise ReleaseSmokeError(
+            f"wheel metadata version {wheel_version!r} does not match sdist metadata version {sdist_version!r}"
+        )
+    version = wheel_version
     expected_wheel = dist / f"sourcepack-{version}-py3-none-any.whl"
     expected_sdist = dist / f"sourcepack-{version}.tar.gz"
     if wheels[0] != expected_wheel or sdists[0] != expected_sdist:

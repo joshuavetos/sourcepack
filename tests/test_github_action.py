@@ -132,10 +132,10 @@ def test_action_references_version_and_conditional_doctor():
 
 def test_action_verifies_baseline_before_diff_execution():
     text = action_text()
-    baseline_index = text.index("SourcePack baseline not found")
+    baseline_index = text.index("SourcePack failed closed because trusted baseline state is missing")
     diff_index = text.index("sourcepack_action.py")
     assert baseline_index < diff_index
-    assert "CI will not create or update trusted baseline state automatically." in text
+    assert "CI will not create or update trusted baseline state." in text
 
 
 def test_action_writes_or_preserves_report_output():
@@ -194,8 +194,8 @@ def test_wrapper_missing_baseline_returns_nonzero_and_message(tmp_path, capsys):
     code = module.main(["--repo", str(tmp_path), "--baseline-path", ".sourcepack/baseline", "--report-dir", "reports"])
     captured = capsys.readouterr()
     assert code != 0
-    assert "SourcePack baseline not found" in captured.err
-    assert "CI will not create or update trusted baseline state automatically." in captured.err
+    assert "SourcePack failed closed because trusted baseline state is missing" in captured.err
+    assert "CI will not create or update trusted baseline state." in captured.err
     assert (tmp_path / "reports" / "sourcepack.stderr.txt").exists()
 
 
@@ -301,9 +301,117 @@ def test_wrapper_sarif_false_and_missing_sarif_do_not_fail_or_copy(tmp_path, mon
     assert not (tmp_path / "out2" / "sourcepack.sarif.json").exists()
 
 
-def test_wrapper_missing_baseline_markdown_fence_is_valid(tmp_path, capsys):
+def test_wrapper_missing_baseline_markdown_is_valid(tmp_path, capsys):
     module = load_wrapper()
     assert module.main(["--repo", str(tmp_path), "--report-dir", "reports"]) != 0
     _ = capsys.readouterr()
     text = (tmp_path / "reports" / "sourcepack.md").read_text(encoding="utf-8")
-    assert text.endswith("\n```\n")
+    assert text.count("```") % 2 == 0
+    assert "SourcePack failed closed because trusted baseline state is missing" in text
+
+
+def test_action_inputs_are_documented_in_ci_docs():
+    inputs = set(load_action()["inputs"])
+    ci_text = (ROOT / "docs" / "ci.md").read_text(encoding="utf-8")
+    missing = [name for name in sorted(inputs) if f"`{name}`" not in ci_text]
+    assert missing == []
+
+
+def test_wrapper_missing_baseline_explains_fail_closed_trust_boundary(tmp_path, capsys):
+    module = load_wrapper()
+    code = module.main(["--repo", str(tmp_path), "--baseline-path", ".sourcepack/baseline", "--report-dir", "reports"])
+    captured = capsys.readouterr()
+    assert code != 0
+    text = captured.err + (tmp_path / "reports" / "sourcepack.stderr.txt").read_text(encoding="utf-8")
+    assert "SourcePack failed closed because trusted baseline state is missing" in text
+    assert "CI will not create or update trusted baseline state" in text
+    assert "Create or refresh the baseline locally or in a separate trusted maintainer-controlled setup workflow" in text
+    assert "This is a trust-boundary behavior, not a package crash" in text
+
+
+def test_wrapper_reports_paths_sarif_missing_and_step_summary(tmp_path, monkeypatch, capsys):
+    baseline = tmp_path / ".sourcepack" / "baseline"
+    baseline.mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "sourcepack"
+    fake.write_text("#!/bin/sh\necho '{\"verdict\":\"PASS\",\"traffic_light\":\"GREEN\"}'\nexit 0\n", encoding="utf-8")
+    fake.chmod(0o755)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    module = load_wrapper()
+    assert module.main(["--repo", str(tmp_path), "--report-dir", "reports", "--sarif", "true"]) == 0
+    captured = capsys.readouterr()
+    assert str(tmp_path / "reports") in captured.out
+    assert "enabled, but no SourcePack SARIF report was present" in captured.out
+    assert not (tmp_path / "reports" / "sourcepack.sarif.json").exists()
+    summary_text = summary.read_text(encoding="utf-8")
+    assert "Verdict: PASS" in summary_text
+    assert "Traffic light: GREEN" in summary_text
+    assert "Mode: ci" in summary_text
+    assert "WARN fails in selected mode: True" in summary_text
+    assert f"Report directory: {tmp_path / 'reports'}" in summary_text
+    assert "SARIF passthrough: enabled, but no SourcePack SARIF report was present" in summary_text
+    assert summary_text.count("```") % 2 == 0
+    forbidden_claims = ["proves correctness", "proves security", "proves runtime success", "proves external API truth", "proves user intent"]
+    assert [claim for claim in forbidden_claims if claim in summary_text] == []
+
+
+def test_wrapper_sarif_disabled_summary_does_not_claim_sarif(tmp_path, monkeypatch):
+    baseline = tmp_path / ".sourcepack" / "baseline"
+    baseline.mkdir(parents=True)
+    reports = tmp_path / ".sourcepack" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "latest.sarif.json").write_text('{"version":"2.1.0"}', encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "sourcepack"
+    fake.write_text("#!/bin/sh\necho '{\"verdict\":\"PASS\"}'\nexit 0\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    module = load_wrapper()
+    assert module.main(["--repo", str(tmp_path), "--report-dir", "out", "--sarif", "false"]) == 0
+    summary = (tmp_path / "out" / "sourcepack.md").read_text(encoding="utf-8")
+    assert "SARIF passthrough: disabled" in summary
+    assert not (tmp_path / "out" / "sourcepack.sarif.json").exists()
+
+
+def test_wrapper_preserves_exact_command_and_delegates_to_cli(tmp_path, monkeypatch):
+    baseline = tmp_path / ".sourcepack" / "baseline"
+    baseline.mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls.txt"
+    fake = bin_dir / "sourcepack"
+    fake.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$0 $*\" > {calls}\necho '{{\"verdict\":\"PASS\"}}'\nexit 0\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    module = load_wrapper()
+    assert module.main(["--repo", str(tmp_path), "--report-dir", "out", "--mode", "strict"]) == 0
+    command = (tmp_path / "out" / "sourcepack-command.txt").read_text(encoding="utf-8").strip()
+    assert command == f"sourcepack diff {tmp_path} --json --strict"
+    assert f"diff {tmp_path} --json --strict" in calls.read_text(encoding="utf-8")
+
+
+def test_wrapper_does_not_create_baseline_or_use_prompt_as_authority(tmp_path, monkeypatch):
+    baseline = tmp_path / ".sourcepack" / "baseline"
+    baseline.mkdir(parents=True)
+    prompt = tmp_path / ".sourcepack" / "prompt"
+    prompt.mkdir(parents=True)
+    (prompt / "context.md").write_text("fake authority", encoding="utf-8")
+    before_baseline = sorted(p.relative_to(baseline) for p in baseline.rglob("*"))
+    before_prompt = sorted(p.relative_to(prompt) for p in prompt.rglob("*"))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "sourcepack"
+    fake.write_text("#!/bin/sh\necho '{\"verdict\":\"PASS\"}'\nexit 0\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    module = load_wrapper()
+    assert module.main(["--repo", str(tmp_path), "--report-dir", "out"]) == 0
+    assert sorted(p.relative_to(baseline) for p in baseline.rglob("*")) == before_baseline
+    assert sorted(p.relative_to(prompt) for p in prompt.rglob("*")) == before_prompt
+    wrapper_text = WRAPPER.read_text(encoding="utf-8")
+    assert ".sourcepack/prompt" not in wrapper_text
+    assert "prompt" not in wrapper_text.lower()

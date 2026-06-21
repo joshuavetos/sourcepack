@@ -79,16 +79,39 @@ runs:
       env:
         BASELINE_PATH: ${{ inputs.baseline-path }}
         REPORT_DIR: ${{ inputs.report-dir }}
+        SOURCEPACK_MODE: ${{ inputs.mode }}
+        FAIL_ON_WARN: ${{ inputs.fail-on-warn }}
       run: |
         set -euo pipefail
         if [ ! -d "$BASELINE_PATH" ]; then
           mkdir -p "$REPORT_DIR"
-          printf '%s\n' "SourcePack baseline not found: $BASELINE_PATH" \
-            'CI will not create or update trusted baseline state automatically.' \
-            'Create or refresh the baseline only from a trusted maintainer-controlled workflow or local maintainer environment.' \
-            | tee "$REPORT_DIR/sourcepack.stderr.txt" >&2
+          MESSAGE="$(printf '%s\n' \
+            'SourcePack failed closed because trusted baseline state is missing.' \
+            "Missing baseline path: $BASELINE_PATH" \
+            'CI will not create or update trusted baseline state.' \
+            'Create or refresh the baseline locally or in a separate trusted maintainer-controlled setup workflow.' \
+            'This is a trust-boundary behavior, not a package crash.')"
+          printf '%s\n' "$MESSAGE" | tee "$REPORT_DIR/sourcepack.stderr.txt" >&2
           printf '%s\n' 'baseline preflight' > "$REPORT_DIR/sourcepack-command.txt"
           : > "$REPORT_DIR/sourcepack.stdout.txt"
+          {
+            printf '%s\n\n' '# SourcePack Action summary'
+            printf '%s\n' '- Verdict: FAIL'
+            printf '%s\n' '- Traffic light: FAIL'
+            printf '%s\n' "- Mode: $SOURCEPACK_MODE"
+            if [ "$SOURCEPACK_MODE" = 'ci' ] || [ "$SOURCEPACK_MODE" = 'strict' ] || [ "$FAIL_ON_WARN" = 'true' ]; then
+              printf '%s\n' '- WARN fails in selected mode: true'
+            else
+              printf '%s\n' '- WARN fails in selected mode: false'
+            fi
+            printf '%s\n' "- Report directory: $REPORT_DIR"
+            printf '%s\n' '- Artifacts: sourcepack.stderr.txt, sourcepack.stdout.txt, sourcepack-command.txt'
+            printf '%s\n' '- Missing baseline: SourcePack failed closed because trusted baseline state is missing. CI will not create or update trusted baseline state. Create or refresh the baseline locally or in a separate trusted maintainer-controlled setup workflow. This is a trust-boundary behavior, not a package crash.'
+          } > "$REPORT_DIR/sourcepack.md"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            cat "$REPORT_DIR/sourcepack.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          printf '%s\n' "SourcePack report directory: $REPORT_DIR"
           exit 2
         fi
     - name: Run SourcePack diff

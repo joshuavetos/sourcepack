@@ -98,3 +98,11 @@ Ignored paths require a normalized relative pattern and a reason. Ignore rules c
 Reserved recognized fields include `strict_default`, `fail_on_warn_in_ci`, `protected_paths`, and `report_formats`. When present, they are reported as policy config warnings because they are not enforcement controls in policy config v1. SARIF is written as a report format only and does not change SourcePack judgment. CI still consumes a committed baseline and fails closed when the baseline is missing. Prompt context is not authoritative.
 
 Validate policy config directly with `sourcepack policy validate [repo]` or `sourcepack policy validate [repo] --json`. The command is read-only: it validates `.sourcepack/policy.json` without creating, updating, or deleting baseline, prompt, report, evidence, hook, or working-tree files. A missing policy file exits `0` and reports that policy config is optional. Invalid JSON and non-object policy roots exit nonzero; JSON mode still writes parseable JSON to stdout only. Validation reports effective ignored-path entries separately from invalid or unsafe ignored entries, including attempts to ignore `.git/**` or `.sourcepack/baseline/**`. Dangerous trust overrides such as `prompt_context_authoritative: true` and `baseline_required_in_ci: false` warn but do not alter trust behavior.
+
+## Replay/audit reconstruction
+
+`sourcepack replay <report-or-bundle-path>` reads a saved SourcePack JSON report or replay bundle and reconstructs the saved verdict, findings, reason codes, evidence mapping, metadata, and replay status. Use `sourcepack replay <report-or-bundle-path> --json` for parseable JSON output.
+
+Replay is read-only. It does not require `.sourcepack/baseline/`, `.sourcepack/prompt/`, Git, or live repository state, and it does not rerun `sourcepack diff` judgment or scanning over the current working tree. Replay reconstructs saved report or bundle content only; it does not prove correctness, security, runtime success, dependency safety, semantic validity, external API truth, or user intent.
+
+`sourcepack diff` checks current changes against the trusted baseline and may write reports. `sourcepack replay` only reads an existing report or bundle and reports `reran_judgment: false`.

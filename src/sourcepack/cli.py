@@ -26,6 +26,7 @@ from .reports.json import normalized_finding, traffic_report, write_user_report
 from .reports.markdown import LIGHT_BY_VERDICT, SEVERITY_ORDER, render_traffic
 from .execution_ledger import clear_ledger, entry_to_json, execution_findings, iter_entries, run_and_record, find_repo_root
 from .policy import validate_policy_config
+from .replay import reconstruct_replay, render_replay_human
 
 try:
     from . import __version__
@@ -2902,6 +2903,9 @@ def run_cli(args_list=None):
     status_cmd = subs.add_parser("status", help="show SourcePack repo state", description="Show baseline, hook, report, git, and dirty-worktree state without changing the baseline.")
     status_cmd.add_argument("repo")
     status_cmd.add_argument("--json", action="store_true")
+    replay_cmd = subs.add_parser("replay", help="reconstruct a saved SourcePack report or replay bundle")
+    replay_cmd.add_argument("input_path")
+    replay_cmd.add_argument("--json", action="store_true")
     report_cmd = subs.add_parser("report", help="work with local SourcePack reports")
     report_subs = report_cmd.add_subparsers(dest="report_command")
     report_open = report_subs.add_parser("open", help="open .sourcepack/reports/latest.html")
@@ -2963,6 +2967,13 @@ def run_cli(args_list=None):
             return cli_policy(args)
         if args.command == "reset":
             return cli_reset(args)
+        if args.command == "replay":
+            result, code = reconstruct_replay(args.input_path)
+            if args.json:
+                print(json.dumps(result, indent=2))
+            else:
+                print(render_replay_human(result), end="")
+            return code
         if args.command == "report":
             if args.report_command == "open":
                 return cli_report_open(args)

@@ -7,11 +7,13 @@ from typing import Any
 from .reports.markdown import LIGHT_BY_VERDICT
 
 REPLAY_BUNDLE_SCHEMA_PREFIX = "sourcepack.replay_bundle."
+REPLAY_OUTPUT_SCHEMA_VERSION = "sourcepack.replay.v1"
 
 
 def _empty(input_path: str | None = None) -> dict[str, Any]:
     return {
-        "schema_version": None,
+        "schema_version": REPLAY_OUTPUT_SCHEMA_VERSION,
+        "input_schema_version": None,
         "input_path": input_path,
         "input_type": None,
         "valid": False,
@@ -85,7 +87,7 @@ def _bundle_errors(bundle: dict[str, Any]) -> list[str]:
 
 def _copy_from(source: dict[str, Any], out: dict[str, Any]) -> None:
     verdict = source.get("verdict")
-    out["schema_version"] = source.get("schema_version") if isinstance(source.get("schema_version"), str) else None
+    out["input_schema_version"] = source.get("schema_version") if isinstance(source.get("schema_version"), str) else None
     out["verdict"] = verdict if isinstance(verdict, str) else None
     out["exit_code"] = source.get("exit_code") if isinstance(source.get("exit_code"), int) else None
     out["light"] = _light(out["verdict"], source)
@@ -129,6 +131,8 @@ def reconstruct_replay(path: str | Path) -> tuple[dict[str, Any], int]:
     if not isinstance(data, dict):
         out["errors"].append("replay input root must be a JSON object")
         return out, 1
+
+    out["input_schema_version"] = data.get("schema_version") if isinstance(data.get("schema_version"), str) else None
 
     bundle = data.get("replay_bundle") if isinstance(data.get("replay_bundle"), dict) else None
     if bundle is not None:
@@ -181,6 +185,7 @@ def render_replay_human(result: dict[str, Any]) -> str:
         f"Input type: {result.get('input_type') or 'unknown'}",
         f"Valid: {result.get('valid')}",
         f"Schema version: {result.get('schema_version') or 'not present'}",
+        f"Input schema version: {result.get('input_schema_version') or 'not present'}",
         f"SourcePack version: {result.get('sourcepack_version') or 'not present'}",
         f"Verdict: {result.get('verdict') or 'not present'}",
         f"Exit code: {result.get('exit_code') if result.get('exit_code') is not None else 'not present'}",

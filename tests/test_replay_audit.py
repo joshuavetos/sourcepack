@@ -32,6 +32,8 @@ def test_replay_full_report_with_bundle_json_preserves_fields(tmp_path):
     assert cp.returncode == 0
     assert cp.stderr == ""
     data = json.loads(cp.stdout)
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_schema_version"] == report["schema_version"]
     assert data["input_type"] == "full_report_with_replay_bundle"
     assert data["valid"] is True
     assert data["reconstructed"] is True
@@ -54,6 +56,8 @@ def test_replay_full_report_without_bundle_is_basic_summary(tmp_path):
     cp = run_cli("replay", str(path), "--json")
     data = json.loads(cp.stdout)
     assert cp.returncode == 0
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_schema_version"] == report["schema_version"]
     assert data["input_type"] == "full_report_without_replay_bundle"
     assert data["replay_bundle"] is None
     assert "replay bundle is missing" in data["warnings"][0]
@@ -67,6 +71,8 @@ def test_replay_raw_bundle(tmp_path):
     cp = run_cli("replay", str(path), "--json")
     data = json.loads(cp.stdout)
     assert cp.returncode == 0
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_schema_version"] == bundle["schema_version"]
     assert data["input_type"] == "raw_replay_bundle"
     assert data["replay_bundle"] == bundle
     assert data["reran_judgment"] is False
@@ -79,6 +85,9 @@ def test_replay_invalid_json_missing_file_and_non_object_emit_json(tmp_path):
         cp = run_cli("replay", *args, "--json")
         assert cp.returncode != 0
         data = json.loads(cp.stdout)
+        assert cp.stderr == ""
+        assert data["schema_version"] == "sourcepack.replay.v1"
+        assert data["input_schema_version"] is None
         assert data["valid"] is False
         assert data["errors"]
     array = tmp_path / "array.json"
@@ -86,7 +95,23 @@ def test_replay_invalid_json_missing_file_and_non_object_emit_json(tmp_path):
     cp = run_cli("replay", str(array), "--json")
     data = json.loads(cp.stdout)
     assert cp.returncode != 0
+    assert cp.stderr == ""
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_schema_version"] is None
     assert "root must be a JSON object" in data["errors"][0]
+
+
+def test_replay_unsupported_object_preserves_input_schema(tmp_path):
+    path = tmp_path / "unsupported.json"
+    write_json(path, {"schema_version": "custom.input.v9", "payload": {"unexpected": True}})
+    cp = run_cli("replay", str(path), "--json")
+    data = json.loads(cp.stdout)
+    assert cp.returncode != 0
+    assert cp.stderr == ""
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_schema_version"] == "custom.input.v9"
+    assert data["input_type"] == "unsupported_json_object"
+    assert data["valid"] is False
 
 
 def test_replay_corrupt_bundle_exits_nonzero(tmp_path):
@@ -95,6 +120,8 @@ def test_replay_corrupt_bundle_exits_nonzero(tmp_path):
     cp = run_cli("replay", str(path), "--json")
     data = json.loads(cp.stdout)
     assert cp.returncode != 0
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_schema_version"] == "sourcepack.replay_bundle.v1"
     assert data["input_type"] == "raw_replay_bundle"
     assert data["reran_judgment"] is False
     assert any("verdict" in err for err in data["errors"])
@@ -106,6 +133,8 @@ def test_replay_human_output_includes_summary(tmp_path):
     cp = run_cli("replay", str(path))
     assert cp.returncode == 0
     assert "Verdict: FAIL" in cp.stdout
+    assert "Schema version: sourcepack.replay.v1" in cp.stdout
+    assert "Input schema version: traffic_report.v1" in cp.stdout
     assert "Reason codes: missing_file" in cp.stdout
     assert "Reconstructed without rerunning judgment: True" in cp.stdout
 
@@ -127,5 +156,7 @@ def test_replay_does_not_mutate_repo_or_call_judgment_paths(tmp_path, monkeypatc
     result, code = replay.reconstruct_replay(report_path)
     after = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*"))
     assert code == 0
+    assert result["schema_version"] == "sourcepack.replay.v1"
+    assert result["input_schema_version"] == "traffic_report.v1"
     assert result["reran_judgment"] is False
     assert before == after

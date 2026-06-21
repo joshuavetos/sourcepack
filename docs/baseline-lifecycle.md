@@ -80,20 +80,19 @@ Run setup from a reviewed local state. If the tree contains unreviewed AI change
 
 ## Policy config v1
 
-Project policy config lives at `.sourcepack/policy.json`. It is intentionally bounded:
+Project policy config lives at `.sourcepack/policy.json`. Policy config v1 is intentionally limited and cannot change the baseline/prompt trust model. The only enforced setting is `ignored_paths`, and it can suppress only explicitly allowlisted low-risk findings. The current allowlist is `new_file`.
 
 ```json
 {
   "schema_version": "sourcepack.policy.v1",
-  "strict_default": true,
-  "fail_on_warn_in_ci": true,
   "ignored_paths": [
     {"pattern": "docs/**", "reason": "docs-only generated examples reviewed separately"}
   ],
-  "report_formats": ["json", "markdown", "html", "sarif"],
-  "baseline_required_in_ci": true,
-  "prompt_context_authoritative": false
+  "prompt_context_authoritative": false,
+  "baseline_required_in_ci": true
 }
 ```
 
-Ignored paths require a normalized relative pattern and a reason. Ignore rules cannot suppress `.git/**`, `.sourcepack/baseline/**`, unsafe path, path escape, or protected artifact findings. Attempts to make prompt context authoritative or to disable CI baseline requirements are reported as policy warnings and do not change the trust model.
+Ignored paths require a normalized relative pattern and a reason. Ignore rules cannot suppress dependency, command, baseline, protected artifact, unsafe path, malformed diff, binary diff, unsupported ecosystem, workflow, or execution-evidence findings. Unknown future reason codes are not suppressible. Attempts to make prompt context authoritative or to disable CI baseline requirements are reported as `policy_config_warning` findings and do not change SourcePack trust behavior.
+
+Reserved recognized fields include `strict_default`, `fail_on_warn_in_ci`, `protected_paths`, and `report_formats`. When present, they are reported as policy config warnings because they are not enforcement controls in policy config v1. SARIF is written as a report format only and does not change SourcePack judgment. CI still consumes a committed baseline and fails closed when the baseline is missing. Prompt context is not authoritative.

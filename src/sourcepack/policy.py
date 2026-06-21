@@ -26,6 +26,15 @@ class PolicyConfig:
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
 
+
+SUPPRESSIBLE_IGNORED_PATH_FINDING_IDS = frozenset({"new_file"})
+_RESERVED_POLICY_FIELDS = {
+    "strict_default": "policy_config_reserved:strict_default",
+    "fail_on_warn_in_ci": "policy_config_reserved:fail_on_warn_in_ci",
+    "protected_paths": "policy_config_reserved:protected_paths",
+    "report_formats": "policy_config_reserved:report_formats",
+}
+
 def normalize_policy_mode(value: PolicyMode | str | None) -> PolicyMode:
     if isinstance(value, PolicyMode):
         return value
@@ -81,6 +90,9 @@ def load_policy_config(repo: str | Path) -> PolicyConfig:
         warnings.append("policy_config_ignored:prompt_context_authoritative")
     if raw.get("baseline_required_in_ci") is False:
         warnings.append("policy_config_ignored:baseline_required_in_ci_false")
+    for field, warning in _RESERVED_POLICY_FIELDS.items():
+        if field in raw:
+            warnings.append(warning)
     ignored: list[dict] = []
     for item in raw.get("ignored_paths", []) if isinstance(raw.get("ignored_paths", []), list) else []:
         if not isinstance(item, dict):
@@ -118,10 +130,11 @@ def load_policy_config(repo: str | Path) -> PolicyConfig:
 
 
 def finding_ignored_by_policy(finding: dict, config: PolicyConfig) -> dict | None:
+    fid = str(finding.get("id") or "")
+    if fid not in SUPPRESSIBLE_IGNORED_PATH_FINDING_IDS:
+        return None
     path = _normalize_policy_path(finding.get("path"))
     if not path:
-        return None
-    if finding.get("id") in {"protected_artifact", "git_path_modification", "unsafe_path", "path_escape"}:
         return None
     for item in config.ignored_paths:
         pattern = item["pattern"]

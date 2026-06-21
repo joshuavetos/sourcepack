@@ -69,6 +69,7 @@ Local policy:
 - WARN exits `0` locally.
 - WARN exits nonzero with `--strict` or `--ci`.
 - FAIL exits nonzero.
+- `sourcepack policy validate [repo] [--json]` validates optional `.sourcepack/policy.json` without creating or updating baseline, prompt, report, evidence, hook, or working-tree files. Missing policy files exit `0`; invalid JSON or a non-object root exits nonzero. Reserved fields and dangerous trust overrides are warnings only and do not make prompt context authoritative or make CI baseline checks optional.
 
 ## How SourcePack works
 

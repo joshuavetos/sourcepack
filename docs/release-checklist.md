@@ -9,22 +9,48 @@ This checklist is for manual release preparation. It does not publish to PyPI, c
 - Run the full pytest suite.
 - Run SourcePack behavior-matrix and real-corpus checks.
 
-## Build wheel/sdist
+## Release artifact smoke
+
+Run the release smoke entrypoint before any upload:
 
 ```bash
-python -m pip install build
-python -m build
+python -m pip install build twine setuptools wheel
+python scripts/release_smoke.py
 ```
 
-Record the generated wheel and sdist filenames from `dist/`.
+The script removes `dist/`, `build/`, and `*.egg-info` artifacts before building. Cleanup failure is a release blocker.
+
+The script builds deterministic artifacts with `python -m build --no-isolation`, so the maintainer-controlled environment is the build environment. Do not reuse artifacts from an earlier build step.
+
+Expected build artifacts are exactly one wheel and one sdist for the version recorded in package metadata:
+
+- `dist/sourcepack-<version>-py3-none-any.whl`
+- `dist/sourcepack-<version>.tar.gz`
+
+The smoke check opens the wheel and sdist directly and verifies packaged release/demo assets, including the demo `.env`, before install testing. It scans only packaged release/demo assets for forbidden token-shaped strings; it does not scan all source files.
+
+The smoke check then creates separate fresh virtual environments for the wheel and sdist, installs each artifact, and runs:
+
+```bash
+sourcepack --version
+sourcepack doctor
+sourcepack demo
+```
+
+`sourcepack demo` may print the expected demo `Verdict: FAIL` / `RED LIGHT` report. That output is not a release-smoke failure as long as the command exits 0 and does not print the old missing-assets error.
+
+
+## Build wheel/sdist
+
+`python scripts/release_smoke.py` removes `dist/`, `build/`, and root `*.egg-info`, then builds exactly one wheel and one sdist with `python -m build --no-isolation`. Do not reuse artifacts from earlier build steps.
 
 ## Wheel install smoke
 
-Create a clean virtual environment, install the built wheel, and run console/import checks outside editable mode.
+Covered by `python scripts/release_smoke.py`: it installs the freshly built wheel in a clean virtual environment and runs `sourcepack --version`, `sourcepack doctor`, and `sourcepack demo`.
 
 ## Sdist install smoke
 
-Create a separate clean virtual environment, install the built sdist if feasible in the environment, and run the same console/import checks outside editable mode.
+Covered by `python scripts/release_smoke.py`: it installs the freshly built sdist in a separate clean virtual environment and runs the same console smoke commands.
 
 ## SourcePack console smoke
 

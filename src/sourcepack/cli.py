@@ -25,6 +25,7 @@ from .reports.html import render_report_html
 from .reports.json import normalized_finding, traffic_report, write_user_report
 from .reports.markdown import LIGHT_BY_VERDICT, SEVERITY_ORDER, render_traffic
 from .execution_ledger import clear_ledger, entry_to_json, execution_findings, iter_entries, run_and_record, find_repo_root
+from .policy import validate_policy_config
 
 try:
     from . import __version__
@@ -2742,8 +2743,48 @@ def cli_allow(args) -> int:
     print(json.dumps(entry, indent=2))
     return 0
 
+def cli_policy_validate(args) -> int:
+    result = validate_policy_config(getattr(args, "repo", "."))
+    if getattr(args, "json", False):
+        print(json.dumps(result.to_json_dict(), indent=2))
+        return 0 if result.valid else 1
+    if not result.policy_present:
+        print(f"No policy file found at {result.policy_path}; policy config is optional.")
+        return 0
+    print(f"Policy file: {result.policy_path}")
+    if result.errors:
+        for error in result.errors:
+            if error.startswith("policy_config_invalid_json:"):
+                print(f"ERROR: invalid JSON in {result.policy_path}: {error}")
+            elif error == "policy_config_invalid:root_must_be_object":
+                print(f"ERROR: policy root must be a JSON object in {result.policy_path}")
+            else:
+                print(f"ERROR: {error}")
+        return 1
+    print("Policy config is valid.")
+    if result.effective_ignored_paths:
+        print("Effective ignored paths:")
+        for item in result.effective_ignored_paths:
+            print(f"- {item['pattern']} — {item['reason']}")
+    else:
+        print("Effective ignored paths: none")
+    if result.ignored_invalid_entries:
+        print("Ignored invalid entries:")
+        for item in result.ignored_invalid_entries:
+            print(f"- ignored_paths[{item.index}]: {item.warning}")
+    if result.warnings:
+        print("Warnings:")
+        for warning in result.warnings:
+            print(f"- {warning}")
+    else:
+        print("Warnings: none")
+    return 0
+
+
 def cli_policy(args) -> int:
     repo = Path(".").resolve()
+    if args.policy_command == "validate":
+        return cli_policy_validate(args)
     if args.policy_command == "list":
         print(json.dumps({"schema_version":"sourcepack.policy.list.v1", "policies": _policy_entries(repo)}, indent=2)); return 0
     if args.policy_command == "remove":
@@ -2878,6 +2919,9 @@ def run_cli(args_list=None):
     policy_cmd = subs.add_parser("policy")
     policy_subs = policy_cmd.add_subparsers(dest="policy_command")
     policy_subs.add_parser("list")
+    policy_validate = policy_subs.add_parser("validate", help="validate .sourcepack/policy.json without changing repository state")
+    policy_validate.add_argument("repo", nargs="?", default=".")
+    policy_validate.add_argument("--json", action="store_true")
     policy_remove = policy_subs.add_parser("remove")
     policy_remove.add_argument("policy_id")
     reset_cmd = subs.add_parser("reset")

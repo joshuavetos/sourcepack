@@ -138,3 +138,7 @@ def test_policy_config_reserved_fields_emit_warnings_without_authority(tmp_path)
     assert "policy_config_reserved:fail_on_warn_in_ci" in warnings
     assert "policy_config_reserved:protected_paths" in warnings
     assert "policy_config_reserved:report_formats" in warnings
+    assert config.strict_default is True
+    assert config.fail_on_warn_in_ci is True
+    assert config.protected_paths == (".sourcepack/baseline/**", ".git/**")
+    assert config.report_formats == ("json", "markdown", "html", "sarif")

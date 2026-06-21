@@ -120,11 +120,11 @@ def load_policy_config(repo: str | Path) -> PolicyConfig:
         else:
             warnings.append(f"policy_report_format_ignored:{fmt}")
     return PolicyConfig(
-        strict_default=bool(raw.get("strict_default", True)),
-        fail_on_warn_in_ci=bool(raw.get("fail_on_warn_in_ci", True)),
+        strict_default=PolicyConfig.strict_default,
+        fail_on_warn_in_ci=PolicyConfig.fail_on_warn_in_ci,
         ignored_paths=tuple(ignored),
-        protected_paths=tuple(protected) or PolicyConfig.protected_paths,
-        report_formats=tuple(formats) or PolicyConfig.report_formats,
+        protected_paths=PolicyConfig.protected_paths,
+        report_formats=PolicyConfig.report_formats,
         warnings=tuple(warnings),
     )
 

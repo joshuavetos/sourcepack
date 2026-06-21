@@ -24,6 +24,7 @@ def test_write_user_report_writes_sarif(tmp_path):
     assert sarif.exists()
     data = __import__("json").loads(sarif.read_text(encoding="utf-8"))
     assert data["version"] == "2.1.0"
+    assert data["runs"][0]["invocations"][0]["executionSuccessful"] is True
     assert data["runs"][0]["results"][0]["ruleId"] == "missing_file"
 
 

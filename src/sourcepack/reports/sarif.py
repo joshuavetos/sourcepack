@@ -30,7 +30,7 @@ def render_sarif(report: dict) -> dict:
         "version": "2.1.0",
         "runs": [{
             "tool": {"driver": {"name": "SourcePack", "informationUri": "https://pypi.org/project/sourcepack/", "rules": list(rules.values())}},
-            "invocations": [{"executionSuccessful": report.get("verdict") != "FAIL"}],
+            "invocations": [{"executionSuccessful": True}],
             "results": results,
         }],
     }

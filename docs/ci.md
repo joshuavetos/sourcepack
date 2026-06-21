@@ -40,4 +40,4 @@ If you choose to upload SARIF in GitHub code scanning, use the generated file on
 
 ## Replaying saved reports
 
-CI enforcement should continue to use `sourcepack diff . --ci --json` against committed trusted baseline state. For audit readback of an already-produced report, use `sourcepack replay <report-or-bundle-path> --json`. Replay is read-only, does not require live baseline or prompt context, and does not rerun judgment over the current checkout.
+CI enforcement should continue to use `sourcepack diff . --ci --json` against committed trusted baseline state. For audit readback of an already-produced report, use `sourcepack replay <report-or-bundle-path> --json`. Replay JSON output uses `schema_version: "sourcepack.replay.v1"` and preserves the input report or bundle schema separately as `input_schema_version`. Replay is read-only, does not require live baseline or prompt context, and does not rerun judgment over the current checkout.

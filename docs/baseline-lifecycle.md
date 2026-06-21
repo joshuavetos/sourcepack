@@ -101,7 +101,7 @@ Validate policy config directly with `sourcepack policy validate [repo]` or `sou
 
 ## Replay/audit reconstruction
 
-`sourcepack replay <report-or-bundle-path>` reads a saved SourcePack JSON report or replay bundle and reconstructs the saved verdict, findings, reason codes, evidence mapping, metadata, and replay status. Use `sourcepack replay <report-or-bundle-path> --json` for parseable JSON output.
+`sourcepack replay <report-or-bundle-path>` reads a saved SourcePack JSON report or replay bundle and reconstructs the saved verdict, findings, reason codes, evidence mapping, metadata, and replay status. Use `sourcepack replay <report-or-bundle-path> --json` for parseable JSON output. Replay JSON output uses `schema_version: "sourcepack.replay.v1"` and preserves the input report or bundle schema separately as `input_schema_version`.
 
 Replay is read-only. It does not require `.sourcepack/baseline/`, `.sourcepack/prompt/`, Git, or live repository state, and it does not rerun `sourcepack diff` judgment or scanning over the current working tree. Replay reconstructs saved report or bundle content only; it does not prove correctness, security, runtime success, dependency safety, semantic validity, external API truth, or user intent.
 

@@ -82,6 +82,16 @@ _RESERVED_POLICY_FIELDS = {
     "report_formats": "policy_config_reserved:report_formats",
 }
 
+
+def _is_unsafe_policy_ignore_pattern(pattern: str) -> bool:
+    return (
+        pattern == ".git"
+        or pattern.startswith(".git/")
+        or pattern == ".sourcepack/baseline"
+        or pattern.startswith(".sourcepack/baseline/")
+    )
+
+
 def normalize_policy_mode(value: PolicyMode | str | None) -> PolicyMode:
     if isinstance(value, PolicyMode):
         return value
@@ -186,7 +196,7 @@ def validate_policy_config(repo: str | Path) -> PolicyValidationResult:
             reason = str(item.get("reason") or "").strip()
             if not pattern or not reason:
                 warning = "policy_ignore_invalid:pattern_and_reason_required"
-            elif pattern.startswith(".git/") or pattern == ".git" or pattern.startswith(".sourcepack/baseline/") or pattern == ".sourcepack/baseline":
+            elif _is_unsafe_policy_ignore_pattern(pattern):
                 warning = f"policy_ignore_unsafe:{pattern}"
             else:
                 ignored.append({"pattern": pattern, "reason": reason})
@@ -243,7 +253,7 @@ def load_policy_config(repo: str | Path) -> PolicyConfig:
         if not pattern or not reason:
             warnings.append("policy_ignore_invalid:pattern_and_reason_required")
             continue
-        if pattern.startswith(".git/") or pattern.startswith(".sourcepack/baseline/"):
+        if _is_unsafe_policy_ignore_pattern(pattern):
             warnings.append(f"policy_ignore_unsafe:{pattern}")
             continue
         ignored.append({"pattern": pattern, "reason": reason})
@@ -278,6 +288,8 @@ def finding_ignored_by_policy(finding: dict, config: PolicyConfig) -> dict | Non
         return None
     for item in config.ignored_paths:
         pattern = item["pattern"]
+        if _is_unsafe_policy_ignore_pattern(pattern):
+            continue
         if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, pattern.rstrip("/") + "/**"):
             return {"pattern": pattern, "reason": item["reason"], "path": path}
     return None

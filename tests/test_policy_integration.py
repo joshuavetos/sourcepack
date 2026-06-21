@@ -116,6 +116,27 @@ def test_policy_ignored_paths_allowlist_only_blocks_unsafe_reason_codes():
         assert finding_ignored_by_policy({"id": fid, "path": "docs/new.md"}, config) is None, fid
 
 
+def test_load_policy_config_rejects_exact_unsafe_ignored_paths(tmp_path):
+    from sourcepack.policy import load_policy_config
+
+    policy_dir = tmp_path / ".sourcepack"
+    policy_dir.mkdir()
+    (policy_dir / "policy.json").write_text(json.dumps({
+        "schema_version": "sourcepack.policy.v1",
+        "ignored_paths": [
+            {"pattern": ".git", "reason": "unsafe"},
+            {"pattern": ".sourcepack/baseline", "reason": "unsafe"},
+            {"pattern": "docs/**", "reason": "ok"},
+        ],
+    }), encoding="utf-8")
+
+    config = load_policy_config(tmp_path)
+
+    assert {item["pattern"] for item in config.ignored_paths} == {"docs/**"}
+    assert "policy_ignore_unsafe:.git" in config.warnings
+    assert "policy_ignore_unsafe:.sourcepack/baseline" in config.warnings
+
+
 def test_policy_config_reserved_fields_emit_warnings_without_authority(tmp_path):
     from sourcepack.policy import load_policy_config
 

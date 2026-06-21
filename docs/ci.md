@@ -38,6 +38,28 @@ If you choose to upload SARIF in GitHub code scanning, use the generated file on
     sarif_file: sourcepack-report/sourcepack.sarif.json
 ```
 
+
+## Composite Action inputs
+
+The repository action (`uses: ./` or a tagged SourcePack action reference) exposes these inputs. They configure only wrapper behavior; judgment remains delegated to `sourcepack diff` and CI still consumes committed trusted baseline state only.
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `mode` | `ci` | SourcePack CLI mode: `ci`, `strict`, or `local`. |
+| `sourcepack-version` | empty | Optional SourcePack package version to install from the configured Python package source; empty installs the current checkout. |
+| `python-version` | `3.11` | Python version for the action runtime. |
+| `baseline-path` | `.sourcepack/baseline` | Existing trusted baseline directory consumed by CI; the action fails closed if it is missing. |
+| `report-dir` | `sourcepack-report` | Directory where action artifacts are written. |
+| `json` | `true` | Preserve JSON report output as `sourcepack.json`. |
+| `markdown` | `true` | Write `sourcepack.md` and append it to the GitHub step summary when available. |
+| `sarif` | `true` | Copy `sourcepack.sarif.json` only when SourcePack produced SARIF; missing SARIF is non-fatal. |
+| `fail-on-warn` | `false` | Add strict WARN handling outside modes that already fail on WARN. |
+| `run-doctor` | `true` | Run `sourcepack doctor` before diff evaluation. |
+| `upload-artifact` | `true` | Upload `report-dir` as a GitHub Actions artifact. |
+| `comment-pr` | `false` | Reserved for future opt-in PR commenting; not implemented by this action. |
+
+The action also writes `sourcepack.stdout.txt`, `sourcepack.stderr.txt`, and `sourcepack-command.txt`. The command artifact records the exact command arguments the wrapper executed. If trusted baseline state is missing, the action reports that SourcePack failed closed, CI will not create or update baseline state, and the baseline must be created or refreshed locally or in a separate trusted maintainer-controlled setup workflow.
+
 ## Replaying saved reports
 
 CI enforcement should continue to use `sourcepack diff . --ci --json` against committed trusted baseline state. For audit readback of an already-produced report, use `sourcepack replay <report-or-bundle-path> --json`. Replay JSON output uses `schema_version: "sourcepack.replay.v1"` and preserves the input report or bundle schema separately as `input_schema_version`. Replay is read-only, does not require live baseline or prompt context, and does not rerun judgment over the current checkout.

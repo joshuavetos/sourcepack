@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -23,13 +24,48 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _verdict_from_json(path: Path) -> str | None:
+def _json_data(path: Path) -> dict[str, object]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return None
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _verdict_from_json(path: Path) -> str | None:
+    verdict = _json_data(path).get("verdict")
+    return verdict if isinstance(verdict, str) else None
+
+
+def _traffic_light_from_json(path: Path) -> str | None:
+    data = _json_data(path)
+    for key in ("traffic_light", "trafficLight", "light"):
+        value = data.get(key)
+        if isinstance(value, str):
+            return value
     verdict = data.get("verdict")
     return verdict if isinstance(verdict, str) else None
+
+
+def _append_step_summary(path: str | None, markdown: str) -> None:
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as summary:
+        summary.write(markdown)
+        if not markdown.endswith("\n"):
+            summary.write("\n")
+
+
+def _artifact_list(report_dir: Path) -> list[str]:
+    names = [
+        "sourcepack.json",
+        "sourcepack.md",
+        "sourcepack.sarif.json",
+        "sourcepack.stdout.txt",
+        "sourcepack.stderr.txt",
+        "sourcepack-command.txt",
+    ]
+    return [name for name in names if (report_dir / name).exists()]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,15 +94,31 @@ def main(argv: list[str] | None = None) -> int:
 
     if not baseline.exists():
         message = (
-            f"SourcePack baseline not found: {args.baseline_path}\n"
-            "CI will not create or update trusted baseline state automatically.\n"
-            "Create or refresh the baseline only from a trusted maintainer-controlled workflow or local maintainer environment.\n"
+            "SourcePack failed closed because trusted baseline state is missing.\n"
+            f"Missing baseline path: {args.baseline_path}\n"
+            "CI will not create or update trusted baseline state.\n"
+            "Create or refresh the baseline locally or in a separate trusted maintainer-controlled setup workflow.\n"
+            "This is a trust-boundary behavior, not a package crash.\n"
         )
         _write(command_log, "baseline preflight\n")
         _write(stdout_log, "")
         _write(stderr_log, message)
-        _write(markdown_report, f"# SourcePack\n\n```text\n{message}\n```\n")
+        _write(
+            markdown_report,
+            "# SourcePack Action summary\n\n"
+            "- Verdict: FAIL\n"
+            "- Traffic light: FAIL\n"
+            f"- Mode: {args.mode}\n"
+            f"- WARN fails in selected mode: {args.mode in {'ci', 'strict'} or _truthy(args.fail_on_warn)}\n"
+            f"- Report directory: {report_dir}\n"
+            "- Artifacts: sourcepack.md, sourcepack.stderr.txt, sourcepack.stdout.txt, sourcepack-command.txt\n"
+            "- Missing baseline: SourcePack failed closed because trusted baseline state is missing. "
+            "CI will not create or update trusted baseline state. Create or refresh the baseline locally "
+            "or in a separate trusted maintainer-controlled setup workflow. This is a trust-boundary behavior, not a package crash.\n",
+        )
+        _append_step_summary(os.environ.get("GITHUB_STEP_SUMMARY"), markdown_report.read_text(encoding="utf-8"))
         print(message, file=sys.stderr, end="")
+        print(f"SourcePack report directory: {report_dir}")
         return 2
 
     command = ["sourcepack", "diff", str(repo)]
@@ -77,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.mode == "strict" or _truthy(args.fail_on_warn):
         command.append("--strict")
 
-    _write(command_log, " ".join(command) + "\n")
+    _write(command_log, shlex.join(command) + "\n")
     result = _run(command, repo)
     _write(stdout_log, result.stdout)
     _write(stderr_log, result.stderr)
@@ -89,24 +141,41 @@ def main(argv: list[str] | None = None) -> int:
     if latest_json.exists():
         shutil.copyfile(latest_json, json_report)
     latest_sarif = repo / ".sourcepack" / "reports" / "latest.sarif.json"
-    if _truthy(args.sarif) and latest_sarif.exists():
-        shutil.copyfile(latest_sarif, sarif_report)
+    sarif_status = "disabled"
+    if _truthy(args.sarif):
+        if latest_sarif.exists():
+            shutil.copyfile(latest_sarif, sarif_report)
+            sarif_status = f"copied to {sarif_report}"
+        else:
+            sarif_status = "enabled, but no SourcePack SARIF report was present; continuing without SARIF artifact"
 
     if _truthy(args.markdown):
         verdict = _verdict_from_json(json_report) or "UNKNOWN"
+        traffic_light = _traffic_light_from_json(json_report) or verdict
+        artifacts = _artifact_list(report_dir)
         _write(
             markdown_report,
-            "# SourcePack report\n\n"
-            f"Verdict: {verdict}\n\n"
+            "# SourcePack Action summary\n\n"
+            f"- Verdict: {verdict}\n"
+            f"- Traffic light: {traffic_light}\n"
+            f"- Mode: {args.mode}\n"
+            f"- WARN fails in selected mode: {args.mode in {'ci', 'strict'} or _truthy(args.fail_on_warn)}\n"
+            f"- Report directory: {report_dir}\n"
+            f"- Artifacts: {', '.join(artifacts) if artifacts else 'none'}\n"
+            f"- SARIF passthrough: {sarif_status}\n"
+            f"- Command artifact: {command_log} contains the exact command arguments used.\n\n"
             "## Command\n\n"
-            f"```text\n{' '.join(command)}\n```\n\n"
+            f"```text\n{shlex.join(command)}\n```\n\n"
             "## Output\n\n"
             f"```text\n{result.stdout}\n```\n",
         )
 
-    if "GITHUB_STEP_SUMMARY" in os.environ and markdown_report.exists():
-        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-            summary.write(markdown_report.read_text(encoding="utf-8"))
+    print(f"SourcePack report directory: {report_dir}")
+    print(f"SourcePack artifacts: {', '.join(_artifact_list(report_dir))}")
+    print(f"SourcePack SARIF passthrough: {sarif_status}")
+
+    if markdown_report.exists():
+        _append_step_summary(os.environ.get("GITHUB_STEP_SUMMARY"), markdown_report.read_text(encoding="utf-8"))
 
     return result.returncode
 

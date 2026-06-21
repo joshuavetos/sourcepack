@@ -99,6 +99,10 @@ With SourcePack:
 
 SourcePack enforcement depends on a reviewed `.sourcepack/baseline/`, while `.sourcepack/prompt/` remains AI guidance only. CI should consume committed baseline state and must not create or update trusted baseline state automatically. See [`docs/baseline-lifecycle.md`](docs/baseline-lifecycle.md) for safe local and PR flows.
 
+## AI-agent workflow guidance
+
+For AI-agent contribution guidance, use the concise post-change gate workflow in [`docs/ai-agent-workflow.md`](docs/ai-agent-workflow.md).
+
 ## Public-alpha readiness
 
 Public-alpha readiness is tracked in [`docs/public-alpha-readiness.md`](docs/public-alpha-readiness.md). SourcePack is a local evidence guardrail; it does not prove code correctness, security, dependency safety, runtime success, semantic validity, external API truth, or user intent.

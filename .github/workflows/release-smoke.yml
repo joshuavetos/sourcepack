@@ -1,0 +1,29 @@
+name: release-smoke
+
+on:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - MANIFEST.in
+      - src/sourcepack/**
+      - examples/**
+      - scripts/release_smoke.py
+      - .github/workflows/**
+  workflow_dispatch:
+
+jobs:
+  release_smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install build dependencies
+        run: python -m pip install build twine setuptools wheel
+      - name: Remove previous build outputs
+        run: rm -rf dist/ build/ *.egg-info
+      - name: Release smoke
+        run: python scripts/release_smoke.py

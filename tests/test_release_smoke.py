@@ -134,6 +134,28 @@ def _run_artifact_validation(dist: Path) -> None:
     release_smoke.inspect_sdist_contents(sdist)
 
 
+def _assert_forbidden_detector_string_is_packaged_outside_scan_scope(dist: Path) -> None:
+    wheel_path = dist / "sourcepack-1.2.3-py3-none-any.whl"
+    sdist_path = dist / "sourcepack-1.2.3.tar.gz"
+    wheel_member = "sourcepack/internal_detector_fixture.py"
+    sdist_member = "src/sourcepack/internal_detector_fixture.py"
+
+    with zipfile.ZipFile(wheel_path) as zf:
+        assert "OPENAI_API_KEY" in zf.read(wheel_member).decode("utf-8")
+        assert not any(wheel_member.startswith(prefix) for prefix in release_smoke.WHEEL_DEMO_SCAN_PREFIXES)
+
+    with tarfile.open(sdist_path, "r:gz") as tf:
+        members_by_inner_path = {
+            "/".join(Path(member.name).parts[1:]): member
+            for member in tf.getmembers()
+            if member.isfile() and len(Path(member.name).parts) >= 2
+        }
+        extracted = tf.extractfile(members_by_inner_path[sdist_member])
+        assert extracted is not None
+        assert "OPENAI_API_KEY" in extracted.read().decode("utf-8")
+        assert not any(sdist_member.startswith(prefix) for prefix in release_smoke.SDIST_DEMO_SCAN_PREFIXES)
+
+
 def _run_installed_demo_validation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, output: str, returncode: int = 0) -> None:
     monkeypatch.setattr(release_smoke.venv.EnvBuilder, "create", lambda self, env: None)
     monkeypatch.setattr(release_smoke, "_venv_paths", lambda env: (env / "bin" / "python", env / "bin" / "sourcepack"))
@@ -152,9 +174,9 @@ def _run_installed_demo_validation(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 
 _RELEASE_SMOKE_FAILURE_INJECTION_CASES = (
-    pytest.param("missing wheel", "artifact", {"sdist": {}}, False, "expected exactly one SourcePack wheel", id="missing-wheel"),
-    pytest.param("missing sdist", "artifact", {"wheel": {}}, False, "expected exactly one SourcePack wheel", id="missing-sdist"),
-    pytest.param("extra wheel", "artifact", {"wheel": {}, "sdist": {}, "extra_wheel": {"version": "1.2.4"}}, False, "expected exactly one SourcePack wheel", id="extra-wheel"),
+    pytest.param("missing wheel", "artifact", {"sdist": {}}, False, r"wheels=\[\]", id="missing-wheel"),
+    pytest.param("missing sdist", "artifact", {"wheel": {}}, False, r"sdists=\[\]", id="missing-sdist"),
+    pytest.param("extra wheel", "artifact", {"wheel": {}, "sdist": {}, "extra_wheel": {"version": "1.2.4"}}, False, r"wheels=\[", id="extra-wheel"),
     pytest.param("wrong wheel version", "artifact", {"wheel": {"metadata_version": "9.9.9"}, "sdist": {}}, False, "does not match sdist metadata version", id="wrong-wheel-version"),
     pytest.param("wrong sdist version", "artifact", {"wheel": {}, "sdist": {"metadata_version": "9.9.9"}}, False, "does not match sdist metadata version", id="wrong-sdist-version"),
     pytest.param("missing required packaged asset", "artifact", {"wheel": {"omit": {"sourcepack/assets/audit_template.md"}}, "sdist": {}}, False, "audit_template.md", id="missing-required-packaged-asset"),
@@ -198,6 +220,8 @@ def test_release_smoke_failure_injection_cases(
             artifacts.write_wheel(**dict(setup["extra_wheel"]))  # type: ignore[arg-type]
 
         if should_pass:
+            if case_name == "forbidden token outside scan scope":
+                _assert_forbidden_detector_string_is_packaged_outside_scan_scope(tmp_path)
             _run_artifact_validation(tmp_path)
             assert case_name == "forbidden token outside scan scope"
             assert outside_file.exists()

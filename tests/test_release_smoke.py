@@ -49,6 +49,176 @@ def _write_sdist(path: Path, *, version: str = "1.2.3", name: str = "sourcepack"
             tf.addfile(info, io.BytesIO(data))
 
 
+
+class _SyntheticArtifacts:
+    def __init__(self, dist: Path, *, version: str = "1.2.3") -> None:
+        self.dist = dist
+        self.version = version
+        self.wheel = dist / f"sourcepack-{version}-py3-none-any.whl"
+        self.sdist = dist / f"sourcepack-{version}.tar.gz"
+
+    def write_wheel(
+        self,
+        *,
+        path: Path | None = None,
+        version: str | None = None,
+        metadata_version: str | None = None,
+        omit: set[str] | None = None,
+        replacements: dict[str, str] | None = None,
+        outside_forbidden: Path | None = None,
+    ) -> Path:
+        artifact_version = version or self.version
+        wheel_path = path or self.dist / f"sourcepack-{artifact_version}-py3-none-any.whl"
+        metadata_version = metadata_version or artifact_version
+        omit = omit or set()
+        replacements = replacements or {}
+        with zipfile.ZipFile(wheel_path, "w") as zf:
+            for member in release_smoke.WHEEL_REQUIRED_FILES:
+                if member in omit:
+                    continue
+                text = replacements.get(member, "content\n")
+                if member.endswith(".env") and member not in replacements:
+                    text = release_smoke.DEMO_ENV_MARKER + "\n"
+                zf.writestr(member, text)
+            zf.writestr("sourcepack/examples/demo_repo/sourcepack/cli.py", "print('demo')\n")
+            zf.writestr("sourcepack/examples/demo_repo/tests/test_verify.py", "def test_ok(): pass\n")
+            if outside_forbidden is not None:
+                outside_text = outside_forbidden.read_text(encoding="utf-8")
+                zf.writestr("sourcepack/internal_detector_fixture.py", outside_text)
+            zf.writestr(
+                f"sourcepack-{metadata_version}.dist-info/METADATA",
+                f"Name: sourcepack\nVersion: {metadata_version}\n",
+            )
+        return wheel_path
+
+    def write_sdist(
+        self,
+        *,
+        path: Path | None = None,
+        version: str | None = None,
+        metadata_version: str | None = None,
+        omit: set[str] | None = None,
+        replacements: dict[str, str] | None = None,
+        outside_forbidden: Path | None = None,
+    ) -> Path:
+        artifact_version = version or self.version
+        sdist_path = path or self.dist / f"sourcepack-{artifact_version}.tar.gz"
+        metadata_version = metadata_version or artifact_version
+        omit = omit or set()
+        replacements = replacements or {}
+        with tarfile.open(sdist_path, "w:gz") as tf:
+            files = {member: replacements.get(member, "content\n") for member in release_smoke.SDIST_REQUIRED_FILES if member not in omit}
+            env = "src/sourcepack/examples/demo_repo/.env"
+            if env in files and env not in replacements:
+                files[env] = release_smoke.DEMO_ENV_MARKER + "\n"
+            files["src/sourcepack/examples/demo_repo/sourcepack/cli.py"] = "print('demo')\n"
+            files["src/sourcepack/examples/demo_repo/tests/test_verify.py"] = "def test_ok(): pass\n"
+            if outside_forbidden is not None:
+                files["src/sourcepack/internal_detector_fixture.py"] = outside_forbidden.read_text(encoding="utf-8")
+            files["PKG-INFO"] = f"Name: sourcepack\nVersion: {metadata_version}\n"
+            for inner, text in files.items():
+                data = text.encode("utf-8")
+                info = tarfile.TarInfo(f"sourcepack-{artifact_version}/{inner}")
+                info.size = len(data)
+                info.mtime = 0
+                tf.addfile(info, io.BytesIO(data))
+        return sdist_path
+
+    def write_valid_pair(self) -> tuple[Path, Path]:
+        return self.write_wheel(), self.write_sdist()
+
+
+def _run_artifact_validation(dist: Path) -> None:
+    _version, wheel, sdist = release_smoke.verify_expected_artifacts(dist)
+    release_smoke.inspect_wheel_contents(wheel)
+    release_smoke.inspect_sdist_contents(sdist)
+
+
+def _run_installed_demo_validation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, output: str, returncode: int = 0) -> None:
+    monkeypatch.setattr(release_smoke.venv.EnvBuilder, "create", lambda self, env: None)
+    monkeypatch.setattr(release_smoke, "_venv_paths", lambda env: (env / "bin" / "python", env / "bin" / "sourcepack"))
+
+    def fake_run(cmd: list[str], cwd: Path = release_smoke.ROOT, *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        if cmd[-1] == "--version":
+            return subprocess.CompletedProcess(cmd, 0, "1.2.3\n")
+        if cmd[-1] == "doctor":
+            return subprocess.CompletedProcess(cmd, 0, "Status: READY\n")
+        if cmd[-1] == "demo":
+            return subprocess.CompletedProcess(cmd, returncode, output)
+        return subprocess.CompletedProcess(cmd, 0, "")
+
+    monkeypatch.setattr(release_smoke, "run", fake_run)
+    release_smoke.smoke_installed_artifact(tmp_path / "sourcepack-1.2.3-py3-none-any.whl", "1.2.3", "wheel", tmp_path)
+
+
+_RELEASE_SMOKE_FAILURE_INJECTION_CASES = (
+    pytest.param("missing wheel", "artifact", {"sdist": {}}, False, "expected exactly one SourcePack wheel", id="missing-wheel"),
+    pytest.param("missing sdist", "artifact", {"wheel": {}}, False, "expected exactly one SourcePack wheel", id="missing-sdist"),
+    pytest.param("extra wheel", "artifact", {"wheel": {}, "sdist": {}, "extra_wheel": {"version": "1.2.4"}}, False, "expected exactly one SourcePack wheel", id="extra-wheel"),
+    pytest.param("wrong wheel version", "artifact", {"wheel": {"metadata_version": "9.9.9"}, "sdist": {}}, False, "does not match sdist metadata version", id="wrong-wheel-version"),
+    pytest.param("wrong sdist version", "artifact", {"wheel": {}, "sdist": {"metadata_version": "9.9.9"}}, False, "does not match sdist metadata version", id="wrong-sdist-version"),
+    pytest.param("missing required packaged asset", "artifact", {"wheel": {"omit": {"sourcepack/assets/audit_template.md"}}, "sdist": {}}, False, "audit_template.md", id="missing-required-packaged-asset"),
+    pytest.param("missing demo .env", "artifact", {"wheel": {"omit": {"sourcepack/examples/demo_repo/.env"}}, "sdist": {}}, False, r"demo_repo/\.env", id="missing-demo-env"),
+    pytest.param("demo .env missing required placeholder", "artifact", {"wheel": {"replacements": {"sourcepack/examples/demo_repo/.env": "SOURCEPACK_DEMO_PLACEHOLDER=wrong\n"}}, "sdist": {}}, False, "required placeholder marker", id="demo-env-missing-placeholder"),
+    pytest.param("forbidden token inside packaged release/demo asset", "artifact", {"wheel": {"replacements": {"sourcepack/examples/fake_ai_answer.md": "OPENAI_API_KEY=not-a-real-secret\n"}}, "sdist": {}}, False, "forbidden token pattern", id="forbidden-token-packaged-asset"),
+    pytest.param("forbidden token outside scan scope", "artifact", {"wheel": {"outside_forbidden": "external"}, "sdist": {"outside_forbidden": "external"}}, True, None, id="forbidden-token-outside-scope"),
+    pytest.param("installed demo old missing-assets error appears", "demo", {"output": release_smoke.MISSING_ASSETS_ERROR + "\n"}, False, "old missing-assets error", id="installed-demo-old-missing-assets-error"),
+    pytest.param("expected installed demo Verdict: FAIL / RED LIGHT", "demo", {"output": "Verdict: FAIL\nRED LIGHT\n"}, True, None, id="installed-demo-expected-red-fail"),
+)
+
+
+@pytest.mark.parametrize(("case_name", "case_type", "setup", "should_pass", "message"), _RELEASE_SMOKE_FAILURE_INJECTION_CASES)
+def test_release_smoke_failure_injection_cases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case_name: str,
+    case_type: str,
+    setup: dict[str, object],
+    should_pass: bool,
+    message: str | None,
+) -> None:
+    artifacts = _SyntheticArtifacts(tmp_path)
+
+    if case_type == "artifact":
+        outside_file = tmp_path / "unrelated_test_detector_fixture.py"
+        if "outside_forbidden" in str(setup):
+            outside_file.write_text("OPENAI_API_KEY = 'intentional detector string outside scan scope'\n", encoding="utf-8")
+            assert "OPENAI_API_KEY" in outside_file.read_text(encoding="utf-8")
+        if "wheel" in setup:
+            wheel_setup = dict(setup["wheel"])  # type: ignore[arg-type]
+            if wheel_setup.get("outside_forbidden") == "external":
+                wheel_setup["outside_forbidden"] = outside_file
+            artifacts.write_wheel(**wheel_setup)
+        if "sdist" in setup:
+            sdist_setup = dict(setup["sdist"])  # type: ignore[arg-type]
+            if sdist_setup.get("outside_forbidden") == "external":
+                sdist_setup["outside_forbidden"] = outside_file
+            artifacts.write_sdist(**sdist_setup)
+        if "extra_wheel" in setup:
+            artifacts.write_wheel(**dict(setup["extra_wheel"]))  # type: ignore[arg-type]
+
+        if should_pass:
+            _run_artifact_validation(tmp_path)
+            assert case_name == "forbidden token outside scan scope"
+            assert outside_file.exists()
+            assert "OPENAI_API_KEY" in outside_file.read_text(encoding="utf-8")
+        else:
+            assert message is not None
+            with pytest.raises(release_smoke.ReleaseSmokeError, match=message):
+                _run_artifact_validation(tmp_path)
+        return
+
+    if case_type == "demo":
+        if should_pass:
+            _run_installed_demo_validation(monkeypatch, tmp_path, **setup)  # type: ignore[arg-type]
+        else:
+            assert message is not None
+            with pytest.raises(release_smoke.ReleaseSmokeError, match=message):
+                _run_installed_demo_validation(monkeypatch, tmp_path, **setup)  # type: ignore[arg-type]
+        return
+
+    raise AssertionError(f"unknown release-smoke case type: {case_type}")
+
 def test_collect_dist_artifacts_returns_sorted_concrete_paths(tmp_path: Path) -> None:
     (tmp_path / "b.tar.gz").write_text("b")
     (tmp_path / "a.whl").write_text("a")

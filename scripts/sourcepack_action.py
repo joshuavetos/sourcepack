@@ -153,6 +153,8 @@ def main(argv: list[str] | None = None) -> int:
         verdict = _verdict_from_json(json_report) or "UNKNOWN"
         traffic_light = _traffic_light_from_json(json_report) or verdict
         artifacts = _artifact_list(report_dir)
+        if "sourcepack.md" not in artifacts:
+            artifacts.insert(1 if "sourcepack.json" in artifacts else 0, "sourcepack.md")
         _write(
             markdown_report,
             "# SourcePack Action summary\n\n"

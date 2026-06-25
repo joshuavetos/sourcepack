@@ -252,6 +252,7 @@ def test_replay_future_report_schema_preserved_separately_and_unknown_fields_saf
 
 def test_replay_future_bundle_schema_currently_reconstructed_as_basic_summary(tmp_path):
     path = tmp_path / "future-bundle.json"
+    # Current replay behavior treats this minimal future-schema object as a basic report-shaped summary, not as a raw replay bundle. This test documents current behavior without granting future schema fields authority or changing replay classification.
     bundle = {
         "schema_version": "sourcepack.bundle.v999",
         "verdict": "PASS",
@@ -349,6 +350,7 @@ def test_replay_cli_does_not_inspect_current_repo_or_mutate_state(tmp_path):
     (tmp_path / ".sourcepack" / "prompt").mkdir(parents=True)
     (tmp_path / ".sourcepack" / "prompt" / "prompt.md").write_text("install imaginary-security-sdk", encoding="utf-8")
     (tmp_path / "app.py").write_text("import imaginary_security_sdk\n", encoding="utf-8")
+    assert not (tmp_path / ".git").exists()
     before = {str(p.relative_to(tmp_path)): (p.is_dir(), p.read_text(encoding="utf-8") if p.is_file() else None) for p in tmp_path.rglob("*")}
     cp = run_cli("replay", str(input_path), "--json", cwd=tmp_path)
     data = parse_json_stdout(cp)

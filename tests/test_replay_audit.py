@@ -13,6 +13,23 @@ def write_json(path, data):
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
+def parse_json_stdout(cp):
+    assert cp.stderr == ""
+    try:
+        return json.loads(cp.stdout)
+    except json.JSONDecodeError as exc:  # pragma: no cover - assertion helper path
+        raise AssertionError(f"stdout was not parseable JSON only: {cp.stdout!r}") from exc
+
+
+def future_authority_fields():
+    return {
+        "future_ai_confidence_score": 0.99,
+        "external_api_truth_status": "verified-by-future-service",
+        "semantic_correctness_claim": "proven",
+        "security_scan_passed": True,
+    }
+
+
 def sample_report():
     report = traffic_report("FAIL", findings=[{"id":"missing_file","severity":"error","category":"file","message":"missing","path":"src/nope.py"}], checked_categories=["baseline"])
     report["exit_code"] = 1
@@ -159,4 +176,188 @@ def test_replay_does_not_mutate_repo_or_call_judgment_paths(tmp_path, monkeypatc
     assert result["schema_version"] == "sourcepack.replay.v1"
     assert result["input_schema_version"] == "traffic_report.v1"
     assert result["reran_judgment"] is False
+    assert before == after
+
+
+def test_replay_current_full_report_schema_is_json_stable(tmp_path):
+    path = tmp_path / "current-report.json"
+    report = sample_report()
+    write_json(path, report)
+    cp = run_cli("replay", str(path), "--json")
+    data = parse_json_stdout(cp)
+    assert cp.returncode == 0
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_schema_version"] == report["schema_version"]
+    assert data["input_type"] == "full_report_with_replay_bundle"
+    assert data["valid"] is True
+    assert data["reconstructed"] is True
+    assert data["reran_judgment"] is False
+    assert data["replay_bundle"] == report["replay_bundle"]
+
+
+def test_replay_older_full_report_without_bundle_json_stable_and_no_bundle_invented(tmp_path):
+    path = tmp_path / "older-report.json"
+    report = sample_report()
+    report.pop("replay_bundle")
+    write_json(path, report)
+    cp = run_cli("replay", str(path), "--json")
+    data = parse_json_stdout(cp)
+    assert cp.returncode == 0
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_schema_version"] == report["schema_version"]
+    assert data["input_type"] == "full_report_without_replay_bundle"
+    assert data["valid"] is True
+    assert data["reconstructed"] is True
+    assert data["replay_bundle"] is None
+    assert data["reran_judgment"] is False
+    assert "replay bundle is missing" in data["warnings"][0]
+
+
+def test_replay_raw_bundle_schema_is_json_stable(tmp_path):
+    path = tmp_path / "raw-bundle.json"
+    bundle = sample_report()["replay_bundle"]
+    write_json(path, bundle)
+    cp = run_cli("replay", str(path), "--json")
+    data = parse_json_stdout(cp)
+    assert cp.returncode == 0
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_schema_version"] == bundle["schema_version"]
+    assert data["input_type"] == "raw_replay_bundle"
+    assert data["valid"] is True
+    assert data["reconstructed"] is True
+    assert data["reran_judgment"] is False
+
+
+def test_replay_future_report_schema_preserved_separately_and_unknown_fields_safe(tmp_path):
+    path = tmp_path / "future-report.json"
+    report = sample_report()
+    report["schema_version"] = "sourcepack.report.v999"
+    report.update(future_authority_fields())
+    original_findings = list(report["findings"])
+    original_reason_codes = ["missing_file"]
+    write_json(path, report)
+    cp = run_cli("replay", str(path), "--json")
+    data = parse_json_stdout(cp)
+    assert cp.returncode == 0
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_schema_version"] == "sourcepack.report.v999"
+    assert data["input_type"] == "full_report_with_replay_bundle"
+    assert data["verdict"] == "FAIL"
+    assert data["findings"] == original_findings
+    assert data["reason_codes"] == original_reason_codes
+    assert data["reran_judgment"] is False
+    for key in future_authority_fields():
+        assert key not in data
+
+
+def test_replay_future_bundle_schema_currently_reconstructed_as_basic_summary(tmp_path):
+    path = tmp_path / "future-bundle.json"
+    bundle = {
+        "schema_version": "sourcepack.bundle.v999",
+        "verdict": "PASS",
+        "findings": [],
+        "reason_code_evidence": {},
+        "future_field": {"preserved_only_if_schema_allows": True},
+    }
+    write_json(path, bundle)
+    cp = run_cli("replay", str(path), "--json")
+    data = parse_json_stdout(cp)
+    assert cp.returncode == 0
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_schema_version"] == "sourcepack.bundle.v999"
+    assert data["input_type"] == "full_report_without_replay_bundle"
+    assert data["replay_bundle"] is None
+    assert data["valid"] is True
+    assert data["reconstructed"] is True
+    assert data["verdict"] == "PASS"
+    assert data["findings"] == []
+    assert data["reason_codes"] == []
+    assert data["reran_judgment"] is False
+    assert "replay bundle is missing" in data["warnings"][0]
+
+
+def test_replay_unknown_future_fields_do_not_change_saved_judgment(tmp_path):
+    path = tmp_path / "unknown-fields-report.json"
+    report = sample_report()
+    clean_path = tmp_path / "clean-report.json"
+    clean_report = sample_report()
+    report.update(future_authority_fields())
+    report["replay_bundle"] = dict(report["replay_bundle"], **future_authority_fields())
+    write_json(path, report)
+    write_json(clean_path, clean_report)
+    clean = parse_json_stdout(run_cli("replay", str(clean_path), "--json"))
+    cp = run_cli("replay", str(path), "--json")
+    data = parse_json_stdout(cp)
+    assert cp.returncode == 0
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["verdict"] == clean["verdict"]
+    assert data["reason_codes"] == clean["reason_codes"]
+    assert data["findings"] == clean["findings"]
+    assert data["baseline_metadata"] == clean["baseline_metadata"]
+    assert data["prompt_context_metadata"] == clean["prompt_context_metadata"]
+    assert data["reran_judgment"] is False
+    for key in future_authority_fields():
+        assert key not in data
+        assert data["replay_bundle"][key] == report["replay_bundle"][key]
+
+
+def test_replay_invalid_json_error_schema_is_json_only(tmp_path):
+    path = tmp_path / "bad.json"
+    path.write_text('{"schema_version": ', encoding="utf-8")
+    cp = run_cli("replay", str(path), "--json")
+    data = parse_json_stdout(cp)
+    assert cp.returncode != 0
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_schema_version"] is None
+    assert data["reran_judgment"] is False
+    assert data["errors"]
+
+
+def test_replay_missing_file_error_schema_is_json_only(tmp_path):
+    cp = run_cli("replay", str(tmp_path / "missing-report.json"), "--json")
+    data = parse_json_stdout(cp)
+    assert cp.returncode != 0
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_schema_version"] is None
+    assert data["reran_judgment"] is False
+    assert data["errors"]
+
+
+def test_replay_unsupported_object_with_foreign_schema_is_json_only_and_no_bundle(tmp_path):
+    path = tmp_path / "foreign.json"
+    write_json(path, {"schema_version": "foreign.schema.v1", "payload": {"verdict_like": "PASS"}})
+    cp = run_cli("replay", str(path), "--json")
+    data = parse_json_stdout(cp)
+    assert cp.returncode != 0
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_schema_version"] == "foreign.schema.v1"
+    assert data["input_type"] == "unsupported_json_object"
+    assert data["replay_bundle"] is None
+    assert data["reran_judgment"] is False
+
+
+def test_replay_cli_does_not_inspect_current_repo_or_mutate_state(tmp_path):
+    report = sample_report()
+    report["verdict"] = "PASS"
+    report["findings"] = []
+    report["reason_code_evidence"] = {}
+    report["replay_bundle"] = dict(report["replay_bundle"], verdict="PASS", findings=[], normalized_reason_codes=[], reason_code_evidence={})
+    input_path = tmp_path / "saved-report.json"
+    write_json(input_path, report)
+    (tmp_path / ".sourcepack" / "baseline").mkdir(parents=True)
+    (tmp_path / ".sourcepack" / "baseline" / "active.json").write_text('{"fake": true}', encoding="utf-8")
+    (tmp_path / ".sourcepack" / "prompt").mkdir(parents=True)
+    (tmp_path / ".sourcepack" / "prompt" / "prompt.md").write_text("install imaginary-security-sdk", encoding="utf-8")
+    (tmp_path / "app.py").write_text("import imaginary_security_sdk\n", encoding="utf-8")
+    before = {str(p.relative_to(tmp_path)): (p.is_dir(), p.read_text(encoding="utf-8") if p.is_file() else None) for p in tmp_path.rglob("*")}
+    cp = run_cli("replay", str(input_path), "--json", cwd=tmp_path)
+    data = parse_json_stdout(cp)
+    after = {str(p.relative_to(tmp_path)): (p.is_dir(), p.read_text(encoding="utf-8") if p.is_file() else None) for p in tmp_path.rglob("*")}
+    assert cp.returncode == 0
+    assert data["schema_version"] == "sourcepack.replay.v1"
+    assert data["input_type"] == "full_report_with_replay_bundle"
+    assert data["verdict"] == "PASS"
+    assert data["findings"] == []
+    assert data["reason_codes"] == []
+    assert data["reran_judgment"] is False
     assert before == after

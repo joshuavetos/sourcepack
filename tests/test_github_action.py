@@ -1,4 +1,5 @@
 import importlib.util
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -432,3 +433,148 @@ def test_wrapper_does_not_create_baseline_or_use_prompt_as_authority(tmp_path, m
     wrapper_text = WRAPPER.read_text(encoding="utf-8")
     assert ".sourcepack/prompt" not in wrapper_text
     assert "prompt" not in wrapper_text.lower()
+
+
+def test_composite_action_like_run_writes_artifacts_command_summary_and_sarif(tmp_path, monkeypatch, capsys):
+    module = load_wrapper()
+    baseline = tmp_path / ".sourcepack" / "baseline"
+    baseline.mkdir(parents=True)
+    source_reports = tmp_path / ".sourcepack" / "reports"
+    source_reports.mkdir(parents=True)
+    (source_reports / "latest.sarif.json").write_text('{"version":"2.1.0","runs":[]}', encoding="utf-8")
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    executed: list[list[str]] = []
+
+    def fake_run(command, cwd):
+        executed.append(command)
+        (source_reports / "latest.json").write_text(
+            '{"verdict":"PASS","traffic_light":"green","findings":[]}', encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(command, 0, stdout='{"verdict":"PASS","traffic_light":"green"}\n', stderr="")
+
+    monkeypatch.setattr(module, "_run", fake_run)
+    code = module.main([
+        "--repo", str(tmp_path),
+        "--baseline-path", ".sourcepack/baseline",
+        "--report-dir", "action-report",
+        "--mode", "ci",
+        "--json", "true",
+        "--markdown", "true",
+        "--sarif", "true",
+        "--fail-on-warn", "false",
+    ])
+    captured = capsys.readouterr()
+    report_dir = tmp_path / "action-report"
+    expected_command = ["sourcepack", "diff", str(tmp_path.resolve()), "--json", "--ci"]
+
+    assert code == 0
+    assert executed == [expected_command]
+    assert report_dir.is_dir()
+    for artifact in [
+        "sourcepack.json",
+        "sourcepack.md",
+        "sourcepack.stdout.txt",
+        "sourcepack.stderr.txt",
+        "sourcepack-command.txt",
+        "sourcepack.sarif.json",
+    ]:
+        assert (report_dir / artifact).exists(), artifact
+    assert (report_dir / "sourcepack-command.txt").read_text(encoding="utf-8") == shlex.join(expected_command) + "\n"
+    assert (report_dir / "sourcepack.sarif.json").read_text(encoding="utf-8") == '{"version":"2.1.0","runs":[]}'
+    markdown = (report_dir / "sourcepack.md").read_text(encoding="utf-8")
+    summary_text = summary.read_text(encoding="utf-8")
+    for text in (markdown, summary_text):
+        assert "- Verdict: PASS" in text
+        assert "- Traffic light: green" in text
+        assert "- Mode: ci" in text
+        assert "- WARN fails in selected mode: True" in text
+        assert f"- Report directory: {report_dir}" in text
+        assert "sourcepack.json" in text
+        assert "sourcepack.md" in text
+        assert "sourcepack.stdout.txt" in text
+        assert "sourcepack.stderr.txt" in text
+        assert "sourcepack-command.txt" in text
+        assert "sourcepack.sarif.json" in text
+        assert "- SARIF passthrough: copied to" in text
+        assert text.count("```") % 2 == 0
+    assert "SourcePack SARIF passthrough: copied to" in captured.out
+
+
+def test_composite_action_like_missing_sarif_is_reported_nonfatal(tmp_path, monkeypatch, capsys):
+    module = load_wrapper()
+    (tmp_path / ".sourcepack" / "baseline").mkdir(parents=True)
+    (tmp_path / ".sourcepack" / "reports").mkdir(parents=True)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    executed: list[list[str]] = []
+
+    def fake_run(command, cwd):
+        executed.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout='{"verdict":"PASS"}\n', stderr="")
+
+    monkeypatch.setattr(module, "_run", fake_run)
+    code = module.main(["--repo", str(tmp_path), "--report-dir", "out", "--sarif", "true"])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert len(executed) == 1
+    assert not (tmp_path / "out" / "sourcepack.sarif.json").exists()
+    assert "enabled, but no SourcePack SARIF report was present; continuing without SARIF artifact" in captured.out
+    assert "enabled, but no SourcePack SARIF report was present; continuing without SARIF artifact" in summary.read_text(encoding="utf-8")
+
+
+def test_composite_action_like_sarif_disabled_does_not_imply_produced_artifact(tmp_path, monkeypatch, capsys):
+    module = load_wrapper()
+    (tmp_path / ".sourcepack" / "baseline").mkdir(parents=True)
+    reports = tmp_path / ".sourcepack" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "latest.sarif.json").write_text('{"version":"2.1.0"}', encoding="utf-8")
+
+    def fake_run(command, cwd):
+        return subprocess.CompletedProcess(command, 0, stdout='{"verdict":"PASS"}\n', stderr="")
+
+    monkeypatch.setattr(module, "_run", fake_run)
+    code = module.main(["--repo", str(tmp_path), "--report-dir", "out", "--sarif", "false"])
+    captured = capsys.readouterr()
+    markdown = (tmp_path / "out" / "sourcepack.md").read_text(encoding="utf-8")
+
+    assert code == 0
+    assert not (tmp_path / "out" / "sourcepack.sarif.json").exists()
+    assert "SourcePack SARIF passthrough: disabled" in captured.out
+    assert "- SARIF passthrough: disabled" in markdown
+    assert "sourcepack.sarif.json" not in markdown
+
+
+def test_composite_action_like_prompt_context_does_not_satisfy_missing_baseline(tmp_path, monkeypatch, capsys):
+    module = load_wrapper()
+    prompt_dir = tmp_path / ".sourcepack" / "prompt"
+    prompt_dir.mkdir(parents=True)
+    (prompt_dir / "context.md").write_text("# non-authoritative prompt guidance\n", encoding="utf-8")
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    invoked: list[list[str]] = []
+
+    def fake_run(command, cwd):
+        invoked.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout='{"verdict":"PASS"}\n', stderr="")
+
+    monkeypatch.setattr(module, "_run", fake_run)
+    code = module.main(["--repo", str(tmp_path), "--baseline-path", ".sourcepack/baseline", "--report-dir", "out"])
+    captured = capsys.readouterr()
+
+    assert code != 0
+    assert invoked == []
+    assert not (tmp_path / ".sourcepack" / "baseline").exists()
+    combined = captured.err + summary.read_text(encoding="utf-8") + (tmp_path / "out" / "sourcepack.stderr.txt").read_text(encoding="utf-8")
+    assert "SourcePack failed closed because trusted baseline state is missing" in combined
+    assert "CI will not create or update trusted baseline state." in combined
+    assert "Create or refresh the baseline locally or in a separate trusted maintainer-controlled setup workflow." in combined
+    assert "not a package crash" in combined
+    command_log = (tmp_path / "out" / "sourcepack-command.txt").read_text(encoding="utf-8")
+    assert command_log == "baseline preflight\n"
+    assert "sourcepack baseline" not in command_log
+    assert "sourcepack init" not in command_log
+    assert "refresh" not in command_log
+    assert "repair" not in command_log
+    assert "bless" not in command_log

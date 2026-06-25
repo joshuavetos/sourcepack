@@ -27,7 +27,7 @@ Expected build artifacts are exactly one wheel and one sdist for the version rec
 - `dist/sourcepack-<version>-py3-none-any.whl`
 - `dist/sourcepack-<version>.tar.gz`
 
-The smoke check opens the wheel and sdist directly and verifies packaged release/demo assets, including the demo `.env`, before install testing. It scans only packaged release/demo assets for forbidden token-shaped strings; it does not scan all source files.
+The smoke check runs `twine check` for package metadata validation, then opens the wheel and sdist directly and verifies packaged release/demo assets, including the demo `.env`, before install testing. It scans only packaged release/demo assets for forbidden token-shaped strings; it does not scan all source files.
 
 The smoke check then creates separate fresh virtual environments for the wheel and sdist, installs each artifact, and runs:
 

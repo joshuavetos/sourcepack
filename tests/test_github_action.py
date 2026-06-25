@@ -176,7 +176,7 @@ def test_ci_workflow_keeps_existing_validation_gates():
 def test_sourcepack_workflow_dogfoods_committed_baseline_without_creating_trust_state():
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "python -B -m sourcepack.cli diff . --ci --json" in text
-    assert "continue-on-error: true" in text
+    assert "continue-on-error: true" not in text
     assert "PYTHONPATH: src" in text
     assert 'PYTHONDONTWRITEBYTECODE: "1"' in text
     assert "sourcepack baseline" not in text

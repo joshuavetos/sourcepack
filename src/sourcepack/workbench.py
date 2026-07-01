@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import secrets
+import socket
 import subprocess
 import sys
 import urllib.parse
@@ -13,6 +14,7 @@ from typing import Any
 
 STATIC_ROOT = Path(__file__).with_name("workbench_static")
 REQUEST_TIMEOUT_SECONDS = 120
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -22,7 +24,7 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return path == root or root in path.parents
 
 
-def _run_sourcepack(repo: Path, args: list[str], timeout: int = REQUEST_TIMEOUT_SECONDS) -> dict[str, Any]:
+def _run_sourcepack(repo: Path, args: list[str], timeout: int = REQUEST_TIMEOUT_SECONDS, output_key: str | None = None) -> dict[str, Any]:
     cmd = [sys.executable, "-m", "sourcepack.cli", *args]
     try:
         cp = subprocess.run(
@@ -43,7 +45,16 @@ def _run_sourcepack(repo: Path, args: list[str], timeout: int = REQUEST_TIMEOUT_
             "stdout": exc.stdout or "",
             "stderr": exc.stderr or "",
         }
-    return {"ok": cp.returncode == 0, "returncode": cp.returncode, "stdout": cp.stdout, "stderr": cp.stderr}
+    result: dict[str, Any] = {"ok": cp.returncode == 0, "returncode": cp.returncode, "stderr": cp.stderr}
+    if output_key is not None and cp.stdout.strip():
+        try:
+            result[output_key] = json.loads(cp.stdout)
+        except json.JSONDecodeError:
+            result["stdout"] = cp.stdout
+            result["parse_error"] = "invalid_json_stdout"
+    else:
+        result["stdout"] = cp.stdout
+    return result
 
 
 class WorkbenchHandler(BaseHTTPRequestHandler):
@@ -89,7 +100,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             if not self._require_api_token():
                 return
             if requested == "/api/status":
-                self._send_json(200, _run_sourcepack(self.repo_root, ["status", str(self.repo_root), "--json"]))
+                self._send_json(200, _run_sourcepack(self.repo_root, ["status", str(self.repo_root), "--json"], output_key="status"))
                 return
             if requested == "/api/latest":
                 latest = self.repo_root / ".sourcepack" / "reports" / "latest.json"
@@ -113,7 +124,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         if not self._require_api_token():
             return
         if requested == "/api/review":
-            self._send_json(200, _run_sourcepack(self.repo_root, ["diff", str(self.repo_root), "--json"]))
+            self._send_json(200, _run_sourcepack(self.repo_root, ["diff", str(self.repo_root), "--json"], output_key="review"))
             return
         self._send_json(404, {"ok": False, "error": "not_found"})
 
@@ -148,15 +159,35 @@ class WorkbenchServer(ThreadingHTTPServer):
         self.session_token = session_token
 
 
+class IPv6WorkbenchServer(WorkbenchServer):
+    address_family = socket.AF_INET6
+
+
+def _validate_loopback_host(host: str) -> None:
+    if host not in LOOPBACK_HOSTS:
+        allowed = ", ".join(sorted(LOOPBACK_HOSTS))
+        raise ValueError(f"Workbench only binds to loopback hosts ({allowed}); got {host!r}")
+
+
+def _server_class_for_host(host: str) -> type[WorkbenchServer]:
+    return IPv6WorkbenchServer if host == "::1" else WorkbenchServer
+
+
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host else host
+
+
 def serve_workbench(repo: str | Path = ".", host: str = "127.0.0.1", port: int = 0, open_browser: bool = True) -> int:
-    if host == "0.0.0.0":
-        raise ValueError("Workbench refuses to bind to 0.0.0.0")
+    _validate_loopback_host(host)
     token = secrets.token_urlsafe(32)
     repo_root = Path(repo).resolve()
-    with WorkbenchServer((host, port), WorkbenchHandler, repo_root, token) as httpd:
-        actual_host, actual_port = httpd.server_address
-        url = f"http://{actual_host}:{actual_port}/?token={urllib.parse.quote(token)}"
-        print(f"SourcePack Workbench: http://{actual_host}:{actual_port}/")
+    server_class = _server_class_for_host(host)
+    with server_class((host, port), WorkbenchHandler, repo_root, token) as httpd:
+        actual_host, actual_port = httpd.server_address[:2]
+        url_base = f"http://{_url_host(actual_host)}:{actual_port}/"
+        url = f"{url_base}?token={urllib.parse.quote(token)}"
+        display_url = url_base if open_browser else url
+        print(f"SourcePack Workbench: {display_url}", flush=True)
         if open_browser:
             webbrowser.open(url)
         try:

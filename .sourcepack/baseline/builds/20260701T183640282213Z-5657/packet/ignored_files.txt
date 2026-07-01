@@ -1,0 +1,9 @@
+.git/	ignored_directory
+.github/	hidden_directory
+.gitignore	hidden_file
+.sourcepack-published	hidden_file
+.sourcepack/	ignored_directory
+examples/demo_repo/.env	hidden_file
+examples/fake_ai_patch.diff	unsupported_extension
+src/sourcepack/examples/demo_repo/.env	hidden_file
+src/sourcepack/examples/fake_ai_patch.diff	unsupported_extension

@@ -1,0 +1,16 @@
+{
+  "generated_at": "2026-07-01T18:36:40.698822+00:00",
+  "tool_version": "1.10.0a2",
+  "hashes": {
+    "manifest.json": "64078d0df965e826852c2e5b24019656919484212a0e18838c790f6068d0ea15",
+    "context.md": "5fcf0f2c66a71e0c1f02bd11b810f217a14d06b5b85e05a6ec89cb789b51b4ca",
+    "context.xml": "87db0126109d39b779981a87f246f1666005925aeda1163a019ea09f90a8393d",
+    "file_tree.txt": "d79ee34918bbe2bff32603682688e9d050a1ac7b2501b36151523a236b9f1e28",
+    "ignored_files.txt": "594b8a779cffa6a454e525cff0d808c2858e24fcaa7fe4226aff93a905ad9eff",
+    "token_report.json": "b1eb323023ad9d82436cf820f4e4eab5df3dcbe93548302bc478224971b4b86a",
+    "redactions.json": "f32e3a9bc32bbf790361595722df231b0c4715e432105e61f5f3c20ee4fa96f2",
+    "reality_map.json": "3dc7e567c6ddac861e91e20f80fcb98a58459a51cc90f2be82584953b48fc8cb",
+    "ai_instructions.md": "319f28d01953af8266fd3c71b04c4cb589fcf8c141fcd76621dc82d889e997fe",
+    "file_inventory.json": "9c359dade4d6f8cf398bf1624dfd9f212a6b0f50eb332484e1f8c1148dc6fab4"
+  }
+}

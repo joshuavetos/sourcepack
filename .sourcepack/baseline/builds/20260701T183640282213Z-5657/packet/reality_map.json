@@ -1,0 +1,227 @@
+{
+  "reality_map_schema_version": "1.0",
+  "tool_version": "1.10.0a2",
+  "generated_at": "2026-07-01T18:36:40.689386+00:00",
+  "input_path": "/workspace/sourcepack",
+  "project_types": [
+    "python"
+  ],
+  "package_managers": [],
+  "frameworks": [],
+  "entry_points": [
+    "examples/demo_repo/sourcepack/cli.py",
+    "src/sourcepack/cli.py",
+    "src/sourcepack/examples/demo_repo/sourcepack/cli.py"
+  ],
+  "test_commands": [
+    "pytest",
+    "python -m unittest"
+  ],
+  "build_commands": [],
+  "run_commands": [],
+  "supported_commands": [
+    "pytest",
+    "python -m unittest"
+  ],
+  "detected_dependencies": [
+    "pytest"
+  ],
+  "supported_capabilities": [],
+  "excluded_files_summary": {
+    "total": 9,
+    "reasons": {
+      "ignored_directory": 2,
+      "hidden_directory": 1,
+      "hidden_file": 4,
+      "unsupported_extension": 2
+    },
+    "records": [
+      {
+        "relative_path": ".git/",
+        "reason": "ignored_directory"
+      },
+      {
+        "relative_path": ".github/",
+        "reason": "hidden_directory"
+      },
+      {
+        "relative_path": ".gitignore",
+        "reason": "hidden_file"
+      },
+      {
+        "relative_path": ".sourcepack-published",
+        "reason": "hidden_file"
+      },
+      {
+        "relative_path": ".sourcepack/",
+        "reason": "ignored_directory"
+      },
+      {
+        "relative_path": "examples/demo_repo/.env",
+        "reason": "hidden_file"
+      },
+      {
+        "relative_path": "examples/fake_ai_patch.diff",
+        "reason": "unsupported_extension"
+      },
+      {
+        "relative_path": "src/sourcepack/examples/demo_repo/.env",
+        "reason": "hidden_file"
+      },
+      {
+        "relative_path": "src/sourcepack/examples/fake_ai_patch.diff",
+        "reason": "unsupported_extension"
+      }
+    ]
+  },
+  "included_file_count": 110,
+  "confirmed_files": [
+    "LICENSE",
+    "README.md",
+    "SECURITY.md",
+    "action.yml",
+    "corpus/repos.example.json",
+    "docs/ai-agent-workflow.md",
+    "docs/architecture.md",
+    "docs/assets/README.md",
+    "docs/baseline-lifecycle.md",
+    "docs/ci.md",
+    "docs/examples/sourcepack-action.yml",
+    "docs/limitations.md",
+    "docs/public-alpha-readiness.md",
+    "docs/real-corpus-validation.md",
+    "docs/reason-codes.md",
+    "docs/release-checklist.md",
+    "docs/releases/v1.10.0a0-publish-checklist.md",
+    "docs/releases/v1.10.0a0.md",
+    "docs/systemic-upgrade-status.md",
+    "docs/threat-model.md",
+    "docs/vscode-extension-plan.md",
+    "examples/demo_repo/README.md",
+    "examples/demo_repo/pyproject.toml",
+    "examples/demo_repo/sourcepack/cli.py",
+    "examples/demo_repo/sourcepack/judge.py",
+    "examples/demo_repo/sourcepack/verify.py",
+    "examples/demo_repo/tests/test_verify.py",
+    "examples/fake_ai_answer.md",
+    "pyproject.toml",
+    "pytest.ini",
+    "schemas/judgment_report.schema.json",
+    "schemas/patch_judgment_report.schema.json",
+    "schemas/reality_map.schema.json",
+    "schemas/receipt.schema.json",
+    "scripts/__init__.py",
+    "scripts/release_smoke.py",
+    "scripts/sourcepack_action.py",
+    "src/sourcepack/__init__.py",
+    "src/sourcepack/assets/__init__.py",
+    "src/sourcepack/assets/audit_template.md",
+    "src/sourcepack/assets/packet_instructions.md",
+    "src/sourcepack/baseline.py",
+    "src/sourcepack/cli.py",
+    "src/sourcepack/commands.py",
+    "src/sourcepack/dependencies.py",
+    "src/sourcepack/diff_parser.py",
+    "src/sourcepack/ecosystems/__init__.py",
+    "src/sourcepack/ecosystems/generic.py",
+    "src/sourcepack/ecosystems/node.py",
+    "src/sourcepack/ecosystems/python.py",
+    "src/sourcepack/errors.py",
+    "src/sourcepack/evidence.py",
+    "src/sourcepack/examples/demo_repo/README.md",
+    "src/sourcepack/examples/demo_repo/pyproject.toml",
+    "src/sourcepack/examples/demo_repo/sourcepack/cli.py",
+    "src/sourcepack/examples/demo_repo/sourcepack/judge.py",
+    "src/sourcepack/examples/demo_repo/sourcepack/verify.py",
+    "src/sourcepack/examples/demo_repo/tests/test_verify.py",
+    "src/sourcepack/examples/fake_ai_answer.md",
+    "src/sourcepack/execution_ledger.py",
+    "src/sourcepack/git.py",
+    "src/sourcepack/judgment.py",
+    "src/sourcepack/packet.py",
+    "src/sourcepack/paths.py",
+    "src/sourcepack/policy.py",
+    "src/sourcepack/reason_codes.py",
+    "src/sourcepack/replay.py",
+    "src/sourcepack/reports/__init__.py",
+    "src/sourcepack/reports/html.py",
+    "src/sourcepack/reports/json.py",
+    "src/sourcepack/reports/markdown.py",
+    "src/sourcepack/reports/sarif.py",
+    "src/sourcepack/schemas.py",
+    "src/sourcepack/workbench.py",
+    "src/sourcepack/workbench_static/index.html",
+    "tests/__init__.py",
+    "tests/simulation_helpers.py",
+    "tests/test_baseline_integrity.py",
+    "tests/test_baseline_lifecycle.py",
+    "tests/test_baseline_lifecycle_cli.py",
+    "tests/test_behavior_matrix.py",
+    "tests/test_ci_docs_truth.py",
+    "tests/test_command_resolver.py",
+    "tests/test_confidence_report.py",
+    "tests/test_dependency_resolver.py",
+    "tests/test_engine_inversion.py",
+    "tests/test_evidence_model.py",
+    "tests/test_execution_ledger.py",
+    "tests/test_final_boss_integration.py",
+    "tests/test_gauntlet.py",
+    "tests/test_github_action.py",
+    "tests/test_golden_demo.py",
+    "tests/test_local_policy.py",
+    "tests/test_policy_integration.py",
+    "tests/test_policy_validation.py",
+    "tests/test_readme_truth.py",
+    "tests/test_real_corpus_validation.py",
+    "tests/test_reason_code_docs.py",
+    "tests/test_release_docs.py",
+    "tests/test_release_smoke.py",
+    "tests/test_replay_audit.py",
+    "tests/test_report_ui.py",
+    "tests/test_simulation_harness.py",
+    "tests/test_smoke.py",
+    "tests/test_ugly_repos.py",
+    "tests/test_workbench.py",
+    "tools/behavior_matrix.py",
+    "tools/golden_demo.py",
+    "tools/real_corpus_validation.py",
+    "tools/release_smoke.py"
+  ],
+  "ignored_file_count": 9,
+  "safe_claims": [
+    "This packet includes 110 source files.",
+    "SourcePack scanned input path: /workspace/sourcepack.",
+    "The project contains pyproject.toml.",
+    "The project does not include package.json.",
+    "The project does not include Dockerfile.",
+    "No React dependency was detected.",
+    "No PDF parsing capability was detected.",
+    "The packet includes ignored file records for safety or relevance reasons."
+  ],
+  "unknowns": [
+    "Runtime behavior was not executed.",
+    "Semantic correctness was not proven.",
+    "External services were not verified.",
+    "Capabilities not present in structural evidence must be treated as unknown.",
+    "Missing files must not be invented."
+  ],
+  "claim_boundaries": [
+    "SourcePack did not execute the application.",
+    "SourcePack did not prove semantic correctness.",
+    "SourcePack did not verify external services.",
+    "SourcePack did not prove security.",
+    "SourcePack did not prove production readiness.",
+    "Absence of evidence means unknown, not impossible.",
+    "Unsupported claims should be treated as ungrounded."
+  ],
+  "ai_constraints": [
+    "Use only the packet and reality map as project evidence.",
+    "Do not invent files, commands, dependencies, frameworks, services, or capabilities.",
+    "If a required file is missing, say it is missing.",
+    "If a command is unsupported by detected evidence, say it is unsupported.",
+    "If a capability is not in supported_capabilities, treat it as unknown or unsupported.",
+    "Cite file paths when making project-specific claims.",
+    "Do not claim SourcePack proves semantic truth.",
+    "Ask for missing files rather than hallucinating them."
+  ]
+}

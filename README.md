@@ -1,29 +1,31 @@
+# SourcePack
+
 <img width="1800" height="620" alt="sourcepack-hero" src="https://github.com/user-attachments/assets/9b4af0df-1cfc-4aa8-8eb1-f673e6eb2e52" />
 
-AI coding tools can edit files, add imports, invent commands, or assume project structure that is not actually present. SourcePack checks AI-generated repo changes against trusted local repo evidence before commit.
+SourcePack checks AI-generated repo changes against trusted local repo evidence before commit.
 
 ## Badges
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![Package: local editable](https://img.shields.io/badge/package-local%20editable-blue)
+![Package: PyPI alpha](https://img.shields.io/badge/package-PyPI%20alpha-blue)
 
 ## Quick demo
 
-A small RED case: an AI change imports `fastapi`, but the repository does not declare `fastapi` in its dependency files.
+Install the public alpha from PyPI, then run the built-in demo:
 
 ```bash
-$ sourcepack init . --auto
-$ printf 'from fastapi import FastAPI\n' > app.py
-$ git add app.py
-$ git commit -m "add API"
+python -m pip install sourcepack
+sourcepack demo
+```
+
+The demo centers on the current supported RED LIGHT behavior: an AI-style change imports `fastapi`, but the repository does not declare `fastapi` in its dependency files. SourcePack blocks the commit with:
+
+```text
 RED LIGHT: commit blocked
 unsupported_dependency: app.py imports fastapi, but fastapi is not declared.
-
-Fix:
-- add fastapi intentionally to pyproject.toml
-- or remove the import
-- run sourcepack report open for details
 ```
+
+SourcePack catches unsupported AI assumptions before commit by checking the change against a trusted repo snapshot, called the baseline. It does not prove correctness, security, runtime success, semantic validity, external API truth, or user intent.
 
 Then inspect the human report:
 
@@ -31,28 +33,9 @@ Then inspect the human report:
 sourcepack report open
 ```
 
-## Product screenshot section
+## Use it in your repo
 
-Screenshot assets are generated from deterministic golden demo outputs and should be committed at these paths when refreshed:
-
-- `docs/assets/sourcepack-terminal-red.png` — terminal output from `fail-unsupported-dependency`.
-- `docs/assets/sourcepack-red-report.png` — HTML report from `fail-unsupported-dependency`.
-- `docs/assets/sourcepack-warn-report.png` — HTML report from `warn-new-file`.
-- `docs/assets/sourcepack-pass-report.png` — HTML report from `pass-clean`.
-
-See [`docs/assets/README.md`](docs/assets/README.md) for exact capture instructions. If these image files are absent, the paths above are expected screenshot targets, not claimed live screenshots.
-
-## Install
-
-Current local editable install:
-
-```bash
-python -m pip install -e .
-```
-
-SourcePack is not documented here as a published PyPI package. Planned package install commands such as `pipx install sourcepack`, `uv tool install sourcepack`, or `pip install sourcepack` should only be advertised after publication is true from release metadata.
-
-## Quick start
+Create the trusted baseline and install local hooks after reviewing that the current repo state should be trusted:
 
 ```bash
 sourcepack init . --auto
@@ -70,6 +53,31 @@ Local policy:
 - WARN exits nonzero with `--strict` or `--ci`.
 - FAIL exits nonzero.
 - `sourcepack policy validate [repo] [--json]` validates optional `.sourcepack/policy.json` without creating or updating baseline, prompt, report, evidence, hook, or working-tree files. Missing policy files exit `0`; invalid JSON or a non-object root exits nonzero. Reserved fields and dangerous trust overrides are warnings only and do not make prompt context authoritative or make CI baseline checks optional.
+
+## Install
+
+Public alpha install:
+
+```bash
+python -m pip install sourcepack
+```
+
+Local development install from a cloned checkout:
+
+```bash
+python -m pip install -e .
+```
+
+## Product screenshot section
+
+Screenshot assets are generated from deterministic golden demo outputs and should be committed at these paths when refreshed:
+
+- `docs/assets/sourcepack-terminal-red.png` — terminal output from `fail-unsupported-dependency`.
+- `docs/assets/sourcepack-red-report.png` — HTML report from `fail-unsupported-dependency`.
+- `docs/assets/sourcepack-warn-report.png` — HTML report from `warn-new-file`.
+- `docs/assets/sourcepack-pass-report.png` — HTML report from `pass-clean`.
+
+See [`docs/assets/README.md`](docs/assets/README.md) for exact capture instructions. If these image files are absent, the paths above are expected screenshot targets, not claimed live screenshots.
 
 ## How SourcePack works
 
@@ -254,7 +262,7 @@ Before public alpha, verify:
 - Behavior matrix passes.
 - Golden demos pass.
 - Known limitations are documented.
-- Do not claim PyPI publication unless SourcePack is actually published there.
+- PyPI publication metadata should match public install documentation.
 
 
 ## CI and editor planning

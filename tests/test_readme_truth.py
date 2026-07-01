@@ -78,3 +78,23 @@ def test_readme_dogfooding_claim_preserves_sourcepack_limitations() -> None:
         "proves user intent",
     ]:
         assert forbidden not in text.lower()
+
+
+def test_demo_output_matches_quick_demo_claim() -> None:
+    import os
+    import subprocess
+    import sys
+
+    cp = subprocess.run(
+        [sys.executable, "-m", "sourcepack.cli", "demo"],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert cp.returncode == 0, cp.stdout
+    text = cp.stdout
+    assert "RED LIGHT: commit blocked" in text
+    assert "unsupported_dependency: sourcepack/server.py imports fastapi, but fastapi is not declared." in text
+    assert "PASS manifest.json" not in text

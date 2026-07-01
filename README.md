@@ -22,7 +22,7 @@ The demo centers on the current supported RED LIGHT behavior: an AI-style change
 
 ```text
 RED LIGHT: commit blocked
-unsupported_dependency: app.py imports fastapi, but fastapi is not declared.
+unsupported_dependency: sourcepack/server.py imports fastapi, but fastapi is not declared.
 ```
 
 SourcePack catches unsupported AI assumptions before commit by checking the change against a trusted repo snapshot, called the baseline. It does not prove correctness, security, runtime success, semantic validity, external API truth, or user intent.

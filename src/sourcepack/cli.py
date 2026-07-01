@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import importlib.resources as resources
 import fnmatch
 import hashlib
@@ -3010,22 +3012,39 @@ def run_cli(args_list=None):
             examples_root = resources.files("sourcepack") / "examples"
             with resources.as_file(examples_root) as examples_path:
                 demo_repo = examples_path / "demo_repo"
+                fake_patch = examples_path / "fake_ai_patch.diff"
                 fake_answer = examples_path / "fake_ai_answer.md"
-                if not demo_repo.exists() or not fake_answer.exists():
-                    print("ERROR: packaged examples/demo_repo and examples/fake_ai_answer.md are required", file=sys.stderr); return 1
+                if not demo_repo.exists() or not fake_patch.exists() or not fake_answer.exists():
+                    print("ERROR: packaged examples/demo_repo, examples/fake_ai_patch.diff, and examples/fake_ai_answer.md are required", file=sys.stderr); return 1
                 tmp = Path(tempfile.mkdtemp(prefix="sourcepack_demo_"))
                 packet = tmp / "packet"
+                patch_judgment = tmp / "patch_judgment"
                 judgment = tmp / "judgment"
                 PacketWriter(packet, SourceScanner(demo_repo).scan(), force=True).write_all()
-                if not verify_packet(packet): return 1
-                judge_ai_answer(packet, fake_answer, judgment)
-                fake_patch = examples_path / "fake_ai_patch.diff"
-                if fake_patch.exists():
-                    patch_judgment = tmp / "patch_judgment"
-                    judge_patch(packet, fake_patch, patch_judgment)
-                    print(f"Demo patch judgment: {patch_judgment}")
+                verification_output = io.StringIO()
+                with contextlib.redirect_stdout(verification_output):
+                    packet_ok = verify_packet(packet)
+                if not packet_ok:
+                    print(verification_output.getvalue(), end="", file=sys.stderr)
+                    return 1
+                with contextlib.redirect_stdout(io.StringIO()):
+                    judge_ai_answer(packet, fake_answer, judgment)
+                    report = judge_patch(packet, fake_patch, patch_judgment)
+                traffic = patch_report_to_traffic(report, str(patch_judgment / "patch_judgment_report.json"))
+                blockers = [f for f in traffic.get("blockers", []) if f.get("id") == "unsupported_dependency"]
+                if not blockers:
+                    print("ERROR: demo did not produce the expected unsupported_dependency finding", file=sys.stderr)
+                    return 1
+                print("RED LIGHT: commit blocked")
+                for finding in blockers:
+                    evidence = finding.get("evidence") or "dependency"
+                    path = finding.get("path") or "sourcepack/server.py"
+                    print(f"unsupported_dependency: {path} imports {evidence}, but {evidence} is not declared.")
+                print()
+                print(render_traffic(traffic), end="")
                 print(f"Demo packet: {packet}")
                 print(f"Demo judgment: {judgment}")
+                print(f"Demo patch judgment: {patch_judgment}")
                 return 0
         if args.command == "verify":
             return 0 if verify_packet(args.packet, args.against) else 1

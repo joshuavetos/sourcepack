@@ -31,3 +31,18 @@ def test_reason_code_docs_preserve_non_claims() -> None:
         "does not prove semantic validity",
     ]:
         assert phrase in text
+
+PUBLIC_REASON_CODE_ALLOWLIST = {"input_schema_version"}
+
+
+def test_public_docs_do_not_reference_new_command_reason_code() -> None:
+    public_paths = [ROOT / "README.md", ROOT / "docs" / "ci.md", ROOT / "docs" / "reason-codes.md", ROOT / "src" / "sourcepack" / "workbench_static" / "index.html"]
+    for path in public_paths:
+        assert "new_command" not in path.read_text(encoding="utf-8"), str(path)
+
+
+def test_readme_backtick_reason_codes_are_canonical_or_allowlisted() -> None:
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    codes = set(re.findall(r"`([a-z][a-z0-9_]+)`", text))
+    likely_codes = {code for code in codes if "_" in code}
+    assert likely_codes <= set(canonical_reason_codes()) | PUBLIC_REASON_CODE_ALLOWLIST

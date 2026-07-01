@@ -178,3 +178,49 @@ def test_baseline_present_with_tracked_file_changed_has_no_baseline_failure_or_p
     assert "baseline_missing" not in ids
     assert "baseline_corrupt" not in ids
     assert not (repo / ".sourcepack" / "prompt" / "packet" / "manifest.json").exists()
+
+
+def test_baseline_refuses_dirty_git_worktree_without_force_before_sourcepack_mutation(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    (repo / "scratch.txt").write_text("untracked\n", encoding="utf-8")
+
+    cp, data = json_cli(repo, "baseline", ".", "--json", "--quiet")
+
+    assert cp.returncode == 1
+    assert data["verdict"] == "FAIL"
+    assert "dirty working tree" in data["findings"][0]["message"]
+    assert not (repo / ".sourcepack").exists()
+
+
+def test_baseline_force_permits_dirty_git_worktree(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    (repo / "scratch.txt").write_text("trusted intentionally\n", encoding="utf-8")
+
+    cp, data = json_cli(repo, "baseline", ".", "--json", "--quiet", "--force")
+
+    assert cp.returncode == 0, cp.stderr + cp.stdout
+    assert data["verdict"] == "WARN"
+    assert (repo / ".sourcepack" / "baseline" / "active.json").exists()
+
+
+def test_init_auto_refuses_dirty_git_worktree_without_force_before_sourcepack_mutation(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    (repo / "app.py").write_text("def answer():\n    return 43\n", encoding="utf-8")
+
+    cp = run_cli(repo, "init", ".", "--auto")
+
+    assert cp.returncode == 1
+    assert "dirty working tree" in cp.stdout
+    assert not (repo / ".sourcepack").exists()
+    assert not (repo / ".sourcepackignore").exists()
+    assert not (repo / "sourcepack.config.json").exists()
+
+
+def test_init_auto_force_permits_dirty_git_worktree(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    (repo / "app.py").write_text("def answer():\n    return 43\n", encoding="utf-8")
+
+    cp = run_cli(repo, "init", ".", "--auto", "--force", "--no-hook")
+
+    assert cp.returncode == 0, cp.stderr + cp.stdout
+    assert (repo / ".sourcepack" / "baseline" / "active.json").exists()

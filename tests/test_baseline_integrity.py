@@ -146,7 +146,7 @@ class BaselineIntegrityTest(unittest.TestCase):
             self.assertTrue((repo / ".sourcepack" / "prompt" / "packet" / "manifest.json").exists())
             self.assertFalse((repo / ".sourcepack" / "baseline" / "active.json").exists())
             self.assertFalse((repo / ".sourcepack" / "baseline" / "packet" / "manifest.json").exists())
-            build_current_baseline(repo, quiet=True)
+            build_current_baseline(repo, quiet=True, force=True)
             (self.packet(repo) / "manifest.json").write_text("{")
             code, _ = capture_cli(["prompt", str(repo), "task"])
             self.assertEqual(code, 0)

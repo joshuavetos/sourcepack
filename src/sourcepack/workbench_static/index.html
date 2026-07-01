@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SourcePack Workbench</title>
+</head>
+<body>
+  <h1>SourcePack Workbench</h1>
+  <button id="status">Status</button>
+  <button id="review">Review</button>
+  <button id="latest">Latest</button>
+  <pre id="output"></pre>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const queryToken = params.get('token');
+    if (queryToken) {
+      sessionStorage.setItem('sourcepackToken', queryToken);
+      window.history.replaceState({}, document.title, window.location.pathname + window.location.hash);
+    }
+    const sourcepackToken = sessionStorage.getItem('sourcepackToken') || '';
+    const output = document.getElementById('output');
+    async function api(path, options = {}) {
+      const headers = new Headers(options.headers || {});
+      headers.set('X-SourcePack-Token', sourcepackToken);
+      const response = await fetch(path, {...options, headers});
+      const text = await response.text();
+      try { return JSON.stringify(JSON.parse(text), null, 2); }
+      catch (_error) { return text; }
+    }
+    document.getElementById('status').addEventListener('click', async () => { output.textContent = await api('/api/status'); });
+    document.getElementById('review').addEventListener('click', async () => { output.textContent = await api('/api/review', {method: 'POST'}); });
+    document.getElementById('latest').addEventListener('click', async () => { output.textContent = await api('/api/latest'); });
+  </script>
+</body>
+</html>

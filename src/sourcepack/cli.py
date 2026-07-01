@@ -3021,11 +3021,20 @@ def run_cli(args_list=None):
                 patch_judgment = tmp / "patch_judgment"
                 judgment = tmp / "judgment"
                 PacketWriter(packet, SourceScanner(demo_repo).scan(), force=True).write_all()
+                verification_output = io.StringIO()
+                with contextlib.redirect_stdout(verification_output):
+                    packet_ok = verify_packet(packet)
+                if not packet_ok:
+                    print(verification_output.getvalue(), end="", file=sys.stderr)
+                    return 1
                 with contextlib.redirect_stdout(io.StringIO()):
                     judge_ai_answer(packet, fake_answer, judgment)
                     report = judge_patch(packet, fake_patch, patch_judgment)
                 traffic = patch_report_to_traffic(report, str(patch_judgment / "patch_judgment_report.json"))
                 blockers = [f for f in traffic.get("blockers", []) if f.get("id") == "unsupported_dependency"]
+                if not blockers:
+                    print("ERROR: demo did not produce the expected unsupported_dependency finding", file=sys.stderr)
+                    return 1
                 print("RED LIGHT: commit blocked")
                 for finding in blockers:
                     evidence = finding.get("evidence") or "dependency"

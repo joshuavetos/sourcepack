@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import mimetypes
 import secrets
@@ -14,7 +15,7 @@ from typing import Any
 
 STATIC_ROOT = Path(__file__).with_name("workbench_static")
 REQUEST_TIMEOUT_SECONDS = 120
-LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+ALLOWED_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -163,10 +164,20 @@ class IPv6WorkbenchServer(WorkbenchServer):
     address_family = socket.AF_INET6
 
 
-def _validate_loopback_host(host: str) -> None:
-    if host not in LOOPBACK_HOSTS:
-        allowed = ", ".join(sorted(LOOPBACK_HOSTS))
-        raise ValueError(f"Workbench only binds to loopback hosts ({allowed}); got {host!r}")
+def _validate_requested_host(host: str) -> None:
+    if host not in ALLOWED_LOOPBACK_HOSTS:
+        allowed = ", ".join(sorted(ALLOWED_LOOPBACK_HOSTS))
+        raise ValueError(f"Workbench only binds to explicit loopback hosts ({allowed}); got {host!r}")
+
+
+def _validate_bound_host(host: str) -> None:
+    normalized = "127.0.0.1" if host == "localhost" else host
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError as exc:
+        raise ValueError(f"Workbench bound to an invalid host: {host!r}") from exc
+    if not address.is_loopback:
+        raise ValueError(f"Workbench refused non-loopback bound address: {host!r}")
 
 
 def _server_class_for_host(host: str) -> type[WorkbenchServer]:
@@ -178,18 +189,24 @@ def _url_host(host: str) -> str:
 
 
 def serve_workbench(repo: str | Path = ".", host: str = "127.0.0.1", port: int = 0, open_browser: bool = True) -> int:
-    _validate_loopback_host(host)
+    _validate_requested_host(host)
     token = secrets.token_urlsafe(32)
     repo_root = Path(repo).resolve()
     server_class = _server_class_for_host(host)
     with server_class((host, port), WorkbenchHandler, repo_root, token) as httpd:
         actual_host, actual_port = httpd.server_address[:2]
+        try:
+            _validate_bound_host(actual_host)
+        except ValueError:
+            httpd.server_close()
+            raise
         url_base = f"http://{_url_host(actual_host)}:{actual_port}/"
         url = f"{url_base}?token={urllib.parse.quote(token)}"
-        display_url = url_base if open_browser else url
-        print(f"SourcePack Workbench: {display_url}", flush=True)
+        opened = False
         if open_browser:
-            webbrowser.open(url)
+            opened = webbrowser.open(url)
+        display_url = url_base if open_browser and opened else url
+        print(f"SourcePack Workbench: {display_url}", flush=True)
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

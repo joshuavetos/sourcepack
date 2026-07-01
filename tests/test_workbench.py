@@ -10,6 +10,26 @@ from sourcepack import workbench
 from sourcepack.workbench import IPv6WorkbenchServer, WorkbenchHandler, WorkbenchServer, _is_relative_to
 
 
+class FakeWorkbenchServer:
+    server_address = ("127.0.0.1", 4321)
+    closed = False
+
+    def __init__(self, server_address, handler_class, repo_root, session_token):
+        self.init_args = (server_address, handler_class, repo_root, session_token)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def serve_forever(self):
+        raise KeyboardInterrupt
+
+    def server_close(self):
+        self.closed = True
+
+
 def start_server(tmp_path):
     server = WorkbenchServer(("127.0.0.1", 0), WorkbenchHandler, tmp_path, "test-token")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -92,33 +112,59 @@ def test_ui_and_workbench_help_are_registered():
 
 
 def test_no_open_prints_tokenized_url(monkeypatch, capsys, tmp_path):
-    class FakeServer:
-        server_address = ("127.0.0.1", 4321)
-
-        def __init__(self, server_address, handler_class, repo_root, session_token):
-            self.init_args = (server_address, handler_class, repo_root, session_token)
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def serve_forever(self):
-            raise KeyboardInterrupt
-
-    monkeypatch.setattr(workbench, "WorkbenchServer", FakeServer)
+    monkeypatch.setattr(workbench, "WorkbenchServer", FakeWorkbenchServer)
     monkeypatch.setattr(workbench.secrets, "token_urlsafe", lambda size: "fixed-token")
 
     assert workbench.serve_workbench(tmp_path, open_browser=False) == 0
     assert capsys.readouterr().out.strip() == "SourcePack Workbench: http://127.0.0.1:4321/?token=fixed-token"
 
 
-def test_non_loopback_hosts_are_rejected(tmp_path):
-    with pytest.raises(ValueError, match="only binds to loopback hosts"):
-        workbench.serve_workbench(tmp_path, host="192.168.1.10", open_browser=False)
-    with pytest.raises(ValueError, match="only binds to loopback hosts"):
-        workbench.serve_workbench(tmp_path, host="0.0.0.0", open_browser=False)
+def test_browser_open_false_prints_tokenized_url(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(workbench, "WorkbenchServer", FakeWorkbenchServer)
+    monkeypatch.setattr(workbench.secrets, "token_urlsafe", lambda size: "fixed-token")
+    monkeypatch.setattr(workbench.webbrowser, "open", lambda url: False)
+
+    assert workbench.serve_workbench(tmp_path, open_browser=True) == 0
+    assert capsys.readouterr().out.strip() == "SourcePack Workbench: http://127.0.0.1:4321/?token=fixed-token"
+
+
+def test_browser_open_true_prints_base_url(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(workbench, "WorkbenchServer", FakeWorkbenchServer)
+    monkeypatch.setattr(workbench.secrets, "token_urlsafe", lambda size: "fixed-token")
+    monkeypatch.setattr(workbench.webbrowser, "open", lambda url: True)
+
+    assert workbench.serve_workbench(tmp_path, open_browser=True) == 0
+    assert capsys.readouterr().out.strip() == "SourcePack Workbench: http://127.0.0.1:4321/"
+
+
+def test_requested_hosts_are_validated():
+    for host in ("", "0", "0.0.0.0", "::", "192.168.1.10"):
+        with pytest.raises(ValueError, match="only binds to explicit loopback hosts"):
+            workbench._validate_requested_host(host)
+
+    for host in ("127.0.0.1", "localhost", "::1"):
+        workbench._validate_requested_host(host)
+
+
+def test_actual_bound_host_is_validated_before_serving(monkeypatch, tmp_path):
+    class NonLoopbackServer(FakeWorkbenchServer):
+        server_address = ("192.168.1.10", 4321)
+
+        def serve_forever(self):
+            raise AssertionError("serve_forever must not run for non-loopback bound host")
+
+    server_holder = {}
+
+    class CapturingServer(NonLoopbackServer):
+        def __init__(self, *args):
+            super().__init__(*args)
+            server_holder["server"] = self
+
+    monkeypatch.setattr(workbench, "WorkbenchServer", CapturingServer)
+
+    with pytest.raises(ValueError, match="refused non-loopback bound address"):
+        workbench.serve_workbench(tmp_path, host="127.0.0.1", open_browser=False)
+    assert server_holder["server"].closed
 
 
 def test_ipv6_loopback_uses_ipv6_server_and_url_host():

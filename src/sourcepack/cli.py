@@ -1586,8 +1586,15 @@ def _unique_build_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + f"-{os.getpid()}"
 
 
-def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: str | None = None) -> tuple[dict, bool]:
-    repo = Path(repo).resolve(); paths = ensure_sourcepack_dirs(repo)
+DIRTY_BASELINE_REFUSAL = "SourcePack refused to create a trusted baseline from a dirty working tree. Review, commit, or stash current changes first, or rerun with --force only if this state should become trusted."
+
+
+def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: str | None = None, force: bool = False) -> tuple[dict, bool]:
+    repo = Path(repo).resolve()
+    dirty, dirty_state = git_worktree_dirty(repo)
+    if dirty and not force:
+        raise RuntimeError(DIRTY_BASELINE_REFUSAL)
+    paths = ensure_sourcepack_dirs(repo)
     previous = validate_baseline(repo); created = previous.get("state") == "missing"
     lock = fd = None; build_dir = None
     try:
@@ -2232,12 +2239,17 @@ def cli_prompt(args) -> int:
 
 
 def cli_baseline(args) -> int:
-    repo = Path(args.repo).resolve(); dirty, dirty_state = git_worktree_dirty(repo); paths = ensure_sourcepack_dirs(repo); added, err = ensure_gitignore_entry(repo)
+    repo = Path(args.repo).resolve(); dirty, dirty_state = git_worktree_dirty(repo)
+    if dirty and not getattr(args, "force", False):
+        rep = traffic_report("FAIL", "trusted baseline refused dirty working tree.", [normalized_finding("dirty_worktree", "error", "baseline", DIRTY_BASELINE_REFUSAL)], ["baseline", "git status"], "Review, commit, or stash current changes first; use --force only for an intentionally trusted state.")
+        print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end="")
+        return 1
+    paths = ensure_sourcepack_dirs(repo); added, err = ensure_gitignore_entry(repo)
     if err:
         rep=traffic_report("FAIL","could not create baseline.",[normalized_finding("gitignore_unwritable","error","git",f"Cannot write .gitignore: {err}")]); print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
     existed = validate_baseline(repo).get("state") in {"present", "stale", "corrupt"}
     try:
-        build_current_baseline(repo, quiet=getattr(args, "quiet", False)); refreshed = existed or args.refresh
+        build_current_baseline(repo, quiet=getattr(args, "quiet", False), force=True); refreshed = existed or args.refresh
         if dirty:
             headline = "baseline refreshed while uncommitted changes are present." if refreshed else "baseline created while uncommitted changes are present."
             rep=traffic_report("WARN", headline, [normalized_finding("dirty_worktree", "warn", "baseline", "baseline now includes current uncommitted changes.")], ["baseline","verify"], "Commit or discard unintended changes before relying on this baseline.")
@@ -2568,6 +2580,14 @@ def cli_init(args) -> int:
         init_workspace(repo)
         return 0
     initial_dirty, initial_dirty_state = git_worktree_dirty(repo)
+    baseline_exists_before_init = validate_baseline(repo).get("state") in {"present", "stale", "corrupt"}
+    if initial_dirty and not getattr(args, "force", False) and (args.refresh_baseline or not baseline_exists_before_init):
+        rep = traffic_report("FAIL", "trusted baseline refused dirty working tree.", [normalized_finding("dirty_worktree", "error", "baseline", DIRTY_BASELINE_REFUSAL)], ["init", "baseline", "git status"], "Review, commit, or stash current changes first; rerun with --force only if this exact state is intentionally trusted.")
+        if args.json:
+            print(json.dumps(rep, indent=2))
+        else:
+            print(render_traffic(rep), end="")
+        return 1
     init_workspace(repo)
     findings: list[dict] = []
     details = {"baseline_created": False, "baseline_refreshed": False, "hook_installed": False, "strict_mode": bool(args.strict), "sourcepack_gitignored": False, "dirty_worktree": False, "next_action": "continue."}
@@ -2580,10 +2600,10 @@ def cli_init(args) -> int:
     details["sourcepack_gitignored"] = True
     dirty, dirty_state = initial_dirty, initial_dirty_state
     details["dirty_worktree"] = dirty
-    baseline_exists = validate_baseline(repo).get("state") in {"present", "stale", "corrupt"}
-    if args.refresh_baseline or (not baseline_exists and not dirty):
+    baseline_exists = baseline_exists_before_init
+    if args.refresh_baseline or (not baseline_exists and (not dirty or getattr(args, "force", False))):
         try:
-            _, created = build_current_baseline(repo)
+            _, created = build_current_baseline(repo, force=True)
             details["baseline_created"] = created
             details["baseline_refreshed"] = not created or args.refresh_baseline
             if dirty:
@@ -2862,6 +2882,7 @@ def run_cli(args_list=None):
     init.add_argument("--strict", action="store_true")
     init.add_argument("--no-hook", action="store_true")
     init.add_argument("--refresh-baseline", action="store_true")
+    init.add_argument("--force", action="store_true")
     init.add_argument("--install-hygiene-hooks", action="store_true")
     init.add_argument("--json", action="store_true")
     doctor_cmd = subs.add_parser("doctor")

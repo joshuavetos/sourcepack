@@ -98,3 +98,19 @@ def test_demo_output_matches_quick_demo_claim() -> None:
     assert "RED LIGHT: commit blocked" in text
     assert "unsupported_dependency: sourcepack/server.py imports fastapi, but fastapi is not declared." in text
     assert "PASS manifest.json" not in text
+
+
+def test_readme_first_five_minutes_and_public_alpha_limits() -> None:
+    text = readme()
+    for required in [
+        "python -m pip install sourcepack",
+        "sourcepack demo",
+        "RED LIGHT: commit blocked",
+        "unsupported_dependency",
+        "sourcepack init . --auto",
+        "sourcepack diff .",
+        "sourcepack report open",
+    ]:
+        assert required in text
+    limits = "SourcePack does not prove code correctness, security, runtime success, semantic validity, external API truth, dependency safety, or user intent."
+    assert limits in text

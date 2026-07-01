@@ -1,52 +1,48 @@
 # SourcePack
 
-<img width="1800" height="620" alt="sourcepack-hero" src="https://github.com/user-attachments/assets/9b4af0df-1cfc-4aa8-8eb1-f673e6eb2e52" />
+SourcePack catches unsupported AI repository assumptions before commit by checking proposed changes against locally verifiable repo evidence. It is a local public-alpha guardrail for reviewing repo changes, not a proof system.
 
-SourcePack checks AI-generated repo changes against trusted local repo evidence before commit.
-
-## Badges
-
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![Package: PyPI alpha](https://img.shields.io/badge/package-PyPI%20alpha-blue)
-
-## Quick demo
-
-Install the public alpha from PyPI, then run the built-in demo:
+## Install
 
 ```bash
 python -m pip install sourcepack
+```
+
+## Demo
+
+```bash
 sourcepack demo
 ```
 
-The demo centers on the current supported RED LIGHT behavior: an AI-style change imports `fastapi`, but the repository does not declare `fastapi` in its dependency files. SourcePack blocks the commit with:
+Expected demo result:
 
 ```text
 RED LIGHT: commit blocked
 unsupported_dependency: sourcepack/server.py imports fastapi, but fastapi is not declared.
 ```
 
-SourcePack catches unsupported AI assumptions before commit by checking the change against a trusted repo snapshot, called the baseline. It does not prove correctness, security, runtime success, semantic validity, external API truth, or user intent.
-
-Then inspect the human report:
-
-```bash
-sourcepack report open
-```
-
 ## Use it in your repo
 
-Create the trusted baseline and install local hooks after reviewing that the current repo state should be trusted:
+Create or refresh the trusted baseline only after reviewing that the current repo state should be trusted. SourcePack refuses to create a trusted baseline from a dirty Git working tree unless you pass `--force`.
 
 ```bash
 sourcepack init . --auto
-# make or receive AI changes
 sourcepack diff .
 sourcepack report open
-# if accepted, continue with normal git commit
-git commit -m "your change"
 ```
 
-Local policy:
+## Limits
+
+SourcePack does not prove code correctness, security, runtime success, semantic validity, external API truth, dependency safety, or user intent. It also does not replace tests, require cloud access, or upload repo contents.
+
+## Public proof links
+
+- [License](LICENSE)
+- [Changelog](CHANGELOG.md)
+- [Reason codes](docs/reason-codes.md)
+- [CI usage](docs/ci.md)
+
+## Local policy
 
 - PASS exits `0`.
 - WARN exits `0` locally.
@@ -54,15 +50,7 @@ Local policy:
 - FAIL exits nonzero.
 - `sourcepack policy validate [repo] [--json]` validates optional `.sourcepack/policy.json` without creating or updating baseline, prompt, report, evidence, hook, or working-tree files. Missing policy files exit `0`; invalid JSON or a non-object root exits nonzero. Reserved fields and dangerous trust overrides are warnings only and do not make prompt context authoritative or make CI baseline checks optional.
 
-## Install
-
-Public alpha install:
-
-```bash
-python -m pip install sourcepack
-```
-
-Local development install from a cloned checkout:
+## Local development install
 
 ```bash
 python -m pip install -e .

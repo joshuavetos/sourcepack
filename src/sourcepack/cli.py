@@ -2908,6 +2908,16 @@ def run_cli(args_list=None):
     replay_cmd = subs.add_parser("replay", help="reconstruct a saved SourcePack report or replay bundle")
     replay_cmd.add_argument("input_path")
     replay_cmd.add_argument("--json", action="store_true")
+    ui_cmd = subs.add_parser("ui", help="serve the local SourcePack Workbench", description="serve the local SourcePack Workbench")
+    ui_cmd.add_argument("repo", nargs="?", default=".")
+    ui_cmd.add_argument("--host", default="127.0.0.1")
+    ui_cmd.add_argument("--port", type=int, default=0)
+    ui_cmd.add_argument("--no-open", action="store_true")
+    workbench_cmd = subs.add_parser("workbench", help="alias for sourcepack ui", description="alias for sourcepack ui")
+    workbench_cmd.add_argument("repo", nargs="?", default=".")
+    workbench_cmd.add_argument("--host", default="127.0.0.1")
+    workbench_cmd.add_argument("--port", type=int, default=0)
+    workbench_cmd.add_argument("--no-open", action="store_true")
     report_cmd = subs.add_parser("report", help="work with local SourcePack reports")
     report_subs = report_cmd.add_subparsers(dest="report_command")
     report_open = report_subs.add_parser("open", help="open .sourcepack/reports/latest.html")
@@ -2976,6 +2986,9 @@ def run_cli(args_list=None):
             else:
                 print(render_replay_human(result), end="")
             return code
+        if args.command in {"ui", "workbench"}:
+            from .workbench import serve_workbench
+            return serve_workbench(args.repo, host=args.host, port=args.port, open_browser=not args.no_open)
         if args.command == "report":
             if args.report_command == "open":
                 return cli_report_open(args)

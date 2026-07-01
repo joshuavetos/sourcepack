@@ -83,7 +83,7 @@ def collect_dist_artifacts(dist: Path = DIST) -> list[Path]:
 
 def build_clean_artifacts() -> None:
     clean_build_outputs(ROOT)
-    run([sys.executable, "-m", "build", "--no-isolation"], ROOT)
+    run([sys.executable, "-m", "build"], ROOT)
     artifacts = collect_dist_artifacts(DIST)
     run([sys.executable, "-m", "twine", "check", *(str(path) for path in artifacts)], ROOT)
 

@@ -68,6 +68,10 @@ See [`docs/reason-codes.md`](docs/reason-codes.md) for reason-code behavior and 
 
 SourcePack does not prove code correctness, security, runtime success, semantic validity, external API truth, dependency safety, or user intent. It also does not replace tests, require cloud access, or upload repo contents.
 
+## What SourcePack does not claim
+
+SourcePack does not prove code correctness, security, runtime success, semantic validity, external API truth, dependency safety, or user intent.
+
 ## Public proof links
 
 - [License](LICENSE)
@@ -118,7 +122,7 @@ With SourcePack:
 
 SourcePack enforcement depends on a reviewed `.sourcepack/baseline/`, while `.sourcepack/prompt/` remains AI guidance only. CI should consume committed baseline state and must not create or update trusted baseline state automatically. See [`docs/baseline-lifecycle.md`](docs/baseline-lifecycle.md) for safe local and PR flows. SourcePack now dogfoods this model: its own CI runs `sourcepack diff . --ci --json` against committed `.sourcepack/baseline/` state, and AI-assisted PRs should report that gate verdict, reason codes, and report path.
 
-## CI
+## CI quickstart
 
 Safe CI usage for projects that intentionally manage a trusted baseline:
 
@@ -153,6 +157,8 @@ sourcepack baseline .
 sourcepack baseline . --refresh
 sourcepack report path
 sourcepack report open
+sourcepack replay <report-or-bundle-path>
+sourcepack replay <report-or-bundle-path> --json
 sourcepack status .
 sourcepack exec -- pytest
 sourcepack evidence list
@@ -202,6 +208,10 @@ sourcepack report open
 ```
 
 HTML is for humans. JSON is for automation and remains JSON-only on stdout when `sourcepack diff . --json` is used.
+
+## Replay saved reports
+
+Use `sourcepack replay <report-or-bundle-path>` to reconstruct a saved SourcePack JSON report or replay bundle. Use `sourcepack replay <report-or-bundle-path> --json` for parseable JSON output. Replay is read-only, does not rerun judgment over the current checkout, and does not prove code correctness, security, runtime success, dependency safety, semantic validity, external API truth, or user intent.
 
 ## Git hooks
 
@@ -259,7 +269,7 @@ Before public alpha, verify:
 
 See `docs/ci.md` for CI usage and `docs/vscode-extension-plan.md` for the VS Code extension plan.
 
-## GitHub Action
+## Composite GitHub Action
 
 SourcePack includes a composite GitHub Action that runs the existing `sourcepack` CLI in CI. It packages the CLI behavior; it does not create a second implementation of SourcePack judgment logic.
 

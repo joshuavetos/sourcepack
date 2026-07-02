@@ -11,7 +11,7 @@ SourcePack remains bounded to locally verifiable repository evidence and does no
 ## Accepted RC commit/provenance
 
 - Branch: `work` from `git branch --show-current`.
-- Commit SHA: `cac1b1e2032deb7465b633d54127297d4ed15813` from `git rev-parse HEAD` before this documentation-hardening change.
+- Commit SHA: missing; record the final release commit after merge.
 - Package version: `1.10.0a2` from `pyproject.toml`.
 - Wheel artifact: missing in current checkout; produce with `python -m build` and record the generated `dist/*.whl` path.
 - Sdist artifact: missing in current checkout; produce with `python -m build` and record the generated `dist/*.tar.gz` path.

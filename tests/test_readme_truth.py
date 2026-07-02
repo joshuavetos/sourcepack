@@ -103,6 +103,12 @@ def test_demo_output_matches_quick_demo_claim() -> None:
 def test_readme_first_five_minutes_and_public_alpha_limits() -> None:
     text = readme()
     for required in [
+        "SourcePack blocks AI-generated code changes that rely on fake repo facts.",
+        "- AI coding agents can edit files that do not exist.",
+        "- They can import undeclared dependencies.",
+        "- They can reference missing scripts or unsupported commands.",
+        "- They can reshape project structure based on prompt assumptions.",
+        "- SourcePack catches those locally verifiable failures before commit or in CI.",
         "python -m pip install sourcepack",
         "sourcepack demo",
         "RED LIGHT: commit blocked",
@@ -112,5 +118,13 @@ def test_readme_first_five_minutes_and_public_alpha_limits() -> None:
         "sourcepack report open",
     ]:
         assert required in text
-    limits = "SourcePack does not prove code correctness, security, runtime success, semantic validity, external API truth, dependency safety, or user intent."
-    assert limits in text
+    claims = text.split("## What SourcePack does not claim", 1)[1].split("## Public proof links", 1)[0].strip()
+    assert claims == "\n".join([
+        "- does not prove code correctness",
+        "- does not prove security",
+        "- does not prove runtime success",
+        "- does not prove semantic validity",
+        "- does not prove external API truth",
+        "- does not prove dependency safety",
+        "- does not prove user intent",
+    ])

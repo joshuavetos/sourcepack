@@ -1,6 +1,14 @@
 # SourcePack
 
-SourcePack catches unsupported AI repository assumptions before commit by checking proposed changes against locally verifiable repo evidence. It is a local public-alpha guardrail for reviewing repo changes, not a proof system.
+SourcePack blocks AI-generated code changes that rely on fake repo facts.
+
+- AI coding agents can edit files that do not exist.
+- They can import undeclared dependencies.
+- They can reference missing scripts or unsupported commands.
+- They can reshape project structure based on prompt assumptions.
+- SourcePack catches those locally verifiable failures before commit or in CI.
+
+SourcePack checks proposed changes against locally verifiable repo evidence. It is a local public-alpha guardrail for reviewing repo changes, not a proof system.
 
 ## The problem
 
@@ -70,7 +78,13 @@ SourcePack does not prove code correctness, security, runtime success, semantic 
 
 ## What SourcePack does not claim
 
-SourcePack does not prove code correctness, security, runtime success, semantic validity, external API truth, dependency safety, or user intent.
+- does not prove code correctness
+- does not prove security
+- does not prove runtime success
+- does not prove semantic validity
+- does not prove external API truth
+- does not prove dependency safety
+- does not prove user intent
 
 ## Public proof links
 

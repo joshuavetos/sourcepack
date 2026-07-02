@@ -1839,7 +1839,12 @@ def _policy_changed_line_count(changes: list[PatchFileChange]) -> int:
     count = 0
     for change in changes:
         for line in change.diff_lines or []:
-            if line.startswith("@@") or line.startswith(" "):
+            if (
+                line.startswith("@@")
+                or line.startswith(" ")
+                or line.startswith("--- ")
+                or line.startswith("+++ ")
+            ):
                 continue
             if line.startswith(("+", "-")):
                 count += 1

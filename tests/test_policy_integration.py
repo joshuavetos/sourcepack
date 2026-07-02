@@ -275,6 +275,26 @@ def test_policy_rule_large_diff_warns(tmp_path):
     assert "policy_large_diff" in finding_ids(data)
 
 
+def test_policy_large_diff_line_count_excludes_diff_file_headers():
+    from sourcepack.diff_parser import PatchFileChange
+    from sourcepack.judgment import _policy_changed_line_count
+
+    change = PatchFileChange(
+        path="README.md",
+        old_path="README.md",
+        diff_lines=[
+            "--- a/README.md",
+            "+++ b/README.md",
+            "@@ -1 +1 @@",
+            " unchanged context",
+            "-old content",
+            "+new content",
+        ],
+    )
+
+    assert _policy_changed_line_count([change]) == 2
+
+
 def test_policy_rule_large_diff_blocks_in_ci(tmp_path):
     init_repo(tmp_path)
     write_rules(tmp_path, {"max_changed_lines": 1})

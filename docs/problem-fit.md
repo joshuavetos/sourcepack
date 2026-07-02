@@ -2,6 +2,8 @@
 
 SourcePack is a local evidence guardrail for repository changes. It checks proposed changes against trusted repo evidence and reports unsupported assumptions before commit. It is not a proof system and does not judge whether code is good, secure, maintainable, or architecturally sound.
 
+“Fake repo facts” is plain-language shorthand for locally verifiable unsupported repository assumptions, such as importing a dependency the repo does not declare, editing a file that is not in the trusted baseline, referencing a command the repo evidence does not support, or creating or deleting structure that needs review before becoming trusted.
+
 ## Good fit
 
 Use SourcePack when the failure you want to catch is visible in local repository evidence.

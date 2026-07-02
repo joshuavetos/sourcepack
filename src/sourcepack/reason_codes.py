@@ -49,6 +49,12 @@ class ReasonCode(StrEnum):
     EXECUTION_FAILED = "execution_failed"
     EXECUTION_INCONCLUSIVE = "execution_inconclusive"
     POLICY_CONFIG_WARNING = "policy_config_warning"
+    POLICY_DEPENDENCY_ADDITION = "policy_dependency_addition"
+    POLICY_PROTECTED_PATH = "policy_protected_path"
+    POLICY_PACKAGE_MANAGER_DRIFT = "policy_package_manager_drift"
+    POLICY_MISSING_TEST = "policy_missing_test"
+    POLICY_LARGE_DIFF = "policy_large_diff"
+    POLICY_SECRET_PATTERN = "policy_secret_pattern"
 
 
 _CANONICAL = {code.value for code in ReasonCode}

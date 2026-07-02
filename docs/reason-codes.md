@@ -137,6 +137,60 @@ SourcePack reason codes explain why a repo-state transition is PASS, WARN, or FA
 - **Likely fix:** Treat the result as needing review and rely on ecosystem-specific tests until support is implemented.
 - **Example message:** `Cargo.toml detected, but Rust dependency validation is not implemented.`
 
+## policy_dependency_addition
+
+- **Meaning:** Proposed change added an unapproved dependency to project manifest files.
+- **Local behavior:** FAIL.
+- **Strict/CI behavior:** FAIL.
+- **Common cause:** A configured repository policy blocks new dependency declarations unless separately approved.
+- **Likely fix:** Remove the dependency addition or complete the repository-specific approval flow before changing the manifest.
+- **Example message:** `Proposed change added an unapproved dependency to project manifest files.`
+
+## policy_protected_path
+
+- **Meaning:** Proposed change modified a path matching `rules.protected_paths` in `.sourcepack/policy.json`.
+- **Local behavior:** FAIL.
+- **Strict/CI behavior:** FAIL.
+- **Common cause:** A configured repository policy protects high-risk paths such as authentication, billing, or migrations.
+- **Likely fix:** Avoid the protected path or update/review repository policy intentionally.
+- **Example message:** `Proposed change modified a path protected by repository policy.`
+
+## policy_package_manager_drift
+
+- **Meaning:** Proposed change added or modified a package-manager artifact that conflicts with the configured package manager.
+- **Local behavior:** FAIL.
+- **Strict/CI behavior:** FAIL.
+- **Common cause:** `package_manager` is `pnpm`, but the change adds or modifies an npm or Yarn lock artifact.
+- **Likely fix:** Use artifacts for the configured package manager or adjust repository policy intentionally.
+- **Example message:** `Proposed change added or modified a package-manager artifact that conflicts with repository policy.`
+
+## policy_missing_test
+
+- **Meaning:** Proposed change altered a file matching `rules.require_tests_for` without a test-path or test-name change in the same delta.
+- **Local behavior:** WARN for the MVP.
+- **Strict/CI behavior:** Nonzero because WARN is blocked by `--strict` and `--ci`.
+- **Common cause:** Repository policy expects certain source paths to be accompanied by test updates.
+- **Likely fix:** Add or update a corresponding test in the same delta, or adjust repository policy intentionally.
+- **Example message:** `Proposed change altered a path that repository policy expects to be accompanied by a test change.`
+
+## policy_large_diff
+
+- **Meaning:** Proposed change exceeds `rules.max_changed_lines`.
+- **Local behavior:** WARN for the MVP.
+- **Strict/CI behavior:** Nonzero because WARN is blocked by `--strict` and `--ci`.
+- **Common cause:** The configured repository policy limits large deltas for local review.
+- **Likely fix:** Split the proposed change or raise the configured limit intentionally.
+- **Example message:** `Proposed change modifies <count> lines, exceeding repository policy limit <limit>.`
+
+## policy_secret_pattern
+
+- **Meaning:** Proposed change added an obvious credential-shaped assignment involving a sensitive name such as `password`, `token`, `secret`, `api_key`, `access_key`, or `private_key`.
+- **Local behavior:** FAIL.
+- **Strict/CI behavior:** FAIL.
+- **Common cause:** Added lines contain high-confidence credential-shaped material rather than an obvious placeholder.
+- **Likely fix:** Remove the value or replace it with an obvious placeholder such as `REDACTED` or `changeme`.
+- **Example message:** `Proposed change added obvious credential-shaped assignment material blocked by repository policy.`
+
 ## Vocabulary enforcement
 
 `src/sourcepack/reason_codes.py` is the source of truth for emitted reason-code IDs. Runtime report construction normalizes IDs to lowercase snake_case and refuses unknown WARN/FAIL finding IDs. Positive evidence such as dependency declarations is represented as review evidence (`declared_dependency`) rather than as proof that prompt context can enforce trust.

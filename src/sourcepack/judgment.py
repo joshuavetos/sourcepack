@@ -20,7 +20,7 @@ from .baseline import BaselineLockError, acquire_baseline_lock, baseline_corrupt
 from .ecosystems.python import PY_IMPORT_ALIASES
 from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_paths
 from .reports.json import normalized_finding, traffic_report, write_user_report
-from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code, load_policy_config, finding_ignored_by_policy
+from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code, load_policy_config, finding_ignored_by_policy, policy_path_matches
 from .execution_ledger import execution_findings
 from .commands import resolve_command
 from .dependencies import resolve_js_import, resolve_python_import
@@ -1789,9 +1789,11 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         verdict = "WARN" if stale_findings else "PASS"
         rep = traffic_report(verdict, "SourcePack could not fully evaluate this change." if stale_findings else "good to continue.", [normalized_finding("no_diff", "info", "diff", "No uncommitted changes detected."), *stale_findings], ["diff", "baseline freshness"])
     else:
-        raw = judge_patch_text(repo / baseline_status["packet_path"], diff_text); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
+        packet_path = repo / baseline_status["packet_path"]
+        raw = judge_patch_text(packet_path, diff_text); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
         rep = _integrate_execution_findings(repo, diff_text, rep)
         rep = _apply_local_policy(repo, rep)
+        rep = _apply_policy_rules(repo, packet_path, diff_text, rep)
         rep = _apply_policy_config(repo, rep)
         if stale_findings and rep["verdict"] != "FAIL":
             rep = traffic_report("WARN", "SourcePack could not fully evaluate this change.", rep.get("findings", []) + stale_findings, rep.get("checked_categories", []), rep.get("next_action"), reason_type="uncertainty"); rep["raw_patch_judgment"] = raw
@@ -1813,7 +1815,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
 def _rebuild_from_findings(rep: dict, findings: list[dict]) -> dict:
     verdict = "FAIL" if any(f.get("severity") == "error" for f in findings) else "WARN" if any(f.get("severity") == "warn" for f in findings) else "PASS"
     rebuilt = traffic_report(verdict, findings=findings, checked_categories=rep.get("checked_categories") or rep.get("checked") or [], report_path=rep.get("report_path", ".sourcepack/reports/latest.json"))
-    for key in ("raw_patch_judgment", "policy_overrides", "policy_config", "policy_config_ignores", "policy_config_warnings"):
+    for key in ("raw_patch_judgment", "policy_overrides", "policy_config", "policy_config_ignores", "policy_config_warnings", "policy_rule_findings"):
         if key in rep:
             rebuilt[key] = rep[key]
     return rebuilt
@@ -1824,6 +1826,146 @@ def _integrate_execution_findings(repo: Path, checked_text: str, rep: dict) -> d
     if not execution:
         return rep
     return _rebuild_from_findings(rep, list(rep.get("findings", [])) + execution)
+
+
+_PLACEHOLDER_SECRET_VALUES = {"example", "dummy", "fake", "test", "changeme", "placeholder", "redacted"}
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(password|passwd|token|secret|api[_-]?key|apikey|access[_-]?key|private[_-]?key)\b"
+    r"[A-Za-z0-9_.-]*\s*[:=]\s*['\"]?([^'\"\s,#}]{8,})['\"]?"
+)
+
+
+def _policy_changed_line_count(changes: list[PatchFileChange]) -> int:
+    count = 0
+    for change in changes:
+        for line in change.diff_lines or []:
+            if line.startswith("@@") or line.startswith(" "):
+                continue
+            if line.startswith(("+", "-")):
+                count += 1
+    return count
+
+
+def _line_has_policy_secret(line: str) -> bool:
+    for match in _SECRET_ASSIGNMENT_RE.finditer(line):
+        value = match.group(2).strip().lower()
+        if any(placeholder in value for placeholder in _PLACEHOLDER_SECRET_VALUES):
+            continue
+        return True
+    return False
+
+
+def _policy_rule_findings(repo: Path, packet_path: Path, diff_text: str) -> list[dict]:
+    config = load_policy_config(repo)
+    rules = config.rules
+    if not rules.enabled() or not diff_text.strip():
+        return []
+    changes = [change for change in parse_unified_diff(diff_text) if not change.unsafe_path]
+    if not changes:
+        return []
+
+    findings: list[dict] = []
+    changed_paths = sorted({change.path for change in changes if change.path})
+
+    for path in changed_paths:
+        for pattern in rules.protected_paths:
+            if policy_path_matches(path, pattern):
+                findings.append(normalized_finding(
+                    "policy_protected_path",
+                    "error",
+                    "policy",
+                    "Proposed change modified a path protected by repository policy.",
+                    path,
+                    evidence=pattern,
+                    suggestion="Change the protected path only after updating repository policy or obtaining the required review.",
+                ))
+                break
+
+    if rules.package_manager == "pnpm":
+        conflicting = {"package-lock.json", "npm-shrinkwrap.json", "yarn.lock"}
+        for path in changed_paths:
+            if PurePosixPath(path).name in conflicting:
+                findings.append(normalized_finding(
+                    "policy_package_manager_drift",
+                    "error",
+                    "policy",
+                    "Proposed change added or modified a package-manager artifact that conflicts with repository policy.",
+                    path,
+                    evidence="pnpm",
+                    suggestion="Use pnpm artifacts for this repository or update policy intentionally.",
+                ))
+
+    if rules.max_changed_lines is not None:
+        changed_line_count = _policy_changed_line_count(changes)
+        if changed_line_count > rules.max_changed_lines:
+            findings.append(normalized_finding(
+                "policy_large_diff",
+                "warn",
+                "policy",
+                f"Proposed change modifies {changed_line_count} lines, exceeding repository policy limit {rules.max_changed_lines}.",
+                evidence=str(changed_line_count),
+                suggestion="Split the proposed change or raise the configured limit intentionally.",
+            ))
+
+    if rules.require_tests_for:
+        has_test_change = any(_is_test_path(path) for path in changed_paths)
+        if not has_test_change:
+            for path in changed_paths:
+                if _is_test_path(path):
+                    continue
+                if any(policy_path_matches(path, pattern) for pattern in rules.require_tests_for):
+                    findings.append(normalized_finding(
+                        "policy_missing_test",
+                        "warn",
+                        "policy",
+                        "Proposed change altered a path that repository policy expects to be accompanied by a test change.",
+                        path,
+                        evidence=", ".join(rules.require_tests_for),
+                        suggestion="Add or update a corresponding test in the same delta, or adjust repository policy intentionally.",
+                    ))
+                    break
+
+    if rules.block_secret_patterns:
+        for change in changes:
+            for line in change.added_lines or []:
+                if _line_has_policy_secret(line):
+                    findings.append(normalized_finding(
+                        "policy_secret_pattern",
+                        "error",
+                        "policy",
+                        "Proposed change added obvious credential-shaped assignment material blocked by repository policy.",
+                        change.path,
+                        suggestion="Remove the credential-shaped value or replace it with an obvious placeholder.",
+                    ))
+                    break
+
+    if rules.block_dependency_additions:
+        manifest = load_manifest(packet_path)
+        contents = _packet_file_contents(packet_path)
+        existing = _declared_dependency_names_by_ecosystem(manifest, packet_path)
+        declared, uncertainties = _declared_dependency_names_from_patch_by_ecosystem_structural(changes, contents)
+        if not uncertainties:
+            additions = sorted((declared["python"] | declared["js"]) - (existing["python"] | existing["js"]))
+            for dependency in additions:
+                findings.append(normalized_finding(
+                    "policy_dependency_addition",
+                    "error",
+                    "policy",
+                    "Proposed change added an unapproved dependency to project manifest files.",
+                    evidence=dependency,
+                    suggestion="Remove the dependency addition or update repository policy/review evidence intentionally.",
+                ))
+
+    return findings
+
+
+def _apply_policy_rules(repo: Path, packet_path: Path, diff_text: str, rep: dict) -> dict:
+    findings = _policy_rule_findings(repo, packet_path, diff_text)
+    if not findings:
+        return rep
+    rebuilt = _rebuild_from_findings(rep, list(rep.get("findings", [])) + findings)
+    rebuilt["policy_rule_findings"] = findings
+    return rebuilt
 
 
 def _policy_entries_for_judgment(repo: Path) -> list[dict]:

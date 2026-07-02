@@ -19,6 +19,13 @@ def init_repo(tmp_path):
     assert cp.returncode == 0, cp.stderr + cp.stdout
 
 
+def trust_current_repo(tmp_path, message="trusted state"):
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", message], cwd=tmp_path, check=True, stdout=subprocess.PIPE)
+    cp = run(tmp_path, "baseline", "refresh", "--force")
+    assert cp.returncode == 0, cp.stderr + cp.stdout
+
+
 def report(repo):
     cp = run(repo, "diff", ".", "--json")
     assert cp.stdout.lstrip().startswith("{"), cp.stderr + cp.stdout
@@ -163,3 +170,112 @@ def test_policy_config_reserved_fields_emit_warnings_without_authority(tmp_path)
     assert config.fail_on_warn_in_ci is True
     assert config.protected_paths == (".sourcepack/baseline/**", ".git/**")
     assert config.report_formats == ("json", "markdown", "html", "sarif")
+
+
+def write_rules(tmp_path, rules):
+    policy_dir = tmp_path / ".sourcepack"
+    policy_dir.mkdir(exist_ok=True)
+    (policy_dir / "policy.json").write_text(json.dumps({
+        "schema_version": "sourcepack.policy.v1",
+        "rules": rules,
+    }), encoding="utf-8")
+
+
+def finding_ids(data):
+    return {finding["id"] for finding in data["findings"]}
+
+
+def test_policy_rules_missing_and_empty_do_not_emit_rule_findings(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "app.py").write_text("password = 'not-a-placeholder-secret'\n", encoding="utf-8")
+    _, data = report(tmp_path)
+    assert not any(finding["id"].startswith("policy_") for finding in data["findings"])
+
+    write_rules(tmp_path, {})
+    _, data = report(tmp_path)
+    assert not any(finding["id"].startswith("policy_") for finding in data["findings"])
+
+
+def test_policy_rule_protected_path_fails(tmp_path):
+    init_repo(tmp_path)
+    protected_dir = tmp_path / "src" / "auth"
+    protected_dir.mkdir(parents=True)
+    (protected_dir / "login.py").write_text("ALLOW = True\n", encoding="utf-8")
+    trust_current_repo(tmp_path)
+    write_rules(tmp_path, {"protected_paths": ["src/auth/**"]})
+
+    (protected_dir / "login.py").write_text("ALLOW = False\n", encoding="utf-8")
+    code, data = report(tmp_path)
+
+    assert code == 1
+    assert "policy_protected_path" in finding_ids(data)
+
+
+def test_policy_rule_package_manager_drift_fails_for_pnpm(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"package_manager": "pnpm"})
+    (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}\n', encoding="utf-8")
+
+    code, data = report(tmp_path)
+
+    assert code == 1
+    assert "policy_package_manager_drift" in finding_ids(data)
+
+
+def test_policy_rule_missing_test_warns_and_test_change_satisfies(tmp_path):
+    init_repo(tmp_path)
+    api_dir = tmp_path / "src" / "api"
+    api_dir.mkdir(parents=True)
+    (api_dir / "handler.py").write_text("VALUE = 1\n", encoding="utf-8")
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_handler.py").write_text("def test_value():\n    assert True\n", encoding="utf-8")
+    trust_current_repo(tmp_path)
+    write_rules(tmp_path, {"require_tests_for": ["src/api/**"]})
+
+    (api_dir / "handler.py").write_text("VALUE = 2\n", encoding="utf-8")
+    code, data = report(tmp_path)
+    assert code == 0
+    assert "policy_missing_test" in finding_ids(data)
+
+    (tests_dir / "test_handler.py").write_text("def test_value():\n    assert 2 == 2\n", encoding="utf-8")
+    _, data = report(tmp_path)
+    assert "policy_missing_test" not in finding_ids(data)
+
+
+def test_policy_rule_large_diff_warns(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"max_changed_lines": 1})
+    (tmp_path / "README.md").write_text("demo\nline 2\nline 3\n", encoding="utf-8")
+
+    code, data = report(tmp_path)
+
+    assert code == 0
+    assert "policy_large_diff" in finding_ids(data)
+
+
+def test_policy_rule_secret_pattern_fails_but_placeholder_is_ignored(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"block_secret_patterns": True})
+    (tmp_path / "app.py").write_text("token = 'changeme'\n", encoding="utf-8")
+    _, data = report(tmp_path)
+    assert "policy_secret_pattern" not in finding_ids(data)
+
+    (tmp_path / "app.py").write_text("token = 'live_secret_value_12345'\n", encoding="utf-8")
+    code, data = report(tmp_path)
+
+    assert code == 1
+    assert "policy_secret_pattern" in finding_ids(data)
+
+
+def test_policy_rule_dependency_addition_fails(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = []\n", encoding="utf-8")
+    trust_current_repo(tmp_path)
+    write_rules(tmp_path, {"block_dependency_additions": True})
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = ['requests']\n", encoding="utf-8")
+
+    code, data = report(tmp_path)
+
+    assert code == 1
+    assert "policy_dependency_addition" in finding_ids(data)

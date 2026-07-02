@@ -14,6 +14,26 @@ class PolicyMode(StrEnum):
 
 
 @dataclass(frozen=True)
+class PolicyRules:
+    block_dependency_additions: bool = False
+    protected_paths: tuple[str, ...] = field(default_factory=tuple)
+    package_manager: str | None = None
+    require_tests_for: tuple[str, ...] = field(default_factory=tuple)
+    max_changed_lines: int | None = None
+    block_secret_patterns: bool = False
+
+    def enabled(self) -> bool:
+        return (
+            self.block_dependency_additions
+            or bool(self.protected_paths)
+            or self.package_manager is not None
+            or bool(self.require_tests_for)
+            or self.max_changed_lines is not None
+            or self.block_secret_patterns
+        )
+
+
+@dataclass(frozen=True)
 class PolicyConfig:
     schema_version: str = "sourcepack.policy.v1"
     strict_default: bool = True
@@ -24,6 +44,7 @@ class PolicyConfig:
     baseline_required_in_ci: bool = True
     prompt_context_authoritative: bool = False
     warnings: tuple[str, ...] = field(default_factory=tuple)
+    rules: PolicyRules = field(default_factory=PolicyRules)
 
 
 @dataclass(frozen=True)
@@ -70,6 +91,14 @@ class PolicyValidationResult:
                 "baseline_required_in_ci": self.effective_config.baseline_required_in_ci,
                 "prompt_context_authoritative": self.effective_config.prompt_context_authoritative,
                 "suppressible_ignored_path_finding_ids": sorted(SUPPRESSIBLE_IGNORED_PATH_FINDING_IDS),
+                "rules": {
+                    "block_dependency_additions": self.effective_config.rules.block_dependency_additions,
+                    "protected_paths": list(self.effective_config.rules.protected_paths),
+                    "package_manager": self.effective_config.rules.package_manager,
+                    "require_tests_for": list(self.effective_config.rules.require_tests_for),
+                    "max_changed_lines": self.effective_config.rules.max_changed_lines,
+                    "block_secret_patterns": self.effective_config.rules.block_secret_patterns,
+                },
             },
         }
 
@@ -130,6 +159,85 @@ def _normalize_policy_path(value: object) -> str | None:
     if any(part in {"", ".", ".."} for part in pure.parts):
         return None
     return pure.as_posix()
+
+
+def policy_path_matches(path: str, pattern: str) -> bool:
+    return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, pattern.rstrip("/") + "/**")
+
+
+def _parse_policy_rules(raw_rules: object, warnings: list[str]) -> PolicyRules:
+    if raw_rules is None:
+        return PolicyRules()
+    if not isinstance(raw_rules, dict):
+        warnings.append("policy_rules_invalid:rules_must_be_object")
+        return PolicyRules()
+    if not raw_rules:
+        return PolicyRules()
+
+    block_dependency_additions = False
+    if "block_dependency_additions" in raw_rules:
+        if raw_rules["block_dependency_additions"] is True:
+            block_dependency_additions = True
+        elif raw_rules["block_dependency_additions"] is not False:
+            warnings.append("policy_rule_invalid:block_dependency_additions_must_be_boolean")
+
+    protected_paths: list[str] = []
+    if "protected_paths" in raw_rules:
+        raw_protected = raw_rules["protected_paths"]
+        if not isinstance(raw_protected, list):
+            warnings.append("policy_rule_invalid:protected_paths_must_be_list")
+        else:
+            for value in raw_protected:
+                norm = _normalize_policy_path(value)
+                if norm:
+                    protected_paths.append(norm)
+                else:
+                    warnings.append(f"policy_rule_invalid:protected_path:{value}")
+
+    package_manager = None
+    if "package_manager" in raw_rules:
+        value = raw_rules["package_manager"]
+        if isinstance(value, str) and value.strip().lower() == "pnpm":
+            package_manager = "pnpm"
+        elif value not in (None, ""):
+            warnings.append(f"policy_rule_invalid:unsupported_package_manager:{value}")
+
+    require_tests_for: list[str] = []
+    if "require_tests_for" in raw_rules:
+        raw_required = raw_rules["require_tests_for"]
+        if not isinstance(raw_required, list):
+            warnings.append("policy_rule_invalid:require_tests_for_must_be_list")
+        else:
+            for value in raw_required:
+                norm = _normalize_policy_path(value)
+                if norm:
+                    require_tests_for.append(norm)
+                else:
+                    warnings.append(f"policy_rule_invalid:require_tests_for:{value}")
+
+    max_changed_lines = None
+    if "max_changed_lines" in raw_rules:
+        value = raw_rules["max_changed_lines"]
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            max_changed_lines = value
+        else:
+            warnings.append("policy_rule_invalid:max_changed_lines_must_be_positive_integer")
+
+    block_secret_patterns = False
+    if "block_secret_patterns" in raw_rules:
+        if raw_rules["block_secret_patterns"] is True:
+            block_secret_patterns = True
+        elif raw_rules["block_secret_patterns"] is not False:
+            warnings.append("policy_rule_invalid:block_secret_patterns_must_be_boolean")
+
+    return PolicyRules(
+        block_dependency_additions=block_dependency_additions,
+        protected_paths=tuple(protected_paths),
+        package_manager=package_manager,
+        require_tests_for=tuple(require_tests_for),
+        max_changed_lines=max_changed_lines,
+        block_secret_patterns=block_secret_patterns,
+    )
 
 
 def validate_policy_config(repo: str | Path) -> PolicyValidationResult:
@@ -211,7 +319,8 @@ def validate_policy_config(repo: str | Path) -> PolicyValidationResult:
             fmt = str(value).lower().strip()
             if fmt not in {"json", "markdown", "html", "sarif"}:
                 warnings.append(f"policy_report_format_ignored:{fmt}")
-    config = PolicyConfig(ignored_paths=tuple(ignored), warnings=tuple(warnings))
+    rules = _parse_policy_rules(raw.get("rules"), warnings)
+    config = PolicyConfig(ignored_paths=tuple(ignored), warnings=tuple(warnings), rules=rules)
     return PolicyValidationResult(
         schema_version="sourcepack.policy.validation.v1",
         repo=str(repo_path),
@@ -269,6 +378,7 @@ def load_policy_config(repo: str | Path) -> PolicyConfig:
             formats.append(fmt)
         else:
             warnings.append(f"policy_report_format_ignored:{fmt}")
+    rules = _parse_policy_rules(raw.get("rules"), warnings)
     return PolicyConfig(
         strict_default=PolicyConfig.strict_default,
         fail_on_warn_in_ci=PolicyConfig.fail_on_warn_in_ci,
@@ -276,6 +386,7 @@ def load_policy_config(repo: str | Path) -> PolicyConfig:
         protected_paths=PolicyConfig.protected_paths,
         report_formats=PolicyConfig.report_formats,
         warnings=tuple(warnings),
+        rules=rules,
     )
 
 
@@ -290,6 +401,6 @@ def finding_ignored_by_policy(finding: dict, config: PolicyConfig) -> dict | Non
         pattern = item["pattern"]
         if _is_unsafe_policy_ignore_pattern(pattern):
             continue
-        if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, pattern.rstrip("/") + "/**"):
+        if policy_path_matches(path, pattern):
             return {"pattern": pattern, "reason": item["reason"], "path": path}
     return None

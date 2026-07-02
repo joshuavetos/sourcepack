@@ -115,6 +115,51 @@ def test_policy_validate_reserved_and_dangerous_fields_warn_without_authority(tm
     assert data["effective_config"]["baseline_required_in_ci"] is True
 
 
+def test_policy_validate_rules_missing_and_empty_are_noop(tmp_path):
+    write_policy(tmp_path, {"schema_version": "sourcepack.policy.v1"})
+    data = json.loads(run_cli(tmp_path, "policy", "validate", str(tmp_path), "--json").stdout)
+    assert data["effective_config"]["rules"] == {
+        "block_dependency_additions": False,
+        "protected_paths": [],
+        "package_manager": None,
+        "require_tests_for": [],
+        "max_changed_lines": None,
+        "block_secret_patterns": False,
+    }
+
+    write_policy(tmp_path, {"schema_version": "sourcepack.policy.v1", "rules": {}})
+    data = json.loads(run_cli(tmp_path, "policy", "validate", str(tmp_path), "--json").stdout)
+    assert data["effective_config"]["rules"]["protected_paths"] == []
+    assert data["effective_config"]["rules"]["block_secret_patterns"] is False
+
+
+def test_policy_validate_rules_reports_effective_rules_and_warnings(tmp_path):
+    write_policy(tmp_path, {
+        "schema_version": "sourcepack.policy.v1",
+        "rules": {
+            "block_dependency_additions": True,
+            "protected_paths": ["src/auth/**", "/abs", "../escape"],
+            "package_manager": "pnpm",
+            "require_tests_for": ["src/api/**", ""],
+            "max_changed_lines": 800,
+            "block_secret_patterns": True,
+        },
+    })
+    data = json.loads(run_cli(tmp_path, "policy", "validate", str(tmp_path), "--json").stdout)
+    assert data["effective_config"]["rules"] == {
+        "block_dependency_additions": True,
+        "protected_paths": ["src/auth/**"],
+        "package_manager": "pnpm",
+        "require_tests_for": ["src/api/**"],
+        "max_changed_lines": 800,
+        "block_secret_patterns": True,
+    }
+    warnings = "\n".join(data["warnings"])
+    assert "policy_rule_invalid:protected_path:/abs" in warnings
+    assert "policy_rule_invalid:protected_path:../escape" in warnings
+    assert "policy_rule_invalid:require_tests_for:" in warnings
+
+
 def test_policy_validate_json_stdout_only_and_no_mutation_of_state_dirs(tmp_path):
     (tmp_path / ".sourcepack" / "baseline").mkdir(parents=True)
     (tmp_path / ".sourcepack" / "prompt").mkdir()

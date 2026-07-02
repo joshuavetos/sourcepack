@@ -32,6 +32,12 @@ def report(repo):
     return cp.returncode, json.loads(cp.stdout)
 
 
+def report_ci(repo):
+    cp = run(repo, "diff", ".", "--ci", "--json")
+    assert cp.stdout.lstrip().startswith("{"), cp.stderr + cp.stdout
+    return cp.returncode, json.loads(cp.stdout)
+
+
 def test_dependency_allow_suppresses_only_matching_finding(tmp_path):
     init_repo(tmp_path)
     (tmp_path / "app.py").write_text("import fastapi\nimport flask\n", encoding="utf-8")
@@ -243,6 +249,21 @@ def test_policy_rule_missing_test_warns_and_test_change_satisfies(tmp_path):
     assert "policy_missing_test" not in finding_ids(data)
 
 
+def test_policy_rule_missing_test_blocks_in_ci(tmp_path):
+    init_repo(tmp_path)
+    api_dir = tmp_path / "src" / "api"
+    api_dir.mkdir(parents=True)
+    (api_dir / "handler.py").write_text("VALUE = 1\n", encoding="utf-8")
+    trust_current_repo(tmp_path)
+    write_rules(tmp_path, {"require_tests_for": ["src/api/**"]})
+    (api_dir / "handler.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    code, data = report_ci(tmp_path)
+
+    assert code != 0
+    assert "policy_missing_test" in finding_ids(data)
+
+
 def test_policy_rule_large_diff_warns(tmp_path):
     init_repo(tmp_path)
     write_rules(tmp_path, {"max_changed_lines": 1})
@@ -254,16 +275,41 @@ def test_policy_rule_large_diff_warns(tmp_path):
     assert "policy_large_diff" in finding_ids(data)
 
 
-def test_policy_rule_secret_pattern_fails_but_placeholder_is_ignored(tmp_path):
+def test_policy_rule_large_diff_blocks_in_ci(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"max_changed_lines": 1})
+    (tmp_path / "README.md").write_text("demo\nline 2\nline 3\n", encoding="utf-8")
+
+    code, data = report_ci(tmp_path)
+
+    assert code != 0
+    assert "policy_large_diff" in finding_ids(data)
+
+
+def test_policy_rule_secret_pattern_ignores_placeholders(tmp_path):
     init_repo(tmp_path)
     write_rules(tmp_path, {"block_secret_patterns": True})
-    (tmp_path / "app.py").write_text("token = 'changeme'\n", encoding="utf-8")
-    _, data = report(tmp_path)
+    (tmp_path / "app.py").write_text("token = 'REDACTED'\npassword = 'changeme'\n", encoding="utf-8")
+    code, data = report(tmp_path)
+    assert code == 0
     assert "policy_secret_pattern" not in finding_ids(data)
 
-    (tmp_path / "app.py").write_text("token = 'live_secret_value_12345'\n", encoding="utf-8")
-    code, data = report(tmp_path)
 
+def test_policy_rule_secret_pattern_fails_for_common_assignment_shapes(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"block_secret_patterns": True})
+    (tmp_path / "app.py").write_text("api_key = 'live_secret_value_12345'\n", encoding="utf-8")
+    code, data = report(tmp_path)
+    assert code == 1
+    assert "policy_secret_pattern" in finding_ids(data)
+
+    (tmp_path / "app.py").write_text('"api_key": "live_secret_value_12345"\n', encoding="utf-8")
+    code, data = report(tmp_path)
+    assert code == 1
+    assert "policy_secret_pattern" in finding_ids(data)
+
+    (tmp_path / "app.py").write_text("password: live_secret_value_12345\n", encoding="utf-8")
+    code, data = report(tmp_path)
     assert code == 1
     assert "policy_secret_pattern" in finding_ids(data)
 
@@ -279,3 +325,26 @@ def test_policy_rule_dependency_addition_fails(tmp_path):
 
     assert code == 1
     assert "policy_dependency_addition" in finding_ids(data)
+
+
+def test_policy_rule_dependency_addition_uncertain_manifest_emits_existing_uncertainty(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = []\n", encoding="utf-8")
+    trust_current_repo(tmp_path)
+    write_rules(tmp_path, {"block_dependency_additions": True})
+    patch = (
+        "diff --git a/pyproject.toml b/pyproject.toml\n"
+        "--- a/pyproject.toml\n"
+        "+++ b/pyproject.toml\n"
+        "@@ -1,3 +1,3 @@\n"
+        " [project]\n"
+        "-does-not-match-baseline\n"
+        "+dependencies = ['requests']\n"
+        " dependencies = []\n"
+    )
+
+    from sourcepack.judgment import judge_repo_change
+    judgment = judge_repo_change(tmp_path, patch_text=patch)
+
+    assert "dependency_manifest_uncertain" in finding_ids(judgment.report)
+    assert "policy_dependency_addition" not in finding_ids(judgment.report)

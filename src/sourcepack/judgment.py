@@ -1831,7 +1831,7 @@ def _integrate_execution_findings(repo: Path, checked_text: str, rep: dict) -> d
 _PLACEHOLDER_SECRET_VALUES = {"example", "dummy", "fake", "test", "changeme", "placeholder", "redacted"}
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(password|passwd|token|secret|api[_-]?key|apikey|access[_-]?key|private[_-]?key)\b"
-    r"[A-Za-z0-9_.-]*\s*[:=]\s*['\"]?([^'\"\s,#}]{8,})['\"]?"
+    r"[A-Za-z0-9_.-]*['\"]?\s*[:=]\s*['\"]?([^'\"\s,#}]{8,})['\"]?"
 )
 
 

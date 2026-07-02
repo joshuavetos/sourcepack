@@ -17,7 +17,7 @@ def test_github_action_quickstart_materializes_pr_delta_with_mixed_reset():
     assert checkout < materialize < diff
     assert "ref: ${{ github.event.pull_request.head.sha }}" in text
     assert "fetch-depth: 0" in text
-    assert "git fetch --no-tags origin ${{ github.event.pull_request.base.sha }}" in text
+    assert "git fetch --no-tags origin ${{ github.event.pull_request.base.ref }}" in text
     assert "git reset --mixed ${{ github.event.pull_request.base.sha }}" in text
     assert "ref: ${{ github.event.pull_request.base.sha }}" not in text
     assert "git apply --index /tmp/sourcepack-pr.patch" not in text

@@ -102,6 +102,7 @@ SourcePack does not prove code correctness, security, runtime success, semantic 
 - WARN exits nonzero with `--strict` or `--ci`.
 - FAIL exits nonzero.
 - `sourcepack policy validate [repo] [--json]` validates optional `.sourcepack/policy.json` without creating or updating baseline, prompt, report, evidence, hook, or working-tree files. Missing policy files exit `0`; invalid JSON or a non-object root exits nonzero. Reserved fields and dangerous trust overrides are warnings only and do not make prompt context authoritative or make CI baseline checks optional.
+- Optional `.sourcepack/policy.json` `rules` are skipped transparently when the policy file is missing, `rules` is missing, or `rules` is empty. When configured, `sourcepack diff` analyzes proposed workspace deltas against enabled local rules only; it does not create, refresh, repair, or bless trusted artifacts. MVP rules support dependency-addition blocking, configured protected paths, pnpm package-manager drift checks, test-change expectations, large-diff warnings, and minimal obvious credential-assignment blocking.
 
 ## Local development install
 

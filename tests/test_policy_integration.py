@@ -217,6 +217,25 @@ def test_policy_rule_protected_path_fails(tmp_path):
     assert "policy_protected_path" in finding_ids(data)
 
 
+def test_policy_rule_protected_path_fails_for_rename_source(tmp_path):
+    init_repo(tmp_path)
+    protected_dir = tmp_path / "src" / "auth"
+    public_dir = tmp_path / "src" / "public"
+    protected_dir.mkdir(parents=True)
+    public_dir.mkdir(parents=True)
+    (protected_dir / "login.py").write_text("ALLOW = True\n", encoding="utf-8")
+    write_rules(tmp_path, {"protected_paths": ["src/auth/**"]})
+    trust_current_repo(tmp_path)
+
+    subprocess.run(["git", "mv", "src/auth/login.py", "src/public/login.py"], cwd=tmp_path, check=True)
+    cp = run(tmp_path, "diff", ".", "--staged", "--json")
+    assert cp.stdout.lstrip().startswith("{"), cp.stderr + cp.stdout
+    data = json.loads(cp.stdout)
+
+    assert cp.returncode == 1
+    assert "policy_protected_path" in finding_ids(data)
+
+
 def test_policy_rule_package_manager_drift_fails_for_pnpm(tmp_path):
     init_repo(tmp_path)
     write_rules(tmp_path, {"package_manager": "pnpm"})
@@ -226,6 +245,18 @@ def test_policy_rule_package_manager_drift_fails_for_pnpm(tmp_path):
 
     assert code == 1
     assert "policy_package_manager_drift" in finding_ids(data)
+
+
+def test_policy_rule_package_manager_drift_allows_lockfile_deletion_for_pnpm(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}\n', encoding="utf-8")
+    write_rules(tmp_path, {"package_manager": "pnpm"})
+    trust_current_repo(tmp_path)
+
+    (tmp_path / "package-lock.json").unlink()
+    _, data = report(tmp_path)
+
+    assert "policy_package_manager_drift" not in finding_ids(data)
 
 
 def test_policy_rule_missing_test_warns_and_test_change_satisfies(tmp_path):

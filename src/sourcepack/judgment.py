@@ -1871,8 +1871,14 @@ def _policy_rule_findings(repo: Path, packet_path: Path, diff_text: str) -> list
 
     findings: list[dict] = []
     changed_paths = sorted({change.path for change in changes if change.path})
+    protected_check_paths = sorted({
+        path
+        for change in changes
+        for path in (change.path, change.old_path if change.operation in {"rename", "copy"} else None)
+        if path
+    })
 
-    for path in changed_paths:
+    for path in protected_check_paths:
         for pattern in rules.protected_paths:
             if policy_path_matches(path, pattern):
                 findings.append(normalized_finding(
@@ -1888,8 +1894,11 @@ def _policy_rule_findings(repo: Path, packet_path: Path, diff_text: str) -> list
 
     if rules.package_manager == "pnpm":
         conflicting = {"package-lock.json", "npm-shrinkwrap.json", "yarn.lock"}
-        for path in changed_paths:
-            if PurePosixPath(path).name in conflicting:
+        for change in changes:
+            if change.deleted_file:
+                continue
+            path = change.path
+            if path and PurePosixPath(path).name in conflicting:
                 findings.append(normalized_finding(
                     "policy_package_manager_drift",
                     "error",

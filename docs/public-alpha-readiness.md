@@ -2,7 +2,6 @@
 
 This document is a release-readiness checklist and provenance template. It does not publish artifacts, create tags, or grant release approval.
 
-
 ## 1.10.0a2 public-alpha release note
 
 1.10.0a2 is a public alpha intended for end-to-end outside evaluation. This release-prep note covers accepted hardening for release-smoke automation and failure-injection coverage, policy/SARIF handling, `sourcepack policy validate [repo] [--json]`, `sourcepack replay <report-or-bundle-path> [--json]` with stable `sourcepack.replay.v1` output, GitHub Action UX and composite Action integration coverage, the committed trusted baseline and self-dogfooding gate, ugly-repo fixtures, baseline lifecycle fixtures, and local-evidence trust-boundary hardening.
@@ -11,62 +10,62 @@ SourcePack remains bounded to locally verifiable repository evidence and does no
 
 ## Accepted RC commit/provenance
 
-- Branch:
-- Commit SHA:
-- Package version:
-- Wheel artifact:
-- Sdist artifact:
-- Reviewer/approver:
-- Date:
+- Branch: `work` from `git branch --show-current`.
+- Commit SHA: missing; record the final release commit after merge.
+- Package version: `1.10.0a2` from `pyproject.toml`.
+- Wheel artifact: missing in current checkout; produce with `python -m build` and record the generated `dist/*.whl` path.
+- Sdist artifact: missing in current checkout; produce with `python -m build` and record the generated `dist/*.tar.gz` path.
+- Reviewer/approver: missing; record only after maintainer approval.
+- Date: missing; record only when release approval occurs.
 
 ## GitHub Action wrapper acceptance
 
-- `action.yml` present:
-- `scripts/sourcepack_action.py` present:
-- Missing baseline fails closed:
-- CI does not create or update `.sourcepack/baseline/`:
+- `action.yml` present: yes.
+- `scripts/sourcepack_action.py` present: yes.
+- Missing baseline fails closed: documented in `docs/ci.md`; verify with the composite-action tests before release.
+- CI does not create or update `.sourcepack/baseline/`: documented in `docs/ci.md` and `.github/workflows/sourcepack.yml`; verify in CI before release.
 
 ## Packaging/release-smoke acceptance
 
-- Wheel built:
-- Sdist built:
-- Clean wheel install smoke passed:
-- Clean sdist install smoke passed:
-- Console commands passed outside editable install:
+- Wheel built: missing; run `python -m build`.
+- Sdist built: missing; run `python -m build`.
+- Clean wheel install smoke passed: missing; run `python scripts/release_smoke.py` after building artifacts.
+- Clean sdist install smoke passed: missing; run `python scripts/release_smoke.py` after building artifacts.
+- Console commands passed outside editable install: missing; run `python scripts/release_smoke.py`.
 
 ## Baseline lifecycle docs
 
-- Baseline lifecycle documented in `docs/baseline-lifecycle.md`:
-- Baseline/prompt separation explicit:
-- CI trust-state creation prohibited:
+- Baseline lifecycle documented in `docs/baseline-lifecycle.md`: yes.
+- Baseline/prompt separation explicit: yes.
+- CI trust-state creation prohibited: yes.
 
 ## Reason-code/report docs
 
-- Reason-code documentation updated:
-- Human report wording reviewed:
-- JSON-only mode preserved:
+- Reason-code documentation updated: yes, tracked in `docs/reason-codes.md`.
+- Human report wording reviewed: missing; run `python tools/golden_demo.py --clean` and review generated report wording.
+- JSON-only mode preserved: missing in this checklist; verify with `sourcepack diff . --json` or the relevant pytest coverage before release.
 
 ## Behavior matrix status
 
-- `python tools/behavior_matrix.py`:
-- `python tools/behavior_matrix.py --json`:
+- `python tools/behavior_matrix.py`: missing; run `python tools/behavior_matrix.py`.
+- `python tools/behavior_matrix.py --json`: missing; run `python tools/behavior_matrix.py --json`.
 
 ## Real-corpus status
 
-- Total runs:
-- Executed runs:
-- Failures-only rows:
-- Trust violations:
+- Total runs: missing; run `python tools/real_corpus_validation.py` and record the summary.
+- Executed runs: missing; run `python tools/real_corpus_validation.py` and record the summary.
+- Failures-only rows: missing; run `python tools/real_corpus_validation.py --failures-only --json` and record the row count.
+- Trust violations: missing; run `python tools/real_corpus_validation.py` and record any trust-violation summary.
 
 ## Full pytest status
 
-- `python -m pytest -q`:
+- `python -m pytest -q`: missing; run `python -m pytest -q`.
 
 ## Install status
 
-- Editable install:
-- Wheel install:
-- Sdist install:
+- Editable install: missing; run `python -m pip install -e .`.
+- Wheel install: missing; run `python scripts/release_smoke.py` after building artifacts.
+- Sdist install: missing; run `python scripts/release_smoke.py` after building artifacts.
 
 ## Unsupported ecosystem policy
 

@@ -26,7 +26,11 @@ jobs:
       - name: Materialize PR delta as workspace changes
         run: |
           git fetch --no-tags origin ${{ github.event.pull_request.base.sha }}
+          git diff --name-only -z --diff-filter=A ${{ github.event.pull_request.base.sha }} HEAD > /tmp/sourcepack-pr-added.z
           git reset --mixed ${{ github.event.pull_request.base.sha }}
+          if [ -s /tmp/sourcepack-pr-added.z ]; then
+            git add --intent-to-add -f --pathspec-from-file=/tmp/sourcepack-pr-added.z --pathspec-file-nul
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -36,7 +40,7 @@ jobs:
 
 The `pull_request` trigger path is the actual PR guardrail path. A clean PR checkout alone is structurally unsafe for local-diff validation because committed PR changes are already part of the checked-out tree, leaving no local workspace delta for `sourcepack diff . --ci` to inspect.
 
-The explicit `git fetch --no-tags origin ${{ github.event.pull_request.base.sha }}` and `git reset --mixed ${{ github.event.pull_request.base.sha }}` steps are highly intentional: they keep the PR files in the working tree while resetting the index to the trusted base commit. These steps make the PR delta visible to SourcePack's diff engine as local workspace modifications.
+The explicit `git fetch --no-tags origin ${{ github.event.pull_request.base.sha }}` and `git reset --mixed ${{ github.event.pull_request.base.sha }}` steps are highly intentional: they keep the PR files in the working tree while resetting the index to the trusted base commit. The added-file capture and `git add --intent-to-add -f` step are equally intentional: they preserve PR additions that match `.gitignore` as tracked intent-to-add paths instead of ignored untracked files. These steps make the PR delta visible to SourcePack's diff engine as local workspace modifications, including force-added ignored files such as secrets, generated artifacts, or fixtures that a PR intentionally tracked.
 
 Do not create, refresh, repair, or bless `.sourcepack/baseline/` inside pull-request CI. Pull-request CI must consume the committed, reviewed trusted baseline state.
 

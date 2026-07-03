@@ -1,0 +1,14 @@
+.git/	ignored_directory
+.github/	hidden_directory
+.gitignore	hidden_file
+.pytest_cache/	ignored_directory
+.sourcepack-published	hidden_file
+.sourcepack/	ignored_directory
+examples/demo_repo/.env	hidden_file
+examples/fake_ai_patch.diff	unsupported_extension
+src/sourcepack/__pycache__/	ignored_directory
+src/sourcepack/ecosystems/__pycache__/	ignored_directory
+src/sourcepack/examples/demo_repo/.env	hidden_file
+src/sourcepack/examples/fake_ai_patch.diff	unsupported_extension
+src/sourcepack/reports/__pycache__/	ignored_directory
+tests/__pycache__/	ignored_directory

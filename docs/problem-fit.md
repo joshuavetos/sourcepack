@@ -19,12 +19,12 @@ Use SourcePack when the failure you want to catch is visible in local repository
 
 ### Examples
 
-- **Invented dependency:** an AI patch imports `fastapi` in Python code, but the scanned dependency files do not declare `fastapi`. SourcePack reports `unsupported_dependency`.
-- **Invented import:** an AI patch adds an import for a package that is not already supported by dependency manifests. SourcePack reports `unsupported_dependency`.
-- **Invented API or command:** an AI patch documents or wires `npm run dev` when project evidence does not support that command. SourcePack reports `unsupported_command`.
-- **Invented file:** an AI patch edits `deploy.sh` when that path is not in the trusted baseline. SourcePack reports `missing_file`.
-- **Invented config key:** an AI patch adds or changes a config or dependency manifest entry. SourcePack can surface that as review evidence, commonly through `declared_dependency` or `new_file`, depending on the file change.
-- **Wrong repo structure:** an AI patch creates a module in a new path or deletes an existing path. SourcePack reports `new_file` or `deleted_file` so a human reviews the structure change before it becomes trusted.
+- **Invented dependency:** a proposed change imports `fastapi` in Python code, but the scanned dependency files do not declare `fastapi`. SourcePack reports `unsupported_dependency`.
+- **Invented import:** a proposed change adds an import for a package that is not already supported by dependency manifests. SourcePack reports `unsupported_dependency`.
+- **Invented API or command:** a proposed change documents or wires `npm run dev` when project evidence does not support that command. SourcePack reports `unsupported_command`.
+- **Invented file:** a proposed change edits `deploy.sh` when that path is not in the trusted baseline. SourcePack reports `missing_file`.
+- **Invented config key:** a proposed change adds or changes a config or dependency manifest entry. SourcePack can surface that as review evidence, commonly through `declared_dependency` or `new_file`, depending on the file change.
+- **Wrong repo structure:** a proposed change creates a module in a new path or deletes an existing path. SourcePack reports `new_file` or `deleted_file` so a human reviews the structure change before it becomes trusted.
 
 ## Partial fit
 

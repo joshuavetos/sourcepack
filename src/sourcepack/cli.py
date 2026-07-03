@@ -26,7 +26,7 @@ from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_pa
 from .reports.html import render_report_html
 from .reports.json import normalized_finding, traffic_report, write_user_report
 from .reports.markdown import LIGHT_BY_VERDICT, SEVERITY_ORDER, render_traffic
-from .execution_ledger import clear_ledger, entry_to_json, execution_findings, iter_entries, run_and_record, find_repo_root
+from .execution_ledger import clear_ledger, entry_to_json, iter_entries, run_and_record, find_repo_root
 from .policy import validate_policy_config
 from .replay import reconstruct_replay, render_replay_human
 

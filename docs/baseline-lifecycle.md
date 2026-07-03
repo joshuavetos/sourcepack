@@ -33,7 +33,7 @@ Review baseline changes as trust-state changes:
 - Confirm the working tree state is the intended trusted state.
 - Review any `.sourcepack/baseline/` changes in the same PR or commit.
 - Confirm generated baseline files were produced by SourcePack commands, not manual edits.
-- Confirm no unreviewed AI patch is being laundered into trust.
+- Confirm no unreviewed proposed change is being laundered into trust.
 
 ## When baseline should change
 

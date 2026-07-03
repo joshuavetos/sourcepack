@@ -2058,6 +2058,8 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
                 local_alias = _js_alias_local(imported, files, contents)
                 pkg = _js_package_root(imported)
                 if pkg in workspace_names or local_alias is True:
+                    unsupported.discard(imported)
+                    unsupported.discard(pkg)
                     continue
                 if local_alias is None or (local_alias is False and _is_js_alias_specifier(imported)):
                     report.setdefault("uncertainties", []).append({"id": "js_alias_uncertain", "message": f"{imported} could not be resolved safely", "path": ch.path, "evidence": imported})
@@ -2068,6 +2070,7 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
                 elif scope_status == "missing" and pkg not in patch_declared["js"]:
                     unsupported.add(pkg)
                 elif pkg in patch_declared["js"]:
+                    unsupported.discard(imported)
                     unsupported.discard(pkg)
     declared = patch_declared["python"] | patch_declared["js"]
     existing_deps = existing_declared["python"] | existing_declared["js"]

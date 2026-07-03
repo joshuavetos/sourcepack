@@ -2,6 +2,7 @@ import json
 import unittest
 import os
 import subprocess
+import shutil
 import contextlib
 import io
 from pathlib import Path
@@ -9,8 +10,25 @@ from tempfile import TemporaryDirectory
 from sourcepack.cli import dependency_inventory, extract_imports_from_text, feature_inventory, load_manifest, run_cli, traffic_report, normalized_finding, render_traffic, judge_patch_text, write_user_report
 
 
+def git_bash_for_tests() -> str:
+    candidates = [
+        Path(r"C:\Program Files\Git\bin\bash.exe"),
+        Path(r"C:\Program Files\Git\usr\bin\bash.exe"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    for name in ("bash.exe", "bash"):
+        resolved = shutil.which(name)
+        if resolved:
+            normalized = str(Path(resolved).resolve()).replace("\\", "/").lower()
+            if "/git/" in normalized and normalized.endswith("/bash.exe"):
+                return resolved
+    raise unittest.SkipTest("Git Bash is required to execute POSIX hook tests on Windows")
+
+
 def run_hook(hook: Path, *, cwd: Path, env: dict[str, str] | None = None):
-    command = ["bash", str(hook)] if os.name == "nt" else [str(hook)]
+    command = [git_bash_for_tests(), str(hook)] if os.name == "nt" else [str(hook)]
     return subprocess.run(command, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 

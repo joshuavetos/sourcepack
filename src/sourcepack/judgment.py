@@ -1538,9 +1538,12 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
                     pkg = _js_package_root(imported)
                     local_alias = _js_alias_local(imported, files, contents)
                     if pkg in workspace_names or local_alias is True:
+                        unsupported.discard(imported)
+                        unsupported.discard(pkg)
                         continue
                     dep_resolution = resolve_js_import(resolver_root, imported)
                     if dep_resolution.verdict == "PASS":
+                        unsupported.discard(imported)
                         unsupported.discard(pkg)
                     elif dep_resolution.reason_code == "js_alias_uncertain":
                         report.setdefault("uncertainties", []).append({"id": "js_alias_uncertain", "message": f"{imported} could not be resolved safely", "path": ch.path, "evidence": imported})

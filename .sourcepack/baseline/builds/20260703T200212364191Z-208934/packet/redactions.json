@@ -1,0 +1,28 @@
+{
+  "redactions": [
+    {
+      "pattern": "generic_api_key",
+      "span_start": 13934,
+      "span_end": 13968,
+      "file": "tests/test_policy_integration.py"
+    },
+    {
+      "pattern": "generic_api_key",
+      "span_start": 9991,
+      "span_end": 10016,
+      "file": "tests/test_release_smoke.py"
+    },
+    {
+      "pattern": "openai_key",
+      "span_start": 1078,
+      "span_end": 1110,
+      "file": "tests/test_smoke.py"
+    },
+    {
+      "pattern": "openai_key",
+      "span_start": 2930,
+      "span_end": 2962,
+      "file": "tests/test_smoke.py"
+    }
+  ]
+}

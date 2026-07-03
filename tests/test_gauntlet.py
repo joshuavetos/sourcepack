@@ -103,6 +103,10 @@ class GauntletTest(unittest.TestCase):
         cases = [
             ({"package.json": '{"dependencies": {}}', "app.js": "console.log(1)\n"}, "view.js", 'import React from "react"\n', True),
             ({"package.json": '{"dependencies": {"react":"latest", "@scope/pkg":"1.0.0"}}', "app.js": "console.log(1)\n"}, "view.js", 'import React from "react"\nimport x from "@scope/pkg"\n', False),
+            ({"package.json": '{"dependencies": {"@myorg/core":"1.0.0"}}', "app.js": "console.log(1)\n"}, "use.js", 'import { shared } from "@myorg/core/utils"\n', False),
+            ({"package.json": '{"dependencies": {}}', "app.js": "console.log(1)\n"}, "use.js", 'import { shared } from "@myorg/missing/utils"\n', True),
+            ({"package.json": '{"dependencies": {"react":"latest"}}', "app.js": "console.log(1)\n"}, "jsx.js", 'import runtime from "react/jsx-runtime"\n', False),
+            ({"package.json": '{"dependencies": {}}', "local.js": "export const value = 1\n"}, "relative.js", 'import { value } from "./local"\n', False),
             ({"package.json": '{"workspaces": ["packages/*"]}', "packages/core/package.json": '{"name":"@myorg/core"}', "app.js": "console.log(1)\n"}, "use.js", 'import { shared } from "@myorg/core/utils"\n', False),
             ({"package.json": '{}', "tsconfig.json": '{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}', "src/components/Button.ts": "export const Button = 1\n", "app.ts": "console.log(1)\n"}, "view.ts", 'import { Button } from "@/components/Button"\n', False),
         ]

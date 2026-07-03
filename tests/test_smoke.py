@@ -9,6 +9,11 @@ from tempfile import TemporaryDirectory
 from sourcepack.cli import dependency_inventory, extract_imports_from_text, feature_inventory, load_manifest, run_cli, traffic_report, normalized_finding, render_traffic, judge_patch_text, write_user_report
 
 
+def run_hook(hook: Path, *, cwd: Path, env: dict[str, str] | None = None):
+    command = ["bash", str(hook)] if os.name == "nt" else [str(hook)]
+    return subprocess.run(command, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
 class SourcePackSmokeTest(unittest.TestCase):
     def test_smoke_build_verify_judge(self):
         with TemporaryDirectory() as td:
@@ -679,19 +684,19 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
 
             (repo / "new.py").write_text("print('new')\n", encoding="utf-8")
             self.assertEqual(run_cli(["install-hook", str(repo)]), 0)
-            yellow = subprocess.run([str(repo / ".git" / "hooks" / "pre-commit")], cwd=repo, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            yellow = run_hook(repo / ".git" / "hooks" / "pre-commit", cwd=repo, env=env)
             self.assertEqual(yellow.returncode, 0, yellow.stdout + yellow.stderr)
             self.assertIn("YELLOW LIGHT", yellow.stdout)
 
             (repo / "api.py").write_text("from fastapi import FastAPI\n", encoding="utf-8")
-            red = subprocess.run([str(repo / ".git" / "hooks" / "pre-commit")], cwd=repo, env={**env, "SOURCEPACK_FAKE": "red"}, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            red = run_hook(repo / ".git" / "hooks" / "pre-commit", cwd=repo, env={**env, "SOURCEPACK_FAKE": "red"})
             self.assertNotEqual(red.returncode, 0, red.stdout + red.stderr)
             self.assertIn("RED LIGHT", red.stdout)
 
             subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
             original = repo / ".git" / "hooks" / "pre-commit"
             original.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
-            chained = subprocess.run([str(original), "arg1"], cwd=repo, env={**env, "SOURCEPACK_FAKE": "green"}, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            chained = run_hook(original, cwd=repo, env={**env, "SOURCEPACK_FAKE": "green"})
             self.assertEqual(chained.returncode, 7, chained.stdout + chained.stderr)
 
 
@@ -801,13 +806,13 @@ class SourcePackLocalUsabilityTest(unittest.TestCase):
             fake = bindir / "sourcepack"
             fake.write_text("#!/bin/sh\necho 'GREEN LIGHT: fake'\nexit 0\n", encoding="utf-8"); fake.chmod(0o755)
             env = {**os.environ, "PATH": f"{bindir}{os.pathsep}" + os.environ.get("PATH", "")}
-            cp = subprocess.run([str(hook)], cwd=repo / "src" if (repo / "src").exists() else repo, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            cp = run_hook(hook, cwd=repo / "src" if (repo / "src").exists() else repo, env=env)
             self.assertEqual(cp.returncode, 7, cp.stdout + cp.stderr)
             self.assertIn("GREEN LIGHT", cp.stdout)
             self.assertIn("ORIGINAL_HOOK", cp.stdout)
             self.assertEqual(run_cli(["uninstall-hook", str(repo)]), 0)
             self.assertEqual(hook.read_text(), "#!/bin/sh\necho ORIGINAL_HOOK\nexit 7\n")
-            restored = subprocess.run([str(hook)], cwd=repo, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            restored = run_hook(hook, cwd=repo)
             self.assertEqual(restored.returncode, 7)
 
 

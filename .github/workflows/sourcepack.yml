@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -23,7 +25,72 @@ jobs:
         env:
           PYTHONPATH: src
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python -B -m sourcepack.cli diff . --ci --json
+          BASELINE_TRUST_LABEL_PRESENT: ${{ contains(github.event.pull_request.labels.*.name, 'baseline-trust-update') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set +e
+          python -B -m sourcepack.cli diff . --ci --json > sourcepack-self-dogfood.json
+          sourcepack_status=$?
+          cat sourcepack-self-dogfood.json
+          set -e
+
+          if [ "$sourcepack_status" -eq 0 ]; then
+            exit 0
+          fi
+
+          python - "$sourcepack_status" <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          sourcepack_status = int(sys.argv[1])
+          label_present = os.environ.get("BASELINE_TRUST_LABEL_PRESENT") == "true"
+          base_sha = os.environ.get("BASE_SHA", "")
+          head_sha = os.environ.get("HEAD_SHA", "")
+
+          def changed_files() -> list[str]:
+              if not base_sha or not head_sha:
+                  return []
+              result = subprocess.run(
+                  ["git", "diff", "--name-only", f"{base_sha}...{head_sha}"],
+                  check=True,
+                  text=True,
+                  stdout=subprocess.PIPE,
+              )
+              return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+          paths = changed_files()
+          baseline_paths = [path for path in paths if path.startswith(".sourcepack/baseline/")]
+          if not baseline_paths:
+              print("SourcePack gate failed and this change does not touch .sourcepack/baseline/; failing normally.", file=sys.stderr)
+              sys.exit(sourcepack_status)
+          if not label_present:
+              print("SourcePack detected protected baseline artifact changes. This PR requires intentional trust-state review.", file=sys.stderr)
+              print("Apply the maintainer-only 'baseline-trust-update' label only after reviewing the trust-state diff.", file=sys.stderr)
+              sys.exit(sourcepack_status)
+
+          with open("sourcepack-self-dogfood.json", encoding="utf-8") as fh:
+              report = json.load(fh)
+          blockers = report.get("blockers") or []
+          if not blockers:
+              blockers = [finding for finding in report.get("findings", []) if finding.get("severity") == "error"]
+          protected_baseline_blockers = [
+              finding for finding in blockers
+              if finding.get("id") == "protected_artifact"
+              and str(finding.get("path") or "").startswith(".sourcepack/baseline/")
+          ]
+          if not blockers or len(protected_baseline_blockers) != len(blockers):
+              print("SourcePack gate failed for findings beyond protected baseline trust artifacts; failing normally.", file=sys.stderr)
+              sys.exit(sourcepack_status)
+
+          print("::warning::SourcePack detected protected baseline artifact changes. This PR requires intentional trust-state review.")
+          print("::warning::The maintainer-applied 'baseline-trust-update' label allows CI to continue without creating, refreshing, repairing, or blessing baseline state.")
+          print("Protected baseline artifacts requiring review:")
+          for finding in protected_baseline_blockers:
+              print(f"- {finding.get('path')}: {finding.get('message')}")
+          PY
       - name: Install package and test dependencies
         run: |
           python -m pip install -e .

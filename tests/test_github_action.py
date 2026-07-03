@@ -179,11 +179,23 @@ def test_sourcepack_workflow_dogfoods_committed_baseline_without_creating_trust_
     assert "continue-on-error: true" not in text
     assert "PYTHONPATH: src" in text
     assert 'PYTHONDONTWRITEBYTECODE: "1"' in text
+    assert "baseline-trust-update" in text
+    assert "SourcePack detected protected baseline artifact changes. This PR requires intentional trust-state review." in text
     assert "sourcepack baseline" not in text
     assert "sourcepack init" not in text
     assert "--refresh" not in text
     assert "baseline --force" not in text
 
+
+
+def test_sourcepack_workflow_baseline_trust_exception_is_label_gated_and_narrow():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "BASELINE_TRUST_LABEL_PRESENT" in text
+    assert "contains(github.event.pull_request.labels.*.name, 'baseline-trust-update')" in text
+    assert 'path.startswith(".sourcepack/baseline/")' in text
+    assert 'finding.get("id") == "protected_artifact"' in text
+    assert "SourcePack gate failed for findings beyond protected baseline trust artifacts; failing normally." in text
+    assert "CI to continue without creating, refreshing, repairing, or blessing baseline state" in text
 
 def test_sourcepack_workflow_runs_gate_before_editable_install_and_validation_gates():
     text = CI_WORKFLOW.read_text(encoding="utf-8")

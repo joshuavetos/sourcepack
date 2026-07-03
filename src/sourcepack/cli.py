@@ -26,7 +26,7 @@ from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_pa
 from .reports.html import render_report_html
 from .reports.json import normalized_finding, traffic_report, write_user_report
 from .reports.markdown import LIGHT_BY_VERDICT, SEVERITY_ORDER, render_traffic
-from .execution_ledger import clear_ledger, entry_to_json, execution_findings, iter_entries, run_and_record, find_repo_root
+from .execution_ledger import clear_ledger, iter_entries, run_and_record, find_repo_root
 from .policy import validate_policy_config
 from .replay import reconstruct_replay, render_replay_human
 
@@ -59,6 +59,8 @@ SECRET_PATTERNS = [
 ]
 COMMON_DEPENDENCIES = ["fastapi", "flask", "django", "react", "vue", "svelte", "pytest", "typer", "click", "sqlalchemy", "prisma", "pydantic", "pyyaml", "pillow", "beautifulsoup4", "opencv-python", "scikit-learn", "python-dotenv", "pyjwt", "python-dateutil", "boto3", "requests"]
 FEATURE_NAMES = ("pdf", "ocr", "web server", "react", "docker", "authentication", "database")
+PY_IMPORT_LINE_RE = re.compile(r"(?m)^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)")
+JS_IMPORT_SOURCE_RE = re.compile(r"""(?:from\s+["']|import\s*\(\s*["']|require\s*\(\s*["'])(@?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)""")
 
 
 def utc_now() -> str:
@@ -765,10 +767,10 @@ def dependency_inventory(manifest: dict, packet: Path) -> set[str]:
                     for dep_name in section_deps:
                         _add_common_dependency(deps, dep_name)
         elif suffix == ".py":
-            for imported in re.findall(r"(?m)^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", content):
+            for imported in PY_IMPORT_LINE_RE.findall(content):
                 _add_common_dependency(deps, imported)
         elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
-            for imported in re.findall(r"""(?:from\s+["']|import\s*\(\s*["']|require\s*\(\s*["'])(@?[A-Za-z0-9_.-]+)""", content):
+            for imported in JS_IMPORT_SOURCE_RE.findall(content):
                 _add_common_dependency(deps, _js_package_root(imported))
     return deps
 
@@ -1050,10 +1052,6 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
     return changes
 
 
-def _dependency_additions_from_patch(changes: list[PatchFileChange]) -> set[str]:
-    return set()
-
-
 def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchFileChange] | None = None) -> dict:
     packet = Path(packet_path)
     manifest = load_manifest(packet)
@@ -1063,7 +1061,7 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
     scripts = _package_json_scripts(packet)
     if changes is None:
         changes = parse_unified_diff(patch_text)
-    patch_deps = _dependency_additions_from_patch(changes)
+    patch_deps: set[str] = set()
     report = {
         "patch_judgment_schema_version": "1.0",
         "verdict": "PASS",
@@ -1458,8 +1456,8 @@ def _read_json_file(path: Path) -> tuple[dict | None, str | None]:
     return data, None
 
 
-def baseline_corrupt_result(repo: Path, message: str, details: dict | None = None, packet_path: Path | None = None, metadata_path: Path | None = None, active_pointer_path: Path | None = None, mode: str = "none", active_build_id: str | None = None) -> dict:
-    return {"ok": False, "state": "corrupt", "finding_id": "baseline_corrupt", "message": "Trusted SourcePack baseline is corrupt or unverifiable. Recreate the baseline only after verifying the current repo state should be trusted.", "details": {"reason": message, **(details or {})}, "packet_path": _rel_to_repo(repo, packet_path), "metadata_path": _rel_to_repo(repo, metadata_path), "active_pointer_path": _rel_to_repo(repo, active_pointer_path), "mode": mode, "active_build_id": active_build_id}
+def baseline_corrupt_result(repo: Path, message: str, details: dict | None = None, **context) -> dict:
+    return {"ok": False, "state": "corrupt", "finding_id": "baseline_corrupt", "message": "Trusted SourcePack baseline is corrupt or unverifiable. Recreate the baseline only after verifying the current repo state should be trusted.", "details": {"reason": message, **(details or {})}, "packet_path": _rel_to_repo(repo, context.get("packet_path")), "metadata_path": _rel_to_repo(repo, context.get("metadata_path")), "active_pointer_path": _rel_to_repo(repo, context.get("active_pointer_path")), "mode": context.get("mode", "none"), "active_build_id": context.get("active_build_id")}
 
 
 def resolve_active_baseline(repo: str | Path) -> dict:
@@ -1663,7 +1661,14 @@ def copy_to_clipboard(text: str) -> bool:
         if shutil.which(cmd[0]) is None:
             continue
         try:
-            if subprocess.run(cmd, input=text, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5).returncode == 0:
+            cp = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                cp.communicate(text.encode("utf-8"), timeout=5)
+            except subprocess.TimeoutExpired:
+                cp.kill()
+                cp.communicate()
+                continue
+            if cp.returncode == 0:
                 return True
         except Exception:
             pass

@@ -25,6 +25,23 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return path == root or root in path.parents
 
 
+
+def _static_target_for_request(requested: str, static_root: Path = STATIC_ROOT) -> Path | None:
+    root = static_root.resolve()
+    parsed_path = urllib.parse.urlparse(requested).path
+    decoded = urllib.parse.unquote(parsed_path)
+    if "\x00" in decoded or "\\" in decoded:
+        return None
+    relative = decoded.lstrip("/") or "index.html"
+    target = (root / relative).resolve()
+    if target != root and not _is_relative_to(target, root):
+        return None
+    if target.is_dir():
+        target = (target / "index.html").resolve()
+        if target != root and not _is_relative_to(target, root):
+            return None
+    return target
+
 def _run_sourcepack(repo: Path, args: list[str], timeout: int = REQUEST_TIMEOUT_SECONDS, output_key: str | None = None) -> dict[str, Any]:
     cmd = [sys.executable, "-m", "sourcepack.cli", *args]
     try:
@@ -130,17 +147,10 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"ok": False, "error": "not_found"})
 
     def _serve_static(self, requested: str) -> None:
-        relative = requested.lstrip("/") or "index.html"
-        static_root = STATIC_ROOT.resolve()
-        target = (static_root / relative).resolve()
-        if target != static_root and not _is_relative_to(target, static_root):
+        target = _static_target_for_request(requested)
+        if target is None:
             self.send_error(403)
             return
-        if target.is_dir():
-            target = (target / "index.html").resolve()
-            if not _is_relative_to(target, static_root):
-                self.send_error(403)
-                return
         if not target.is_file():
             self.send_error(404)
             return

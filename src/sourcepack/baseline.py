@@ -63,8 +63,8 @@ def _read_json_file(path: Path) -> tuple[dict | None, str | None]:
     return data, None
 
 
-def baseline_corrupt_result(repo: Path, message: str, details: dict | None = None, packet_path: Path | None = None, metadata_path: Path | None = None, active_pointer_path: Path | None = None, mode: str = "none", active_build_id: str | None = None) -> dict:
-    return {"ok": False, "state": "corrupt", "finding_id": "baseline_corrupt", "message": "Trusted SourcePack baseline is corrupt or unverifiable. Recreate the baseline only after verifying the current repo state should be trusted.", "details": {"reason": message, **(details or {})}, "packet_path": _rel_to_repo(repo, packet_path), "metadata_path": _rel_to_repo(repo, metadata_path), "active_pointer_path": _rel_to_repo(repo, active_pointer_path), "mode": mode, "active_build_id": active_build_id}
+def baseline_corrupt_result(repo: Path, message: str, details: dict | None = None, **context) -> dict:
+    return {"ok": False, "state": "corrupt", "finding_id": "baseline_corrupt", "message": "Trusted SourcePack baseline is corrupt or unverifiable. Recreate the baseline only after verifying the current repo state should be trusted.", "details": {"reason": message, **(details or {})}, "packet_path": _rel_to_repo(repo, context.get("packet_path")), "metadata_path": _rel_to_repo(repo, context.get("metadata_path")), "active_pointer_path": _rel_to_repo(repo, context.get("active_pointer_path")), "mode": context.get("mode", "none"), "active_build_id": context.get("active_build_id")}
 
 
 def resolve_active_baseline(repo: str | Path) -> dict:

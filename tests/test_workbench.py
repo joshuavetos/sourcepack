@@ -7,7 +7,7 @@ import threading
 import pytest
 
 from sourcepack import workbench
-from sourcepack.workbench import IPv6WorkbenchServer, WorkbenchHandler, WorkbenchServer, _is_relative_to
+from sourcepack.workbench import IPv6WorkbenchServer, WorkbenchHandler, WorkbenchServer, _is_relative_to, _static_target_for_request
 
 
 class FakeWorkbenchServer:
@@ -77,6 +77,16 @@ def test_static_serving_strips_query_and_rejects_traversal(tmp_path):
         server.server_close()
         thread.join(timeout=5)
 
+
+
+def test_static_target_rejects_encoded_traversal_and_backslashes(tmp_path):
+    root = tmp_path / "static"
+    root.mkdir()
+    (root / "index.html").write_text("ok", encoding="utf-8")
+    assert _static_target_for_request("/index.html", root) == (root / "index.html").resolve()
+    assert _static_target_for_request("/%2e%2e/secret.txt", root) is None
+    assert _static_target_for_request("/..%2fsecret.txt", root) is None
+    assert _static_target_for_request(r"/..\secret.txt", root) is None
 
 def test_is_relative_to_compatibility_helper(tmp_path):
     root = tmp_path / "static"

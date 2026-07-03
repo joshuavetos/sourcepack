@@ -2457,7 +2457,7 @@ def install_post_commit_hook(repo: Path) -> bool:
 
 def hook_chain_text(strict: bool) -> str:
     return hook_text(strict) + """
-orig="$(git rev-parse --git-path hooks/pre-commit.sourcepack.orig 2>/dev/null)"
+orig="$(git rev-parse --git-dir 2>/dev/null)/hooks/pre-commit.sourcepack.orig"
 if [ -n "$orig" ] && [ -x "$orig" ]; then
   "$orig" "$@"
   exit $?

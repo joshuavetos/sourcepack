@@ -177,6 +177,7 @@ def test_sourcepack_workflow_dogfoods_committed_baseline_without_creating_trust_
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "python -B -m sourcepack.cli diff . --ci --json" in text
     assert "continue-on-error: true" not in text
+    assert "shell: bash" in text
     assert "PYTHONPATH: src" in text
     assert 'PYTHONDONTWRITEBYTECODE: "1"' in text
     assert "baseline-trust-update" in text
@@ -196,6 +197,21 @@ def test_sourcepack_workflow_baseline_trust_exception_is_label_gated_and_narrow(
     assert 'finding.get("id") == "protected_artifact"' in text
     assert "SourcePack gate failed for findings beyond protected baseline trust artifacts; failing normally." in text
     assert "CI to continue without creating, refreshing, repairing, or blessing baseline state" in text
+
+
+def test_sourcepack_workflow_self_dogfooding_gate_is_bash_backed():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    gate_index = text.index("SourcePack self-dogfooding gate")
+    shell_index = text.index("shell: bash", gate_index)
+    run_index = text.index("run: |", gate_index)
+    assert shell_index < run_index
+
+
+def test_wrapper_resolves_sourcepack_executable_before_subprocess_run():
+    text = WRAPPER.read_text(encoding="utf-8")
+    assert 'shutil.which("sourcepack")' in text
+    assert 'command = [sourcepack_executable, "diff", str(repo)]' in text
+    assert 'command = ["sourcepack", "diff", str(repo)]' not in text
 
 def test_sourcepack_workflow_runs_gate_before_editable_install_and_validation_gates():
     text = CI_WORKFLOW.read_text(encoding="utf-8")
@@ -237,13 +253,13 @@ def test_wrapper_creates_report_dir_and_captures_command_output(tmp_path, monkey
     baseline.mkdir(parents=True)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n', stderr='err\n')
+    fake = write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n', stderr='err\n')
     monkeypatch.setenv("PATH", path_with(bin_dir))
     module = load_wrapper()
     code = module.main(["--repo", str(tmp_path), "--baseline-path", ".sourcepack/baseline", "--report-dir", "reports"])
     assert code == 0
     report_dir = tmp_path / "reports"
-    assert (report_dir / "sourcepack-command.txt").read_text(encoding="utf-8").startswith("sourcepack diff")
+    assert (report_dir / "sourcepack-command.txt").read_text(encoding="utf-8").startswith(f"{fake} diff")
     assert "PASS" in (report_dir / "sourcepack.stdout.txt").read_text(encoding="utf-8")
     assert "err" in (report_dir / "sourcepack.stderr.txt").read_text(encoding="utf-8")
     assert (report_dir / "sourcepack.json").exists()
@@ -299,6 +315,27 @@ def path_with(bin_dir: Path) -> str:
 
     current = os.environ.get("PATH", "")
     return f"{bin_dir}{os.pathsep}{current}" if current else str(bin_dir)
+
+
+def test_wrapper_uses_which_resolved_fake_sourcepack_command(tmp_path, monkeypatch):
+    baseline = tmp_path / ".sourcepack" / "baseline"
+    baseline.mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls_file = tmp_path / "calls.txt"
+    fake = write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n', calls_file=calls_file)
+    monkeypatch.setenv("PATH", path_with(bin_dir))
+    module = load_wrapper()
+    assert module.shutil.which("sourcepack") == str(fake)
+    code = module.main([
+        "--repo", str(tmp_path),
+        "--baseline-path", ".sourcepack/baseline",
+        "--report-dir", "reports",
+    ])
+    assert code == 0
+    assert calls_file.exists()
+    command = (tmp_path / "reports" / "sourcepack-command.txt").read_text(encoding="utf-8")
+    assert str(fake) in command
 
 
 def test_wrapper_fail_on_warn_is_explicit_in_command(tmp_path, monkeypatch):
@@ -455,12 +492,12 @@ def test_wrapper_preserves_exact_command_and_delegates_to_cli(tmp_path, monkeypa
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "calls.txt"
-    write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n', calls_file=calls)
+    fake = write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n', calls_file=calls)
     monkeypatch.setenv("PATH", path_with(bin_dir))
     module = load_wrapper()
     assert module.main(["--repo", str(tmp_path), "--report-dir", "out", "--mode", "strict"]) == 0
     command = (tmp_path / "out" / "sourcepack-command.txt").read_text(encoding="utf-8").strip()
-    assert command == f"sourcepack diff {tmp_path} --json --strict"
+    assert command == f"{fake} diff {tmp_path} --json --strict"
     assert f"diff {tmp_path} --json --strict" in calls.read_text(encoding="utf-8")
 
 
@@ -504,6 +541,7 @@ def test_composite_action_like_run_writes_artifacts_command_summary_and_sarif(tm
         return subprocess.CompletedProcess(command, 0, stdout='{"verdict":"PASS","traffic_light":"green"}\n', stderr="")
 
     monkeypatch.setattr(module, "_run", fake_run)
+    monkeypatch.setattr(module.shutil, "which", lambda name: "sourcepack" if name == "sourcepack" else None)
     code = module.main([
         "--repo", str(tmp_path),
         "--baseline-path", ".sourcepack/baseline",
@@ -564,6 +602,7 @@ def test_composite_action_like_missing_sarif_is_reported_nonfatal(tmp_path, monk
         return subprocess.CompletedProcess(command, 0, stdout='{"verdict":"PASS"}\n', stderr="")
 
     monkeypatch.setattr(module, "_run", fake_run)
+    monkeypatch.setattr(module.shutil, "which", lambda name: "sourcepack" if name == "sourcepack" else None)
     code = module.main(["--repo", str(tmp_path), "--report-dir", "out", "--sarif", "true"])
     captured = capsys.readouterr()
 
@@ -585,6 +624,7 @@ def test_composite_action_like_sarif_disabled_does_not_imply_produced_artifact(t
         return subprocess.CompletedProcess(command, 0, stdout='{"verdict":"PASS"}\n', stderr="")
 
     monkeypatch.setattr(module, "_run", fake_run)
+    monkeypatch.setattr(module.shutil, "which", lambda name: "sourcepack" if name == "sourcepack" else None)
     code = module.main(["--repo", str(tmp_path), "--report-dir", "out", "--sarif", "false"])
     captured = capsys.readouterr()
     markdown = (tmp_path / "out" / "sourcepack.md").read_text(encoding="utf-8")

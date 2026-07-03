@@ -72,6 +72,15 @@ def test_static_serving_strips_query_and_rejects_traversal(tmp_path):
 
         status, _, _ = request(server, "GET", "/../../pyproject.toml")
         assert status in {403, 404}
+
+        status, _, _ = request(server, "GET", "/%2e%2e/pyproject.toml")
+        assert status in {403, 404}
+
+        status, _, _ = request(server, "GET", "/C:/windows/system32/cmd.exe")
+        assert status in {403, 404}
+
+        status, _, _ = request(server, "GET", "/\\windows\\system32\\cmd.exe")
+        assert status in {403, 404}
     finally:
         server.shutdown()
         server.server_close()

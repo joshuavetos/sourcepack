@@ -130,7 +130,10 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"ok": False, "error": "not_found"})
 
     def _serve_static(self, requested: str) -> None:
-        relative = requested.lstrip("/") or "index.html"
+        relative = urllib.parse.unquote(requested).lstrip("/\\") or "index.html"
+        if Path(relative).is_absolute() or relative.startswith(".."):
+            self.send_error(403)
+            return
         static_root = STATIC_ROOT.resolve()
         target = (static_root / relative).resolve()
         if target != static_root and not _is_relative_to(target, static_root):

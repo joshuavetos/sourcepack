@@ -121,7 +121,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SourcePack report directory: {report_dir}")
         return 2
 
-    command = ["sourcepack", "diff", str(repo)]
+    sourcepack_executable = shutil.which("sourcepack")
+    if not sourcepack_executable:
+        message = "SourcePack executable not found on PATH.\n"
+        _write(command_log, "sourcepack lookup failed\n")
+        _write(stdout_log, "")
+        _write(stderr_log, message)
+        print(message, file=sys.stderr, end="")
+        print(f"SourcePack report directory: {report_dir}")
+        return 127
+
+    command = [sourcepack_executable, "diff", str(repo)]
     if _truthy(args.json) or args.mode == "ci":
         command.append("--json")
     if args.mode == "ci":

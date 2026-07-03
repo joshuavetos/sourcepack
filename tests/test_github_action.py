@@ -173,17 +173,118 @@ def test_ci_workflow_keeps_existing_validation_gates():
 
 
 
+
+def test_sourcepack_workflow_limits_push_to_main_and_keeps_pr_trigger():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "on:\n  push:\n    branches: [main]\n  pull_request:\n    types: [opened, synchronize, reopened, labeled, unlabeled]" in text
+    assert "pull_request:" in text
+    assert "branches: [main]" in text
+
+
+def test_sourcepack_workflow_pr_trigger_reruns_for_trust_label_changes():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "types: [opened, synchronize, reopened, labeled, unlabeled]" in text
+    for event_type in ["opened", "synchronize", "reopened", "labeled", "unlabeled"]:
+        assert event_type in text
+
+
+def test_sourcepack_workflow_avoids_duplicate_unlabelled_pr_branch_push_checks():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "push:\n  pull_request:" not in text
+    assert "github.event.pull_request.labels.*.name" in text
+    assert "BASELINE_TRUST_LABEL_PRESENT" in text
+    assert "WORKFLOW_TRUST_LABEL_PRESENT" in text
+    assert "github.event.pull_request.base.sha || github.event.before" in text
+
+
 def test_sourcepack_workflow_dogfoods_committed_baseline_without_creating_trust_state():
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "python -B -m sourcepack.cli diff . --ci --json" in text
     assert "continue-on-error: true" not in text
+    assert "shell: bash" in text
     assert "PYTHONPATH: src" in text
     assert 'PYTHONDONTWRITEBYTECODE: "1"' in text
+    assert "baseline-trust-update" in text
+    assert "workflow-trust-update" in text
+    assert "SourcePack detected protected baseline artifact changes. This PR requires intentional trust-state review." in text
+    assert "SourcePack detected workflow automation changes. This PR requires intentional workflow trust review." in text
     assert "sourcepack baseline" not in text
     assert "sourcepack init" not in text
     assert "--refresh" not in text
     assert "baseline --force" not in text
 
+
+
+def test_sourcepack_workflow_baseline_trust_exception_is_label_gated_and_narrow():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "BASELINE_TRUST_LABEL_PRESENT" in text
+    assert "contains(github.event.pull_request.labels.*.name, 'baseline-trust-update')" in text
+    assert 'finding_id == "protected_artifact" and path.startswith(".sourcepack/baseline/")' in text
+    assert "Protected baseline artifact changes require 'baseline-trust-update'." in text
+    assert "baseline_label_present" in text
+    assert "without creating, refreshing, repairing, or blessing baseline state" in text
+
+
+
+def test_sourcepack_workflow_workflow_trust_exception_is_label_gated_and_narrow():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "WORKFLOW_TRUST_LABEL_PRESENT" in text
+    assert "contains(github.event.pull_request.labels.*.name, 'workflow-trust-update')" in text
+    assert 'finding_id == "workflow_change" and path.startswith(".github/workflows/")' in text
+    assert "Workflow automation changes require 'workflow-trust-update'." in text
+    assert "workflow_label_present" in text
+    assert "workflow_change findings after reviewing the workflow diff" in text
+
+
+def test_sourcepack_workflow_gate_treats_warn_and_error_as_ci_blocking():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "ci_blocking_findings" in text
+    assert 'finding.get("severity") in {"error", "warn"}' in text
+    assert 'report.get("findings", [])' in text
+
+
+def test_sourcepack_workflow_trust_labels_do_not_cross_authorize_findings():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    baseline_missing = text.index('if protected_baseline_findings and not baseline_label_present:')
+    workflow_missing = text.index('if workflow_change_findings and not workflow_label_present:')
+    missing_append = text.index('missing_labels.append("baseline-trust-update")', baseline_missing)
+    workflow_append = text.index('missing_labels.append("workflow-trust-update")', workflow_missing)
+    assert baseline_missing < missing_append
+    assert workflow_missing < workflow_append
+    assert "if protected_baseline_findings and not workflow_label_present" not in text
+    assert "if workflow_change_findings and not baseline_label_present" not in text
+
+
+def test_sourcepack_workflow_requires_both_labels_for_mixed_trust_findings():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    baseline_check = text.index('if protected_baseline_findings and not baseline_label_present:')
+    workflow_check = text.index('if workflow_change_findings and not workflow_label_present:')
+    missing_labels_check = text.index('if missing_labels:', workflow_check)
+    assert baseline_check < workflow_check < missing_labels_check
+    assert "Missing maintainer label(s):" in text
+    assert "Protected baseline artifacts requiring review:" in text
+    assert "Workflow automation findings requiring review:" in text
+
+
+def test_sourcepack_workflow_unexpected_warn_or_error_fails_normally():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "unexpected_findings" in text
+    assert "SourcePack gate failed for findings beyond labelled trust-review classes; failing normally." in text
+    assert "sys.exit(sourcepack_status)" in text
+
+def test_sourcepack_workflow_self_dogfooding_gate_is_bash_backed():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    gate_index = text.index("SourcePack self-dogfooding gate")
+    shell_index = text.index("shell: bash", gate_index)
+    run_index = text.index("run: |", gate_index)
+    assert shell_index < run_index
+
+
+def test_wrapper_resolves_sourcepack_executable_before_subprocess_run():
+    text = WRAPPER.read_text(encoding="utf-8")
+    assert 'shutil.which("sourcepack")' in text
+    assert 'command = [sourcepack_executable, "diff", str(repo)]' in text
+    assert 'command = ["sourcepack", "diff", str(repo)]' not in text
 
 def test_sourcepack_workflow_runs_gate_before_editable_install_and_validation_gates():
     text = CI_WORKFLOW.read_text(encoding="utf-8")
@@ -225,13 +326,13 @@ def test_wrapper_creates_report_dir_and_captures_command_output(tmp_path, monkey
     baseline.mkdir(parents=True)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n', stderr='err\n')
+    fake = write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n', stderr='err\n')
     monkeypatch.setenv("PATH", path_with(bin_dir))
     module = load_wrapper()
     code = module.main(["--repo", str(tmp_path), "--baseline-path", ".sourcepack/baseline", "--report-dir", "reports"])
     assert code == 0
     report_dir = tmp_path / "reports"
-    assert (report_dir / "sourcepack-command.txt").read_text(encoding="utf-8").startswith("sourcepack diff")
+    assert (report_dir / "sourcepack-command.txt").read_text(encoding="utf-8").startswith(f"{fake} diff")
     assert "PASS" in (report_dir / "sourcepack.stdout.txt").read_text(encoding="utf-8")
     assert "err" in (report_dir / "sourcepack.stderr.txt").read_text(encoding="utf-8")
     assert (report_dir / "sourcepack.json").exists()
@@ -287,6 +388,27 @@ def path_with(bin_dir: Path) -> str:
 
     current = os.environ.get("PATH", "")
     return f"{bin_dir}{os.pathsep}{current}" if current else str(bin_dir)
+
+
+def test_wrapper_uses_which_resolved_fake_sourcepack_command(tmp_path, monkeypatch):
+    baseline = tmp_path / ".sourcepack" / "baseline"
+    baseline.mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls_file = tmp_path / "calls.txt"
+    fake = write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n', calls_file=calls_file)
+    monkeypatch.setenv("PATH", path_with(bin_dir))
+    module = load_wrapper()
+    assert module.shutil.which("sourcepack") == str(fake)
+    code = module.main([
+        "--repo", str(tmp_path),
+        "--baseline-path", ".sourcepack/baseline",
+        "--report-dir", "reports",
+    ])
+    assert code == 0
+    assert calls_file.exists()
+    command = (tmp_path / "reports" / "sourcepack-command.txt").read_text(encoding="utf-8")
+    assert str(fake) in command
 
 
 def test_wrapper_fail_on_warn_is_explicit_in_command(tmp_path, monkeypatch):
@@ -443,12 +565,12 @@ def test_wrapper_preserves_exact_command_and_delegates_to_cli(tmp_path, monkeypa
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "calls.txt"
-    write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n', calls_file=calls)
+    fake = write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n', calls_file=calls)
     monkeypatch.setenv("PATH", path_with(bin_dir))
     module = load_wrapper()
     assert module.main(["--repo", str(tmp_path), "--report-dir", "out", "--mode", "strict"]) == 0
     command = (tmp_path / "out" / "sourcepack-command.txt").read_text(encoding="utf-8").strip()
-    assert command == f"sourcepack diff {tmp_path} --json --strict"
+    assert command == f"{fake} diff {tmp_path} --json --strict"
     assert f"diff {tmp_path} --json --strict" in calls.read_text(encoding="utf-8")
 
 
@@ -492,6 +614,7 @@ def test_composite_action_like_run_writes_artifacts_command_summary_and_sarif(tm
         return subprocess.CompletedProcess(command, 0, stdout='{"verdict":"PASS","traffic_light":"green"}\n', stderr="")
 
     monkeypatch.setattr(module, "_run", fake_run)
+    monkeypatch.setattr(module.shutil, "which", lambda name: "sourcepack" if name == "sourcepack" else None)
     code = module.main([
         "--repo", str(tmp_path),
         "--baseline-path", ".sourcepack/baseline",
@@ -552,6 +675,7 @@ def test_composite_action_like_missing_sarif_is_reported_nonfatal(tmp_path, monk
         return subprocess.CompletedProcess(command, 0, stdout='{"verdict":"PASS"}\n', stderr="")
 
     monkeypatch.setattr(module, "_run", fake_run)
+    monkeypatch.setattr(module.shutil, "which", lambda name: "sourcepack" if name == "sourcepack" else None)
     code = module.main(["--repo", str(tmp_path), "--report-dir", "out", "--sarif", "true"])
     captured = capsys.readouterr()
 
@@ -573,6 +697,7 @@ def test_composite_action_like_sarif_disabled_does_not_imply_produced_artifact(t
         return subprocess.CompletedProcess(command, 0, stdout='{"verdict":"PASS"}\n', stderr="")
 
     monkeypatch.setattr(module, "_run", fake_run)
+    monkeypatch.setattr(module.shutil, "which", lambda name: "sourcepack" if name == "sourcepack" else None)
     code = module.main(["--repo", str(tmp_path), "--report-dir", "out", "--sarif", "false"])
     captured = capsys.readouterr()
     markdown = (tmp_path / "out" / "sourcepack.md").read_text(encoding="utf-8")

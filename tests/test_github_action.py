@@ -280,6 +280,35 @@ def test_sourcepack_workflow_self_dogfooding_gate_is_bash_backed():
     assert shell_index < run_index
 
 
+
+def test_sourcepack_workflow_self_dogfood_json_uses_runner_temp_not_repo_root():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert 'SOURCEPACK_SELF_DOGFOOD_JSON="${RUNNER_TEMP}/sourcepack-self-dogfood.json"' in text
+    assert 'python -B -m sourcepack.cli diff . --ci --json > "$SOURCEPACK_SELF_DOGFOOD_JSON"' in text
+    assert 'cat "$SOURCEPACK_SELF_DOGFOOD_JSON"' in text
+    assert ' > sourcepack-self-dogfood.json' not in text
+    assert 'cat sourcepack-self-dogfood.json' not in text
+    assert 'with open("sourcepack-self-dogfood.json", encoding="utf-8")' not in text
+
+
+def test_sourcepack_workflow_inline_guard_reads_report_path_from_argv():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "python - \"$sourcepack_status\" \"$SOURCEPACK_SELF_DOGFOOD_JSON\" <<'PY'" in text
+    assert 'sourcepack_status = int(sys.argv[1])' in text
+    assert 'report_path = sys.argv[2]' in text
+    assert 'with open(report_path, encoding="utf-8") as fh:' in text
+
+
+def test_sourcepack_workflow_does_not_allow_new_file_or_baseline_corrupt_exceptions():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert 'finding_id == "new_file"' not in text
+    assert 'finding_id == "baseline_corrupt"' not in text
+
+
+def test_gitattributes_keeps_sourcepack_baseline_byte_stable():
+    text = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert ".sourcepack/baseline/** -text" in text.splitlines()
+
 def test_wrapper_resolves_sourcepack_executable_before_subprocess_run():
     text = WRAPPER.read_text(encoding="utf-8")
     assert 'shutil.which("sourcepack")' in text

@@ -34,22 +34,24 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set +e
-          python -B -m sourcepack.cli diff . --ci --json > sourcepack-self-dogfood.json
+          SOURCEPACK_SELF_DOGFOOD_JSON="${RUNNER_TEMP}/sourcepack-self-dogfood.json"
+          python -B -m sourcepack.cli diff . --ci --json > "$SOURCEPACK_SELF_DOGFOOD_JSON"
           sourcepack_status=$?
-          cat sourcepack-self-dogfood.json
+          cat "$SOURCEPACK_SELF_DOGFOOD_JSON"
           set -e
 
           if [ "$sourcepack_status" -eq 0 ]; then
             exit 0
           fi
 
-          python - "$sourcepack_status" <<'PY'
+          python - "$sourcepack_status" "$SOURCEPACK_SELF_DOGFOOD_JSON" <<'PY'
           import json
           import os
           import subprocess
           import sys
 
           sourcepack_status = int(sys.argv[1])
+          report_path = sys.argv[2]
           baseline_label_present = os.environ.get("BASELINE_TRUST_LABEL_PRESENT") == "true"
           workflow_label_present = os.environ.get("WORKFLOW_TRUST_LABEL_PRESENT") == "true"
           base_sha = os.environ.get("BASE_SHA", "")
@@ -66,7 +68,7 @@ jobs:
               )
               return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
-          with open("sourcepack-self-dogfood.json", encoding="utf-8") as fh:
+          with open(report_path, encoding="utf-8") as fh:
               report = json.load(fh)
           ci_blocking_findings = [
               finding for finding in report.get("findings", [])

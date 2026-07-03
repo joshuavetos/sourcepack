@@ -1,0 +1,462 @@
+{
+  "total_estimated_tokens": 240998,
+  "warnings": [
+    32000,
+    128000,
+    200000
+  ],
+  "per_file": [
+    {
+      "relative_path": "CHANGELOG.md",
+      "estimated_tokens": 82
+    },
+    {
+      "relative_path": "LICENSE",
+      "estimated_tokens": 270
+    },
+    {
+      "relative_path": "README.md",
+      "estimated_tokens": 3473
+    },
+    {
+      "relative_path": "SECURITY.md",
+      "estimated_tokens": 282
+    },
+    {
+      "relative_path": "action.yml",
+      "estimated_tokens": 1436
+    },
+    {
+      "relative_path": "corpus/repos.example.json",
+      "estimated_tokens": 179
+    },
+    {
+      "relative_path": "docs/ai-agent-workflow.md",
+      "estimated_tokens": 1026
+    },
+    {
+      "relative_path": "docs/architecture.md",
+      "estimated_tokens": 1354
+    },
+    {
+      "relative_path": "docs/assets/README.md",
+      "estimated_tokens": 372
+    },
+    {
+      "relative_path": "docs/baseline-lifecycle.md",
+      "estimated_tokens": 2159
+    },
+    {
+      "relative_path": "docs/ci.md",
+      "estimated_tokens": 1140
+    },
+    {
+      "relative_path": "docs/examples/sourcepack-action.yml",
+      "estimated_tokens": 208
+    },
+    {
+      "relative_path": "docs/github-action-quickstart.md",
+      "estimated_tokens": 736
+    },
+    {
+      "relative_path": "docs/limitations.md",
+      "estimated_tokens": 236
+    },
+    {
+      "relative_path": "docs/problem-fit.md",
+      "estimated_tokens": 1087
+    },
+    {
+      "relative_path": "docs/public-alpha-readiness.md",
+      "estimated_tokens": 1279
+    },
+    {
+      "relative_path": "docs/real-corpus-validation.md",
+      "estimated_tokens": 923
+    },
+    {
+      "relative_path": "docs/reason-codes.md",
+      "estimated_tokens": 4525
+    },
+    {
+      "relative_path": "docs/release-checklist.md",
+      "estimated_tokens": 1075
+    },
+    {
+      "relative_path": "docs/releases/v1.10.0a0-publish-checklist.md",
+      "estimated_tokens": 248
+    },
+    {
+      "relative_path": "docs/releases/v1.10.0a0.md",
+      "estimated_tokens": 1127
+    },
+    {
+      "relative_path": "docs/systemic-upgrade-status.md",
+      "estimated_tokens": 972
+    },
+    {
+      "relative_path": "docs/threat-model.md",
+      "estimated_tokens": 363
+    },
+    {
+      "relative_path": "docs/vscode-extension-plan.md",
+      "estimated_tokens": 95
+    },
+    {
+      "relative_path": "examples/demo_repo/README.md",
+      "estimated_tokens": 39
+    },
+    {
+      "relative_path": "examples/demo_repo/pyproject.toml",
+      "estimated_tokens": 25
+    },
+    {
+      "relative_path": "examples/demo_repo/sourcepack/cli.py",
+      "estimated_tokens": 34
+    },
+    {
+      "relative_path": "examples/demo_repo/sourcepack/judge.py",
+      "estimated_tokens": 34
+    },
+    {
+      "relative_path": "examples/demo_repo/sourcepack/verify.py",
+      "estimated_tokens": 32
+    },
+    {
+      "relative_path": "examples/demo_repo/tests/test_verify.py",
+      "estimated_tokens": 41
+    },
+    {
+      "relative_path": "examples/fake_ai_answer.md",
+      "estimated_tokens": 110
+    },
+    {
+      "relative_path": "pyproject.toml",
+      "estimated_tokens": 219
+    },
+    {
+      "relative_path": "pytest.ini",
+      "estimated_tokens": 11
+    },
+    {
+      "relative_path": "schemas/judgment_report.schema.json",
+      "estimated_tokens": 164
+    },
+    {
+      "relative_path": "schemas/patch_judgment_report.schema.json",
+      "estimated_tokens": 272
+    },
+    {
+      "relative_path": "schemas/reality_map.schema.json",
+      "estimated_tokens": 222
+    },
+    {
+      "relative_path": "schemas/receipt.schema.json",
+      "estimated_tokens": 89
+    },
+    {
+      "relative_path": "scripts/__init__.py",
+      "estimated_tokens": 0
+    },
+    {
+      "relative_path": "scripts/release_smoke.py",
+      "estimated_tokens": 2851
+    },
+    {
+      "relative_path": "scripts/sourcepack_action.py",
+      "estimated_tokens": 1842
+    },
+    {
+      "relative_path": "src/sourcepack/__init__.py",
+      "estimated_tokens": 163
+    },
+    {
+      "relative_path": "src/sourcepack/assets/__init__.py",
+      "estimated_tokens": 11
+    },
+    {
+      "relative_path": "src/sourcepack/assets/audit_template.md",
+      "estimated_tokens": 84
+    },
+    {
+      "relative_path": "src/sourcepack/assets/packet_instructions.md",
+      "estimated_tokens": 72
+    },
+    {
+      "relative_path": "src/sourcepack/baseline.py",
+      "estimated_tokens": 3749
+    },
+    {
+      "relative_path": "src/sourcepack/cli.py",
+      "estimated_tokens": 41715
+    },
+    {
+      "relative_path": "src/sourcepack/commands.py",
+      "estimated_tokens": 2026
+    },
+    {
+      "relative_path": "src/sourcepack/dependencies.py",
+      "estimated_tokens": 1464
+    },
+    {
+      "relative_path": "src/sourcepack/diff_parser.py",
+      "estimated_tokens": 1203
+    },
+    {
+      "relative_path": "src/sourcepack/ecosystems/__init__.py",
+      "estimated_tokens": 18
+    },
+    {
+      "relative_path": "src/sourcepack/ecosystems/generic.py",
+      "estimated_tokens": 86
+    },
+    {
+      "relative_path": "src/sourcepack/ecosystems/node.py",
+      "estimated_tokens": 23
+    },
+    {
+      "relative_path": "src/sourcepack/ecosystems/python.py",
+      "estimated_tokens": 74
+    },
+    {
+      "relative_path": "src/sourcepack/errors.py",
+      "estimated_tokens": 100
+    },
+    {
+      "relative_path": "src/sourcepack/evidence.py",
+      "estimated_tokens": 1619
+    },
+    {
+      "relative_path": "src/sourcepack/examples/demo_repo/README.md",
+      "estimated_tokens": 39
+    },
+    {
+      "relative_path": "src/sourcepack/examples/demo_repo/pyproject.toml",
+      "estimated_tokens": 25
+    },
+    {
+      "relative_path": "src/sourcepack/examples/demo_repo/sourcepack/cli.py",
+      "estimated_tokens": 34
+    },
+    {
+      "relative_path": "src/sourcepack/examples/demo_repo/sourcepack/judge.py",
+      "estimated_tokens": 34
+    },
+    {
+      "relative_path": "src/sourcepack/examples/demo_repo/sourcepack/verify.py",
+      "estimated_tokens": 32
+    },
+    {
+      "relative_path": "src/sourcepack/examples/demo_repo/tests/test_verify.py",
+      "estimated_tokens": 41
+    },
+    {
+      "relative_path": "src/sourcepack/examples/fake_ai_answer.md",
+      "estimated_tokens": 110
+    },
+    {
+      "relative_path": "src/sourcepack/execution_ledger.py",
+      "estimated_tokens": 2303
+    },
+    {
+      "relative_path": "src/sourcepack/git.py",
+      "estimated_tokens": 512
+    },
+    {
+      "relative_path": "src/sourcepack/judgment.py",
+      "estimated_tokens": 26607
+    },
+    {
+      "relative_path": "src/sourcepack/packet.py",
+      "estimated_tokens": 9784
+    },
+    {
+      "relative_path": "src/sourcepack/paths.py",
+      "estimated_tokens": 702
+    },
+    {
+      "relative_path": "src/sourcepack/policy.py",
+      "estimated_tokens": 4120
+    },
+    {
+      "relative_path": "src/sourcepack/reason_codes.py",
+      "estimated_tokens": 773
+    },
+    {
+      "relative_path": "src/sourcepack/replay.py",
+      "estimated_tokens": 2463
+    },
+    {
+      "relative_path": "src/sourcepack/reports/__init__.py",
+      "estimated_tokens": 65
+    },
+    {
+      "relative_path": "src/sourcepack/reports/html.py",
+      "estimated_tokens": 1712
+    },
+    {
+      "relative_path": "src/sourcepack/reports/json.py",
+      "estimated_tokens": 3406
+    },
+    {
+      "relative_path": "src/sourcepack/reports/markdown.py",
+      "estimated_tokens": 907
+    },
+    {
+      "relative_path": "src/sourcepack/reports/sarif.py",
+      "estimated_tokens": 377
+    },
+    {
+      "relative_path": "src/sourcepack/schemas.py",
+      "estimated_tokens": 370
+    },
+    {
+      "relative_path": "src/sourcepack/workbench.py",
+      "estimated_tokens": 2007
+    },
+    {
+      "relative_path": "src/sourcepack/workbench_static/index.html",
+      "estimated_tokens": 404
+    },
+    {
+      "relative_path": "tests/__init__.py",
+      "estimated_tokens": 113
+    },
+    {
+      "relative_path": "tests/simulation_helpers.py",
+      "estimated_tokens": 1174
+    },
+    {
+      "relative_path": "tests/test_baseline_integrity.py",
+      "estimated_tokens": 2361
+    },
+    {
+      "relative_path": "tests/test_baseline_lifecycle.py",
+      "estimated_tokens": 2359
+    },
+    {
+      "relative_path": "tests/test_baseline_lifecycle_cli.py",
+      "estimated_tokens": 169
+    },
+    {
+      "relative_path": "tests/test_behavior_matrix.py",
+      "estimated_tokens": 1070
+    },
+    {
+      "relative_path": "tests/test_ci_docs_truth.py",
+      "estimated_tokens": 484
+    },
+    {
+      "relative_path": "tests/test_command_resolver.py",
+      "estimated_tokens": 521
+    },
+    {
+      "relative_path": "tests/test_confidence_report.py",
+      "estimated_tokens": 191
+    },
+    {
+      "relative_path": "tests/test_dependency_resolver.py",
+      "estimated_tokens": 514
+    },
+    {
+      "relative_path": "tests/test_engine_inversion.py",
+      "estimated_tokens": 1319
+    },
+    {
+      "relative_path": "tests/test_evidence_model.py",
+      "estimated_tokens": 1379
+    },
+    {
+      "relative_path": "tests/test_execution_ledger.py",
+      "estimated_tokens": 1386
+    },
+    {
+      "relative_path": "tests/test_final_boss_integration.py",
+      "estimated_tokens": 872
+    },
+    {
+      "relative_path": "tests/test_gauntlet.py",
+      "estimated_tokens": 5130
+    },
+    {
+      "relative_path": "tests/test_github_action.py",
+      "estimated_tokens": 6276
+    },
+    {
+      "relative_path": "tests/test_golden_demo.py",
+      "estimated_tokens": 415
+    },
+    {
+      "relative_path": "tests/test_local_policy.py",
+      "estimated_tokens": 332
+    },
+    {
+      "relative_path": "tests/test_policy_integration.py",
+      "estimated_tokens": 3987
+    },
+    {
+      "relative_path": "tests/test_policy_validation.py",
+      "estimated_tokens": 2395
+    },
+    {
+      "relative_path": "tests/test_readme_truth.py",
+      "estimated_tokens": 1232
+    },
+    {
+      "relative_path": "tests/test_real_corpus_validation.py",
+      "estimated_tokens": 8315
+    },
+    {
+      "relative_path": "tests/test_reason_code_docs.py",
+      "estimated_tokens": 430
+    },
+    {
+      "relative_path": "tests/test_release_docs.py",
+      "estimated_tokens": 533
+    },
+    {
+      "relative_path": "tests/test_release_smoke.py",
+      "estimated_tokens": 4918
+    },
+    {
+      "relative_path": "tests/test_replay_audit.py",
+      "estimated_tokens": 3957
+    },
+    {
+      "relative_path": "tests/test_report_ui.py",
+      "estimated_tokens": 704
+    },
+    {
+      "relative_path": "tests/test_simulation_harness.py",
+      "estimated_tokens": 7452
+    },
+    {
+      "relative_path": "tests/test_smoke.py",
+      "estimated_tokens": 13970
+    },
+    {
+      "relative_path": "tests/test_ugly_repos.py",
+      "estimated_tokens": 1748
+    },
+    {
+      "relative_path": "tests/test_workbench.py",
+      "estimated_tokens": 1569
+    },
+    {
+      "relative_path": "tools/behavior_matrix.py",
+      "estimated_tokens": 7391
+    },
+    {
+      "relative_path": "tools/golden_demo.py",
+      "estimated_tokens": 1807
+    },
+    {
+      "relative_path": "tools/real_corpus_validation.py",
+      "estimated_tokens": 14584
+    },
+    {
+      "relative_path": "tools/release_smoke.py",
+      "estimated_tokens": 75
+    }
+  ]
+}

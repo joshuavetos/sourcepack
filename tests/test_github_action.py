@@ -225,10 +225,8 @@ def test_wrapper_creates_report_dir_and_captures_command_output(tmp_path, monkey
     baseline.mkdir(parents=True)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake = bin_dir / "sourcepack"
-    fake.write_text("#!/bin/sh\necho '{\"verdict\":\"PASS\"}'\necho err >&2\nexit 0\n", encoding="utf-8")
-    fake.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n', stderr='err\n')
+    monkeypatch.setenv("PATH", path_with(bin_dir))
     module = load_wrapper()
     code = module.main(["--repo", str(tmp_path), "--baseline-path", ".sourcepack/baseline", "--report-dir", "reports"])
     assert code == 0
@@ -240,10 +238,55 @@ def test_wrapper_creates_report_dir_and_captures_command_output(tmp_path, monkey
     assert (report_dir / "sourcepack.md").exists()
 
 
-def os_path() -> str:
+def write_fake_sourcepack(
+    bin_dir: Path,
+    stdout: str,
+    stderr: str = "",
+    exit_code: int = 0,
+    calls_file: Path | None = None,
+) -> Path:
     import os
 
-    return os.environ.get("PATH", "")
+    if os.name == "nt":
+        script = bin_dir / "sourcepack.py"
+        lines = ["import sys"]
+        if calls_file is not None:
+            lines.extend([
+                "from pathlib import Path",
+                f"Path({str(calls_file)!r}).write_text(' '.join(sys.argv), encoding='utf-8')",
+            ])
+        if stdout:
+            lines.append(f"sys.stdout.write({stdout!r})")
+        if stderr:
+            lines.append(f"sys.stderr.write({stderr!r})")
+        lines.append(f"raise SystemExit({exit_code})")
+        script.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        command = bin_dir / "sourcepack.cmd"
+        command.write_text(
+            f'@echo off\r\n"{sys.executable}" "%~dp0sourcepack.py" %*\r\n',
+            encoding="utf-8",
+        )
+        return command
+
+    command = bin_dir / "sourcepack"
+    body = "#!/bin/sh\n"
+    if calls_file is not None:
+        body += f"printf '%s\\n' \"$0 $*\" > {calls_file}\n"
+    if stdout:
+        body += f"printf '%s' {shlex.quote(stdout)}\n"
+    if stderr:
+        body += f"printf '%s' {shlex.quote(stderr)} >&2\n"
+    body += f"exit {exit_code}\n"
+    command.write_text(body, encoding="utf-8")
+    command.chmod(0o755)
+    return command
+
+
+def path_with(bin_dir: Path) -> str:
+    import os
+
+    current = os.environ.get("PATH", "")
+    return f"{bin_dir}{os.pathsep}{current}" if current else str(bin_dir)
 
 
 def test_wrapper_fail_on_warn_is_explicit_in_command(tmp_path, monkeypatch):
@@ -251,10 +294,8 @@ def test_wrapper_fail_on_warn_is_explicit_in_command(tmp_path, monkeypatch):
     baseline.mkdir(parents=True)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake = bin_dir / "sourcepack"
-    fake.write_text("#!/bin/sh\necho '{\"verdict\":\"WARN\"}'\nexit 0\n", encoding="utf-8")
-    fake.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    write_fake_sourcepack(bin_dir, stdout='{"verdict":"WARN"}\n')
+    monkeypatch.setenv("PATH", path_with(bin_dir))
     module = load_wrapper()
     code = module.main([
         "--repo", str(tmp_path),
@@ -292,10 +333,8 @@ def test_wrapper_sarif_true_copies_existing_latest_sarif(tmp_path, monkeypatch):
     (reports / "latest.sarif.json").write_text('{"version":"2.1.0"}', encoding="utf-8")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake = bin_dir / "sourcepack"
-    fake.write_text("#!/bin/sh\necho '{\"verdict\":\"PASS\"}'\nexit 0\n", encoding="utf-8")
-    fake.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n')
+    monkeypatch.setenv("PATH", path_with(bin_dir))
     module = load_wrapper()
     code = module.main(["--repo", str(tmp_path), "--report-dir", "out", "--sarif", "true"])
     assert code == 0
@@ -310,10 +349,8 @@ def test_wrapper_sarif_false_and_missing_sarif_do_not_fail_or_copy(tmp_path, mon
     (reports / "latest.sarif.json").write_text('{"version":"2.1.0"}', encoding="utf-8")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake = bin_dir / "sourcepack"
-    fake.write_text("#!/bin/sh\necho '{\"verdict\":\"PASS\"}'\nexit 0\n", encoding="utf-8")
-    fake.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n')
+    monkeypatch.setenv("PATH", path_with(bin_dir))
     module = load_wrapper()
     assert module.main(["--repo", str(tmp_path), "--report-dir", "out", "--sarif", "false"]) == 0
     assert not (tmp_path / "out" / "sourcepack.sarif.json").exists()
@@ -355,11 +392,9 @@ def test_wrapper_reports_paths_sarif_missing_and_step_summary(tmp_path, monkeypa
     baseline.mkdir(parents=True)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake = bin_dir / "sourcepack"
-    fake.write_text("#!/bin/sh\necho '{\"verdict\":\"PASS\",\"traffic_light\":\"GREEN\"}'\nexit 0\n", encoding="utf-8")
-    fake.chmod(0o755)
+    write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS","traffic_light":"GREEN"}\n')
     summary = tmp_path / "summary.md"
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    monkeypatch.setenv("PATH", path_with(bin_dir))
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     module = load_wrapper()
     assert module.main(["--repo", str(tmp_path), "--report-dir", "reports", "--sarif", "true"]) == 0
@@ -375,7 +410,13 @@ def test_wrapper_reports_paths_sarif_missing_and_step_summary(tmp_path, monkeypa
     assert f"Report directory: {tmp_path / 'reports'}" in summary_text
     assert "SARIF passthrough: enabled, but no SourcePack SARIF report was present" in summary_text
     assert summary_text.count("```") % 2 == 0
-    forbidden_claims = ["proves correctness", "proves security", "proves runtime success", "proves external API truth", "proves user intent"]
+    forbidden_claims = [
+        "proves correctness",
+        "proves security",
+        "proves runtime success",
+        "proves external API truth",
+        "proves user intent",
+    ]
     assert [claim for claim in forbidden_claims if claim in summary_text] == []
 
 
@@ -387,10 +428,8 @@ def test_wrapper_sarif_disabled_summary_does_not_claim_sarif(tmp_path, monkeypat
     (reports / "latest.sarif.json").write_text('{"version":"2.1.0"}', encoding="utf-8")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake = bin_dir / "sourcepack"
-    fake.write_text("#!/bin/sh\necho '{\"verdict\":\"PASS\"}'\nexit 0\n", encoding="utf-8")
-    fake.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n')
+    monkeypatch.setenv("PATH", path_with(bin_dir))
     module = load_wrapper()
     assert module.main(["--repo", str(tmp_path), "--report-dir", "out", "--sarif", "false"]) == 0
     summary = (tmp_path / "out" / "sourcepack.md").read_text(encoding="utf-8")
@@ -404,10 +443,8 @@ def test_wrapper_preserves_exact_command_and_delegates_to_cli(tmp_path, monkeypa
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "calls.txt"
-    fake = bin_dir / "sourcepack"
-    fake.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$0 $*\" > {calls}\necho '{{\"verdict\":\"PASS\"}}'\nexit 0\n", encoding="utf-8")
-    fake.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n', calls_file=calls)
+    monkeypatch.setenv("PATH", path_with(bin_dir))
     module = load_wrapper()
     assert module.main(["--repo", str(tmp_path), "--report-dir", "out", "--mode", "strict"]) == 0
     command = (tmp_path / "out" / "sourcepack-command.txt").read_text(encoding="utf-8").strip()
@@ -425,10 +462,8 @@ def test_wrapper_does_not_create_baseline_or_use_prompt_as_authority(tmp_path, m
     before_prompt = sorted(p.relative_to(prompt) for p in prompt.rglob("*"))
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake = bin_dir / "sourcepack"
-    fake.write_text("#!/bin/sh\necho '{\"verdict\":\"PASS\"}'\nexit 0\n", encoding="utf-8")
-    fake.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os_path()}")
+    write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n')
+    monkeypatch.setenv("PATH", path_with(bin_dir))
     module = load_wrapper()
     assert module.main(["--repo", str(tmp_path), "--report-dir", "out"]) == 0
     assert sorted(p.relative_to(baseline) for p in baseline.rglob("*")) == before_baseline

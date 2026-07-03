@@ -181,7 +181,9 @@ def test_sourcepack_workflow_dogfoods_committed_baseline_without_creating_trust_
     assert "PYTHONPATH: src" in text
     assert 'PYTHONDONTWRITEBYTECODE: "1"' in text
     assert "baseline-trust-update" in text
+    assert "workflow-trust-update" in text
     assert "SourcePack detected protected baseline artifact changes. This PR requires intentional trust-state review." in text
+    assert "SourcePack detected workflow automation changes. This PR requires intentional workflow trust review." in text
     assert "sourcepack baseline" not in text
     assert "sourcepack init" not in text
     assert "--refresh" not in text
@@ -193,11 +195,58 @@ def test_sourcepack_workflow_baseline_trust_exception_is_label_gated_and_narrow(
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "BASELINE_TRUST_LABEL_PRESENT" in text
     assert "contains(github.event.pull_request.labels.*.name, 'baseline-trust-update')" in text
-    assert 'path.startswith(".sourcepack/baseline/")' in text
-    assert 'finding.get("id") == "protected_artifact"' in text
-    assert "SourcePack gate failed for findings beyond protected baseline trust artifacts; failing normally." in text
-    assert "CI to continue without creating, refreshing, repairing, or blessing baseline state" in text
+    assert 'finding_id == "protected_artifact" and path.startswith(".sourcepack/baseline/")' in text
+    assert "Protected baseline artifact changes require 'baseline-trust-update'." in text
+    assert "baseline_label_present" in text
+    assert "without creating, refreshing, repairing, or blessing baseline state" in text
 
+
+
+def test_sourcepack_workflow_workflow_trust_exception_is_label_gated_and_narrow():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "WORKFLOW_TRUST_LABEL_PRESENT" in text
+    assert "contains(github.event.pull_request.labels.*.name, 'workflow-trust-update')" in text
+    assert 'finding_id == "workflow_change" and path.startswith(".github/workflows/")' in text
+    assert "Workflow automation changes require 'workflow-trust-update'." in text
+    assert "workflow_label_present" in text
+    assert "workflow_change findings after reviewing the workflow diff" in text
+
+
+def test_sourcepack_workflow_gate_treats_warn_and_error_as_ci_blocking():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "ci_blocking_findings" in text
+    assert 'finding.get("severity") in {"error", "warn"}' in text
+    assert 'report.get("findings", [])' in text
+
+
+def test_sourcepack_workflow_trust_labels_do_not_cross_authorize_findings():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    baseline_missing = text.index('if protected_baseline_findings and not baseline_label_present:')
+    workflow_missing = text.index('if workflow_change_findings and not workflow_label_present:')
+    missing_append = text.index('missing_labels.append("baseline-trust-update")', baseline_missing)
+    workflow_append = text.index('missing_labels.append("workflow-trust-update")', workflow_missing)
+    assert baseline_missing < missing_append
+    assert workflow_missing < workflow_append
+    assert "if protected_baseline_findings and not workflow_label_present" not in text
+    assert "if workflow_change_findings and not baseline_label_present" not in text
+
+
+def test_sourcepack_workflow_requires_both_labels_for_mixed_trust_findings():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    baseline_check = text.index('if protected_baseline_findings and not baseline_label_present:')
+    workflow_check = text.index('if workflow_change_findings and not workflow_label_present:')
+    missing_labels_check = text.index('if missing_labels:', workflow_check)
+    assert baseline_check < workflow_check < missing_labels_check
+    assert "Missing maintainer label(s):" in text
+    assert "Protected baseline artifacts requiring review:" in text
+    assert "Workflow automation findings requiring review:" in text
+
+
+def test_sourcepack_workflow_unexpected_warn_or_error_fails_normally():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "unexpected_findings" in text
+    assert "SourcePack gate failed for findings beyond labelled trust-review classes; failing normally." in text
+    assert "sys.exit(sourcepack_status)" in text
 
 def test_sourcepack_workflow_self_dogfooding_gate_is_bash_backed():
     text = CI_WORKFLOW.read_text(encoding="utf-8")

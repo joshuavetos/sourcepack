@@ -173,6 +173,23 @@ def test_ci_workflow_keeps_existing_validation_gates():
 
 
 
+
+def test_sourcepack_workflow_limits_push_to_main_and_keeps_pr_trigger():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "on:\n  push:\n    branches: [main]\n  pull_request:" in text
+    assert "pull_request:" in text
+    assert "branches: [main]" in text
+
+
+def test_sourcepack_workflow_avoids_duplicate_unlabelled_pr_branch_push_checks():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "push:\n  pull_request:" not in text
+    assert "github.event.pull_request.labels.*.name" in text
+    assert "BASELINE_TRUST_LABEL_PRESENT" in text
+    assert "WORKFLOW_TRUST_LABEL_PRESENT" in text
+    assert "github.event.pull_request.base.sha || github.event.before" in text
+
+
 def test_sourcepack_workflow_dogfoods_committed_baseline_without_creating_trust_state():
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "python -B -m sourcepack.cli diff . --ci --json" in text

@@ -587,6 +587,8 @@ def _dependency_name_for_import(name: str) -> str:
 
 def _js_package_root(imported: str) -> str:
     imported = imported.strip().lower()
+    if imported.startswith(".") or imported.startswith("/"):
+        return imported
     parts = imported.split("/")
     if imported.startswith("@") and len(parts) >= 2 and parts[0] != "@":
         return "/".join(parts[:2])
@@ -933,9 +935,11 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
             report.setdefault("uncertainties", []).append({"id": "unsupported_rename_copy", "message": f"{ch.operation} semantics for {ch.path} require review", "path": ch.path, "evidence": ch.old_path or ch.path})
         added = "\n".join(ch.added_lines or [])
         all_added.append(added)
-        for imported in extract_imports_from_text(added, Path(ch.path).suffix.lower()):
+        suffix = Path(ch.path).suffix.lower()
+        for imported in extract_imports_from_text(added, suffix):
+            imported_dep = _js_package_root(imported) if suffix in JS_EXTS else _dependency_name_for_import(imported)
             for dep in COMMON_DEPENDENCIES:
-                if _normalize_dependency_name(imported) == _normalize_dependency_name(dep) and dep not in deps and dep not in patch_deps:
+                if _normalize_dependency_name(imported_dep) == _normalize_dependency_name(dep) and dep not in deps and dep not in patch_deps:
                     report["unsupported_dependencies"].append(dep)
     added_text = "\n".join(all_added)
     supported = supported_commands_inventory(reality)

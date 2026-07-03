@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from sourcepack.cli import run_cli, validate_baseline, judge_patch, judge_patch_text, build_current_baseline, extract_js_import_specifiers_from_text
+from sourcepack.cli import run_cli, validate_baseline, judge_patch, judge_patch_text, build_current_baseline, extract_js_import_specifiers_from_text, _js_package_root
 
 
 def capture_cli(args):
@@ -98,6 +98,16 @@ class GauntletTest(unittest.TestCase):
                     code, data = self.diff_json(repo)
                     self.assertEqual(code, 1 if should_fail else 0)
                     self.assertEqual("unsupported_dependency" in self.ids(data), should_fail)
+
+
+    def test_js_package_root_normalizes_scoped_and_unscoped_subpaths(self):
+        self.assertEqual(_js_package_root("@myorg/core"), "@myorg/core")
+        self.assertEqual(_js_package_root("@myorg/core/utils"), "@myorg/core")
+        self.assertEqual(_js_package_root("react"), "react")
+        self.assertEqual(_js_package_root("react/jsx-runtime"), "react")
+        self.assertEqual(_js_package_root("./local"), "./local")
+        self.assertEqual(_js_package_root("../local"), "../local")
+        self.assertEqual(_js_package_root("/absolute/local"), "/absolute/local")
 
     def test_js_declared_undeclared_scoped_alias_and_workspace(self):
         cases = [

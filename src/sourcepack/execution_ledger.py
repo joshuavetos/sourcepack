@@ -12,13 +12,19 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Final, Iterable
 
-from sourcepack import __version__
 
-SCHEMA_VERSION = "sourcepack.execution_ledger.v1"
-LEDGER_FILENAME = "ledger.jsonl"
-MAX_EXCERPT_CHARS = 2048
+SCHEMA_VERSION: Final[str] = "sourcepack.execution_ledger.v1"
+LEDGER_FILENAME: Final[str] = "ledger.jsonl"
+
+MAX_EXCERPT_CHARS: Final[int] = 2048
+
+GIT_TIMEOUT_SECONDS: Final[int] = 10
+EXEC_TIMEOUT_SECONDS: Final[int] = 120
+
+RETURNCODE_TIMEOUT: Final[int] = 124
+RETURNCODE_NOT_FOUND: Final[int] = 127
 
 
 @dataclass(frozen=True)
@@ -65,21 +71,82 @@ def excerpt_bytes(data: bytes, limit: int = MAX_EXCERPT_CHARS) -> str:
     return text[:limit] + "…[truncated]"
 
 
+def _completed_process(
+    command: list[str],
+    returncode: int,
+    stderr: bytes,
+    *,
+    stdout: bytes = b"",
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.CompletedProcess(
+        command,
+        returncode,
+        stdout,
+        stderr,
+    )
+
+
+def _timeout_stderr(existing: bytes, message: str) -> bytes:
+    timeout_message = message.encode("utf-8", "replace")
+    if existing:
+        return existing.rstrip() + b"\n" + timeout_message
+    return timeout_message
+
+
+def _run_git(repo: str | Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    command = ["git", *args]
+
+    try:
+        return subprocess.run(
+            command,
+            cwd=Path(repo),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(
+            command,
+            RETURNCODE_NOT_FOUND,
+            "",
+            "git executable not found",
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+
+        message = f"git command timed out after {GIT_TIMEOUT_SECONDS} seconds"
+        stderr = f"{stderr.rstrip()}\n{message}" if stderr else message
+
+        return subprocess.CompletedProcess(
+            command,
+            RETURNCODE_TIMEOUT,
+            stdout,
+            stderr,
+        )
+
+
 def find_repo_root(start: str | Path = ".") -> Path:
     start_path = Path(start).resolve()
-    cp = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=start_path, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    cp = _run_git(start_path, ["rev-parse", "--show-toplevel"])
+
     if cp.returncode == 0 and cp.stdout.strip():
         return Path(cp.stdout.strip()).resolve()
+
     return start_path
 
 
 def _git_head(repo_root: Path) -> str | None:
-    cp = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_root, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    return cp.stdout.strip() if cp.returncode == 0 and cp.stdout.strip() else None
+    cp = _run_git(repo_root, ["rev-parse", "HEAD"])
+    if cp.returncode == 0 and cp.stdout.strip():
+        return cp.stdout.strip()
+    return None
 
 
 def _worktree_dirty(repo_root: Path) -> bool | None:
-    cp = subprocess.run(["git", "status", "--porcelain"], cwd=repo_root, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    cp = _run_git(repo_root, ["status", "--porcelain"])
     if cp.returncode != 0:
         return None
     return bool(cp.stdout.strip())
@@ -100,6 +167,7 @@ def entry_to_json(entry: ExecutionLedgerEntry) -> str:
 def append_entry(repo_root: str | Path, entry: ExecutionLedgerEntry) -> None:
     path = ledger_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True)
+
     with path.open("a", encoding="utf-8") as fh:
         fh.write(entry_to_json(entry) + "\n")
 
@@ -108,11 +176,20 @@ def iter_entries(repo_root: str | Path) -> Iterable[dict]:
     path = ledger_path(repo_root)
     if not path.exists():
         return
+
     with path.open("r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
-            if line:
-                yield json.loads(line)
+            if not line:
+                continue
+
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if isinstance(entry, dict):
+                yield entry
 
 
 def clear_ledger(repo_root: str | Path) -> None:
@@ -122,24 +199,73 @@ def clear_ledger(repo_root: str | Path) -> None:
 
 
 def environment_summary() -> dict:
+    path_value = os.environ.get("PATH", "")
+
     return {
         "platform": platform.platform(),
         "python": platform.python_version(),
         "shell": os.environ.get("SHELL"),
-        "path_entries": len(os.environ.get("PATH", "").split(os.pathsep)) if os.environ.get("PATH") else 0,
+        "path_entries": len(path_value.split(os.pathsep)) if path_value else 0,
     }
+
+
+def _sourcepack_version() -> str:
+    from sourcepack import __version__
+
+    return __version__
+
+
+def _run_recorded_command(command: list[str], cwd: Path) -> subprocess.CompletedProcess[bytes]:
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=EXEC_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError:
+        executable = command[0] if command else "<empty>"
+        return _completed_process(
+            command,
+            RETURNCODE_NOT_FOUND,
+            f"command executable not found: {executable}".encode("utf-8", "replace"),
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, bytes) else b""
+        stderr = exc.stderr if isinstance(exc.stderr, bytes) else b""
+
+        return _completed_process(
+            command,
+            RETURNCODE_TIMEOUT,
+            _timeout_stderr(
+                stderr,
+                f"command timed out after {EXEC_TIMEOUT_SECONDS} seconds",
+            ),
+            stdout=stdout,
+        )
 
 
 def run_and_record(command: list[str], cwd: str | Path = ".") -> ExecutionLedgerEntry:
     if not command:
         raise ValueError("sourcepack exec requires a command after --")
-    repo_root = find_repo_root(cwd)
+
+    resolved_cwd = Path(cwd).resolve()
+    repo_root = find_repo_root(resolved_cwd)
+
     dirty_before = _worktree_dirty(repo_root)
     head = _git_head(repo_root)
+
     start = time.monotonic()
-    cp = subprocess.run(command, cwd=Path(cwd).resolve(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    cp = _run_recorded_command(command, resolved_cwd)
     duration_ms = int((time.monotonic() - start) * 1000)
+
     dirty_after = _worktree_dirty(repo_root)
+
+    stdout = cp.stdout or b""
+    stderr = cp.stderr or b""
+
     entry = ExecutionLedgerEntry(
         schema_version=SCHEMA_VERSION,
         entry_id=uuid.uuid4().hex,
@@ -149,80 +275,179 @@ def run_and_record(command: list[str], cwd: str | Path = ".") -> ExecutionLedger
         worktree_dirty_before=dirty_before,
         worktree_dirty_after=dirty_after,
         command=list(command),
-        cwd=str(Path(cwd).resolve()),
+        cwd=str(resolved_cwd),
         exit_code=int(cp.returncode),
-        stdout_sha256=sha256_bytes(cp.stdout),
-        stderr_sha256=sha256_bytes(cp.stderr),
-        stdout_excerpt=excerpt_bytes(cp.stdout),
-        stderr_excerpt=excerpt_bytes(cp.stderr),
+        stdout_sha256=sha256_bytes(stdout),
+        stderr_sha256=sha256_bytes(stderr),
+        stdout_excerpt=excerpt_bytes(stdout),
+        stderr_excerpt=excerpt_bytes(stderr),
         duration_ms=duration_ms,
         environment_summary=environment_summary(),
-        sourcepack_version=__version__,
+        sourcepack_version=_sourcepack_version(),
     )
+
     append_entry(repo_root, entry)
     return entry
 
 
-_CLEAR_PHRASES = [
-    "tests passed", "test passed", "build passed", "lint passed", "typecheck passed",
-    "pytest passed", "npm test passed", "npm run build passed",
-]
-_SUPPORTED_COMMAND_PREFIXES = ["pytest", "npm test", "npm run build", "npm run test", "python -m pytest", "make test", "ruff check", "mypy"]
-_RAN_RE = re.compile(r"\bI\s+(?:ran|tested)\s+([^\n.;]+)", re.IGNORECASE)
+_CLEAR_PHRASES: Final[tuple[str, ...]] = (
+    "tests passed",
+    "test passed",
+    "build passed",
+    "lint passed",
+    "typecheck passed",
+    "pytest passed",
+    "npm test passed",
+    "npm run build passed",
+)
+
+_SUPPORTED_COMMAND_PREFIXES: Final[tuple[str, ...]] = (
+    "pytest",
+    "npm test",
+    "npm run build",
+    "npm run test",
+    "python -m pytest",
+    "make test",
+    "ruff check",
+    "mypy",
+)
+
+_RAN_RE: Final[re.Pattern[str]] = re.compile(
+    r"\bI\s+(?:ran|tested)\s+([^\n.;]+)",
+    re.IGNORECASE,
+)
 
 
 def detect_execution_claims(text: str) -> list[ExecutionClaim]:
     """Return bounded, explicit command-execution claims without semantic guessing."""
     claims: list[ExecutionClaim] = []
     lower = text.lower()
+
     for phrase in _CLEAR_PHRASES:
         start = lower.find(phrase)
+
         while start != -1:
-            if not re.search(r"\b(should|probably|expected to)\s+" + re.escape(phrase.split()[0]), lower[max(0, start-20):start+len(phrase)]):
-                cmd = phrase.removesuffix(" passed")
-                claims.append(ExecutionClaim(command=cmd, phrase=text[start:start + len(phrase)], start=start, end=start + len(phrase)))
+            context = lower[max(0, start - 20) : start + len(phrase)]
+            uncertain = re.search(
+                r"\b(should|probably|expected to)\s+" + re.escape(phrase.split()[0]),
+                context,
+            )
+
+            if not uncertain:
+                command = phrase.removesuffix(" passed")
+                claims.append(
+                    ExecutionClaim(
+                        command=command,
+                        phrase=text[start : start + len(phrase)],
+                        start=start,
+                        end=start + len(phrase),
+                    )
+                )
+
             start = lower.find(phrase, start + 1)
+
     for prefix in _SUPPORTED_COMMAND_PREFIXES:
-        pattern = re.compile(r"\b" + re.escape(prefix) + r"\s+(passed|works|succeeds)\b", re.IGNORECASE)
-        for m in pattern.finditer(text):
-            claims.append(ExecutionClaim(command=prefix, phrase=m.group(0), start=m.start(), end=m.end()))
-    for m in _RAN_RE.finditer(text):
-        cmd = m.group(1).strip().strip('`"\'')
-        if cmd and len(cmd.split()) <= 8 and not cmd.lower().startswith(("tests", "the test file")):
-            claims.append(ExecutionClaim(command=cmd, phrase=m.group(0), start=m.start(), end=m.end()))
-    claims.sort(key=lambda c: (c.start, c.end, c.command))
+        pattern = re.compile(
+            r"\b" + re.escape(prefix) + r"\s+(passed|works|succeeds)\b",
+            re.IGNORECASE,
+        )
+
+        for match in pattern.finditer(text):
+            claims.append(
+                ExecutionClaim(
+                    command=prefix,
+                    phrase=match.group(0),
+                    start=match.start(),
+                    end=match.end(),
+                )
+            )
+
+    for match in _RAN_RE.finditer(text):
+        command = match.group(1).strip().strip('`"\'')
+
+        if not command:
+            continue
+
+        command_lower = command.lower()
+        if len(command.split()) > 8:
+            continue
+
+        if command_lower.startswith(("tests", "the test file")):
+            continue
+
+        claims.append(
+            ExecutionClaim(
+                command=command,
+                phrase=match.group(0),
+                start=match.start(),
+                end=match.end(),
+            )
+        )
+
+    claims.sort(key=lambda claim: (claim.start, claim.end, claim.command.lower()))
+
     deduped: list[ExecutionClaim] = []
-    seen = set()
+    seen: set[tuple[str, int, int]] = set()
+
     for claim in claims:
         key = (claim.command.lower(), claim.start, claim.end)
-        if key not in seen:
-            seen.add(key)
-            deduped.append(claim)
+        if key in seen:
+            continue
+
+        seen.add(key)
+        deduped.append(claim)
+
     return deduped
 
 
 def _command_matches(claim: str, entry_command: list[str]) -> bool:
     normalized_entry = " ".join(entry_command).strip().lower()
     normalized_claim = claim.strip().lower()
-    return normalized_entry == normalized_claim or normalized_entry.startswith(normalized_claim + " ")
+
+    return normalized_entry == normalized_claim or normalized_entry.startswith(
+        normalized_claim + " "
+    )
 
 
 def evidence_for_claim(repo_root: str | Path, claim: ExecutionClaim) -> tuple[str, dict | None]:
-    matches = [entry for entry in iter_entries(repo_root) if _command_matches(claim.command, list(entry.get("command") or []))]
+    matches = [
+        entry
+        for entry in iter_entries(repo_root)
+        if _command_matches(claim.command, list(entry.get("command") or []))
+    ]
+
     if not matches:
         return "execution_evidence_missing", None
-    latest = sorted(matches, key=lambda e: str(e.get("generated_at") or ""))[-1]
-    if len({int(m.get("exit_code", -999)) for m in matches}) > 1:
+
+    latest = sorted(matches, key=lambda entry: str(entry.get("generated_at") or ""))[-1]
+
+    exit_codes: set[int] = set()
+    for match in matches:
+        try:
+            exit_codes.add(int(match.get("exit_code", -999)))
+        except (TypeError, ValueError):
+            exit_codes.add(-999)
+
+    if len(exit_codes) > 1:
         return "execution_inconclusive", latest
-    if int(latest.get("exit_code", -1)) == 0:
+
+    try:
+        latest_exit_code = int(latest.get("exit_code", -1))
+    except (TypeError, ValueError):
+        latest_exit_code = -1
+
+    if latest_exit_code == 0:
         return "execution_evidence_present", latest
+
     return "execution_failed", latest
 
 
 def execution_findings(repo_root: str | Path, text: str) -> list[dict]:
     findings: list[dict] = []
+
     for claim in detect_execution_claims(text):
         status, entry = evidence_for_claim(repo_root, claim)
+
         if status == "execution_evidence_present":
             severity = "info"
             message = f"Execution ledger contains a successful local run for: {claim.command}."
@@ -235,16 +460,24 @@ def execution_findings(repo_root: str | Path, text: str) -> list[dict]:
         else:
             severity = "warn"
             message = f"No SourcePack execution-ledger entry supports claimed run: {claim.command}."
-        findings.append({
-            "id": status,
-            "severity": severity,
-            "category": "execution",
-            "path": None,
-            "message": message,
-            "evidence": claim.command,
-            "suggestion": "Run the command through `sourcepack exec -- ...` if local execution evidence is intended." if severity == "warn" else None,
-            "ledger_entry_id": entry.get("entry_id") if entry else None,
-        })
+
+        findings.append(
+            {
+                "id": status,
+                "severity": severity,
+                "category": "execution",
+                "path": None,
+                "message": message,
+                "evidence": claim.command,
+                "suggestion": (
+                    "Run the command through `sourcepack exec -- ...` if local execution evidence is intended."
+                    if severity == "warn"
+                    else None
+                ),
+                "ledger_entry_id": entry.get("entry_id") if entry else None,
+            }
+        )
+
     return findings
 
 

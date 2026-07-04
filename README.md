@@ -2,13 +2,14 @@
 
 SourcePack catches unsupported AI repository assumptions before commit by checking proposed changes against locally verifiable project evidence.
 
+**SourcePack blocks AI-generated code changes that rely on fake repo facts.**
+
 Concrete first scenario: an AI assistant proposes adding FastAPI code to a repository that does not use FastAPI. SourcePack checks the proposed change against local repo evidence, sees that `fastapi` is not declared, and flags the change as an unsupported dependency before review.
 
 SourcePack is a local public-alpha guardrail for reviewing repo changes. It does not prove code correctness, security, runtime success, dependency safety, semantic validity, external API truth, or user intent.
 
 SourcePack still targets the same narrow problem:
 
-- SourcePack blocks AI-generated code changes that rely on fake repo facts.
 - AI coding agents can edit files that do not exist.
 - They can import undeclared dependencies.
 - They can reference missing scripts or unsupported commands.
@@ -151,11 +152,11 @@ sourcepack replay <report-or-bundle-path>
 sourcepack replay <report-or-bundle-path> --json
 ```
 
-Replay reconstructs a saved SourcePack JSON report or replay bundle. It is read-only and does not rerun judgment against the current checkout.
+Replay reconstructs a saved SourcePack JSON report or replay bundle. Replay is read-only, does not rerun judgment against the current checkout, and does not prove code correctness, security, runtime success, dependency safety, semantic validity, external API truth, or user intent.
 
 ## Validation
 
-Validation is local and deterministic. `sourcepack doctor --strict` checks production-readiness prerequisites and packaged assets; hosted GitHub Actions remains the source of truth for hosted checks.
+Validation is local and deterministic. `sourcepack doctor --strict` checks production-readiness prerequisites and packaged assets; hosted GitHub Actions remains the source of truth for hosted checks. The primary proof unit is a repo-state transition, not a random repository.
 
 ## Common commands
 
@@ -187,6 +188,7 @@ sourcepack exec -- pytest
 sourcepack evidence list
 sourcepack evidence show <entry-id>
 sourcepack evidence clear
+sourcepack evidence export --json
 sourcepack policy validate .
 sourcepack policy validate . --json
 ```
@@ -211,13 +213,13 @@ For a complete copy-paste workflow, see [`docs/github-action-quickstart.md`](doc
 - `.sourcepack/reports/latest.json`
 - `.sourcepack/reports/latest.md`
 
-Use `sourcepack report path` to print the HTML report path and `sourcepack report open` to open it.
+Use `sourcepack report path` to print the HTML report path and `sourcepack report open` to open it. HTML is for humans. JSON is for automation and remains JSON-only on stdout when `sourcepack diff . --json` is used.
 
 ## Local execution evidence
 
 `sourcepack exec -- <command...>` runs a local command and records bounded evidence under `.sourcepack/evidence/ledger.jsonl`. Ledger entries store command metadata, exit code, stdout/stderr SHA-256 hashes, short excerpts, git head, dirty-worktree state before and after execution, duration, and a small environment summary. They do not store full logs by default and are local-only.
 
-Execution evidence only supports bounded claims that a command was run locally. It does not prove code correctness, security, or external API behavior. Prompt context in `.sourcepack/prompt/` remains advisory and cannot satisfy execution evidence.
+Execution evidence only supports bounded claims that a command was run locally. It does not prove code correctness, security, runtime success, semantic validity, external API truth, dependency safety, or user intent. Prompt context in `.sourcepack/prompt/` remains advisory and cannot satisfy execution evidence.
 
 ## Product screenshot section
 

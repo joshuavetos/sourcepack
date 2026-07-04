@@ -1,3 +1,6 @@
 from __future__ import annotations
 
-JS_SOURCE_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx"}
+from typing import Final
+
+
+JS_SOURCE_EXTENSIONS: Final[frozenset[str]] = frozenset({".js", ".jsx", ".ts", ".tsx"})

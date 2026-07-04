@@ -227,7 +227,16 @@ def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
     else:
         raw_paths = sorted(included)
     for raw in raw_paths:
-        rel = raw.replace("\\", "/")
+        safe_rel, unsafe = _normalize_diff_path(raw)
+        if unsafe or not safe_rel:
+            files.append({
+                "relative_path": raw.replace("\\", "/"),
+                "included_in_prompt_context": False,
+                "source": source,
+                "file_type": "unsafe_path",
+            })
+            continue
+        rel = safe_rel
         path = root / rel
         rec = {"relative_path": rel, "included_in_prompt_context": rel in included, "source": source}
         try:
@@ -1507,9 +1516,9 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     if re.search(r"(?m)^@@(?! -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)", patch_text):
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     changes = parse_unified_diff(patch_text)
-    if any(ch.operation == "malformed" for ch in changes):
-        return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     unsafe_paths = sorted({ch.path for ch in changes if ch.unsafe_path and ch.path})
+    if any(ch.operation == "malformed" for ch in changes) and not any(ch.unsafe_path for ch in changes):
+        return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     if any(ch.unsafe_path for ch in changes):
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "path_escape": True, "path_escape_paths": unsafe_paths}
     if patch_text.strip() and not changes and "Binary files " not in patch_text:
@@ -1778,8 +1787,16 @@ def untracked_files_as_diff(repo: str | Path) -> str:
 def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, ci: bool = False) -> dict:
     repo_arg = Path(repo_path).resolve(); cp = run_git(repo_arg, ["rev-parse", "--show-toplevel"])
     if cp.returncode != 0:
-        message = "Git executable not found." if cp.returncode == 127 else "No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use."
-        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable" if cp.returncode == 127 else "no_git_repo", "error", "git", message)])
+        if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
+            finding_id = "git_unavailable"
+            message = "Git executable not found."
+        elif cp.returncode == GIT_RETURNCODE_TIMEOUT:
+            finding_id = "git_timeout"
+            message = f"Git command timed out after {GIT_TIMEOUT_SECONDS} seconds."
+        else:
+            finding_id = "no_git_repo"
+            message = "No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use."
+        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding(finding_id, "error", "git", message)])
     git_root = Path(cp.stdout.strip()).resolve()
     repo = repo_arg if validate_baseline(repo_arg).get("state") in {"present", "stale", "corrupt"} else git_root
     paths = ensure_sourcepack_dirs(repo); added, err = ensure_gitignore_entry(repo)

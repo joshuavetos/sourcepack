@@ -93,3 +93,40 @@ def test_same_patch_declared_dependency_is_review_not_unsupported(tmp_path):
     assert "Patch declares new dependencies that require review." in report["warnings"]
     assert "requests" in report["declared_dependencies"]
     assert any(item.get("id") == "declared_dependency" for item in report.get("uncertainties", []))
+
+
+def test_build_repo_change_report_initial_git_timeout(monkeypatch, tmp_path):
+    def fake_run_git(repo, args):
+        assert args == ["rev-parse", "--show-toplevel"]
+        return subprocess.CompletedProcess(
+            ["git", "rev-parse", "--show-toplevel"],
+            judgment.GIT_RETURNCODE_TIMEOUT,
+            "",
+            "timeout",
+        )
+
+    monkeypatch.setattr(judgment, "run_git", fake_run_git)
+
+    report = judgment.build_repo_change_report(tmp_path)
+    finding_ids = {finding.get("id") for finding in report.get("findings", [])}
+
+    assert report["verdict"] == "FAIL"
+    assert "git_timeout" in finding_ids
+    assert "no_git_repo" not in finding_ids
+
+
+def test_tracked_file_inventory_marks_unsafe_git_paths(monkeypatch, tmp_path):
+    def fake_run_git(repo, args):
+        assert args == ["ls-files", "-z"]
+        return subprocess.CompletedProcess(["git", "ls-files", "-z"], 0, "../evil.py\0safe.py\0", "")
+
+    monkeypatch.setattr(judgment, "run_git", fake_run_git)
+    (tmp_path / "safe.py").write_text("print('safe')\n", encoding="utf-8")
+
+    inventory = judgment._tracked_file_inventory(tmp_path, [{"relative_path": "safe.py"}])
+    by_path = {item["relative_path"]: item for item in inventory["files"]}
+
+    assert by_path["../evil.py"]["file_type"] == "unsafe_path"
+    assert by_path["../evil.py"]["included_in_prompt_context"] is False
+    assert by_path["safe.py"]["included_in_prompt_context"] is True
+    assert by_path["safe.py"]["file_type"] == "text"

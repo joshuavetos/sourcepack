@@ -256,6 +256,12 @@ SourcePack reason codes explain why a repo-state transition is PASS, WARN, or FA
 - **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
 
 
+## git_timeout
+
+- **Status:** Reserved/emitted canonical code.
+- **Meaning:** See `src/sourcepack/reason_codes.py` for the canonical vocabulary entry.
+
+
 ## gitignore_unwritable
 
 - **Status:** Reserved/emitted canonical code.

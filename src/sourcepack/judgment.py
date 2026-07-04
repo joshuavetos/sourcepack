@@ -13,7 +13,7 @@ import tempfile
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Iterable
+from typing import Final, Iterable
 from xml.sax.saxutils import escape as xml_escape
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
 from .baseline import BaselineLockError, acquire_baseline_lock, baseline_corrupt_result, baseline_report_fields, build_current_baseline, protected_baseline_path, release_baseline_lock, resolve_active_baseline, validate_baseline
@@ -54,6 +54,9 @@ SECRET_PATTERNS = [
 ]
 COMMON_DEPENDENCIES = ["fastapi", "flask", "django", "react", "vue", "svelte", "pytest", "typer", "click", "sqlalchemy", "prisma", "pydantic", "pyyaml", "pillow", "beautifulsoup4", "opencv-python", "scikit-learn", "python-dotenv", "pyjwt", "python-dateutil", "boto3", "requests"]
 FEATURE_NAMES = ("pdf", "ocr", "web server", "react", "docker", "authentication", "database")
+GIT_TIMEOUT_SECONDS: Final[int] = 10
+GIT_RETURNCODE_TIMEOUT: Final[int] = 124
+GIT_RETURNCODE_NOT_FOUND: Final[int] = 127
 
 
 def utc_now() -> str:
@@ -215,12 +218,9 @@ def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
     included = {str(rec.get("relative_path", "")).replace("\\", "/") for rec in included_records}
     files: list[dict] = []
     source = "scanner_included_files"
-    try:
-        cp = subprocess.run(["git", "ls-files", "-z"], cwd=root, text=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except (OSError, ValueError):
-        cp = None
-    if cp is not None and cp.returncode == 0:
-        raw_paths = [p.decode("utf-8", "surrogateescape") for p in cp.stdout.split(b"\0") if p]
+    cp = run_git(root, ["ls-files", "-z"])
+    if cp.returncode == 0:
+        raw_paths = [p for p in cp.stdout.split("\0") if p]
         source = "git_ls_files" if raw_paths else "scanner_included_files"
         if not raw_paths:
             raw_paths = sorted(included)
@@ -1507,6 +1507,8 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     if re.search(r"(?m)^@@(?! -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)", patch_text):
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     changes = parse_unified_diff(patch_text)
+    if any(ch.operation == "malformed" for ch in changes):
+        return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     unsafe_paths = sorted({ch.path for ch in changes if ch.unsafe_path and ch.path})
     if any(ch.unsafe_path for ch in changes):
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "path_escape": True, "path_escape_paths": unsafe_paths}
@@ -1619,6 +1621,8 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
                 seen_uncertainties.add(key)
                 merged_uncertainties.append(uncertainty)
         report["uncertainties"] = merged_uncertainties
+    unsupported -= patch_declared["python"]
+    unsupported -= patch_declared["js"]
     report["unsupported_dependencies"] = sorted(unsupported)
     if declared_only:
         report.setdefault("warnings", []).append("Patch declares new dependencies that require review.")
@@ -1667,29 +1671,54 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
 
 def run_git(repo: Path, args: list[str]) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(["git", *args], cwd=repo, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
     except FileNotFoundError:
-        return subprocess.CompletedProcess(["git", *args], 127, "", "git executable not found")
-
+        return subprocess.CompletedProcess(["git", *args], GIT_RETURNCODE_NOT_FOUND, "", "git executable not found")
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else exc.stderr if isinstance(exc.stderr, str) else ""
+        timeout_message = f"git command timed out after {GIT_TIMEOUT_SECONDS} seconds"
+        stderr = f"{stderr.rstrip()}\n{timeout_message}" if stderr else timeout_message
+        return subprocess.CompletedProcess(["git", *args], GIT_RETURNCODE_TIMEOUT, stdout, stderr)
 
 
 def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
     repo = Path(repo)
     cp = run_git(repo, ["rev-parse", "--show-toplevel"])
     if cp.returncode != 0:
-        return False, "git_unavailable" if cp.returncode == 127 else "not_git"
+        if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
+            return False, "git_unavailable"
+        if cp.returncode == GIT_RETURNCODE_TIMEOUT:
+            return False, "git_timeout"
+        return False, "not_git"
     root = Path(cp.stdout.strip())
     for args in (["diff", "--quiet"], ["diff", "--staged", "--quiet"]):
         diff_cp = run_git(root, list(args))
         if diff_cp.returncode == 1:
             return True, None
-        if diff_cp.returncode == 127:
+        if diff_cp.returncode == GIT_RETURNCODE_NOT_FOUND:
             return False, "git_unavailable"
+        if diff_cp.returncode == GIT_RETURNCODE_TIMEOUT:
+            return False, "git_timeout"
+        if diff_cp.returncode != 0:
+            return False, "git_error"
     untracked = run_git(root, ["ls-files", "--others", "--exclude-standard"])
     if untracked.returncode == 0 and untracked.stdout.strip():
         return True, None
-    if untracked.returncode == 127:
+    if untracked.returncode == GIT_RETURNCODE_NOT_FOUND:
         return False, "git_unavailable"
+    if untracked.returncode == GIT_RETURNCODE_TIMEOUT:
+        return False, "git_timeout"
+    if untracked.returncode != 0:
+        return False, "git_error"
     return False, None
 
 
@@ -1719,15 +1748,17 @@ def untracked_files_as_diff(repo: str | Path) -> str:
         return ""
     chunks = []
     for rel in [line.strip() for line in cp.stdout.splitlines() if line.strip()]:
-        path = repo / rel
-        if rel == ".gitignore":
+        safe_rel, unsafe = _normalize_diff_path(rel)
+        if unsafe or not safe_rel:
+            continue
+        path = repo / safe_rel
+        if safe_rel == ".gitignore":
             try:
                 ignore_lines = {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
             except OSError:
                 ignore_lines = set()
             if ignore_lines <= {".sourcepack", ".sourcepack/"}:
                 continue
-        safe_rel = rel.replace("\\", "/")
         chunks.extend([f"diff --git a/{safe_rel} b/{safe_rel}", "new file mode 100644", "--- /dev/null", f"+++ b/{safe_rel}"])
         if is_probably_binary(path):
             chunks.append(f"Binary files /dev/null and b/{safe_rel} differ")

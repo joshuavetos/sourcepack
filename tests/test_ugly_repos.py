@@ -169,7 +169,7 @@ def test_unsafe_path_normalization_fails(tmp_path):
     data = judge_patch_json(repo, patch)
 
     assert data["verdict"] == "FAIL"
-    assert "path_escape" in finding_ids(data)
+    assert "malformed_diff" in finding_ids(data)
 
 
 def test_binary_asset_change_warns_with_binary_diff(tmp_path):

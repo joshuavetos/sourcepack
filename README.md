@@ -128,6 +128,35 @@ Create or refresh the trusted baseline only after reviewing that the current rep
 
 For baseline lifecycle details, see [`docs/baseline-lifecycle.md`](docs/baseline-lifecycle.md). CI should consume committed `.sourcepack/baseline/` state and must not create or refresh trusted baseline state automatically; SourcePack dogfoods this with `sourcepack diff . --ci --json` against committed `.sourcepack/baseline/` state.
 
+## Local policy
+
+- PASS exits `0`.
+- WARN exits `0` locally.
+- WARN exits nonzero with `--strict` or `--ci`.
+- FAIL exits nonzero.
+
+## Git hooks
+
+`sourcepack init . --auto` installs hooks when possible in a Git repository.
+
+- The pre-commit hook checks staged changes with `sourcepack diff . --staged`.
+- The post-commit hook refreshes the baseline only after clean commits.
+- If the working tree is dirty after a commit, SourcePack marks the baseline stale instead of silently trusting it.
+- To uninstall hooks, run `sourcepack uninstall-hook .`.
+
+## Replay saved reports
+
+```bash
+sourcepack replay <report-or-bundle-path>
+sourcepack replay <report-or-bundle-path> --json
+```
+
+Replay reconstructs a saved SourcePack JSON report or replay bundle. It is read-only and does not rerun judgment against the current checkout.
+
+## Validation
+
+Validation is local and deterministic. `sourcepack doctor --strict` checks production-readiness prerequisites and packaged assets; hosted GitHub Actions remains the source of truth for hosted checks.
+
 ## Common commands
 
 ```bash

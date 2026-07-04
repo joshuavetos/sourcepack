@@ -103,6 +103,10 @@ class GauntletTest(unittest.TestCase):
         cases = [
             ({"package.json": '{"dependencies": {}}', "app.js": "console.log(1)\n"}, "view.js", 'import React from "react"\n', True),
             ({"package.json": '{"dependencies": {"react":"latest", "@scope/pkg":"1.0.0"}}', "app.js": "console.log(1)\n"}, "view.js", 'import React from "react"\nimport x from "@scope/pkg"\n', False),
+            ({"package.json": '{"dependencies":{"@myorg/core":"1.0.0"}}', "app.js": "console.log(1)\n"}, "declared-scoped.js", 'import { shared } from "@myorg/core/utils"\n', False),
+            ({"package.json": '{"dependencies":{"react":"latest"}}', "app.js": "console.log(1)\n"}, "runtime.js", 'import runtime from "react/jsx-runtime"\n', False),
+            ({"package.json": '{"dependencies":{}}', "app.js": "console.log(1)\n"}, "missing-scoped.js", 'import { missing } from "@myorg/missing/utils"\n', True),
+            ({"package.json": '{"dependencies":{}}', "local.js": "export const x = 1\n", "app.js": "console.log(1)\n"}, "local-imports.js", 'import a from "./local"\nimport b from "../local"\nimport c from "/absolute/local"\n', False),
             ({"package.json": '{"workspaces": ["packages/*"]}', "packages/core/package.json": '{"name":"@myorg/core"}', "app.js": "console.log(1)\n"}, "use.js", 'import { shared } from "@myorg/core/utils"\n', False),
             ({"package.json": '{}', "tsconfig.json": '{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}', "src/components/Button.ts": "export const Button = 1\n", "app.ts": "console.log(1)\n"}, "view.ts", 'import { Button } from "@/components/Button"\n', False),
         ]
@@ -113,6 +117,16 @@ class GauntletTest(unittest.TestCase):
                     (repo / changed).write_text(content, encoding="utf-8")
                     code, data = self.diff_json(repo)
                     self.assertEqual("unsupported_dependency" in self.ids(data), should_fail)
+
+        with TemporaryDirectory() as td:
+            repo = self.make_repo(Path(td), {"package.json": '{"dependencies":{"@myorg/core":"1.0.0"}}', "app.js": "console.log(1)\n"})
+            (repo / "declared-scoped.js").write_text('import { shared } from "@myorg/core/utils"\n', encoding="utf-8")
+            _code, data = self.diff_json(repo)
+            scoped_findings = [
+                f for f in data.get("findings", [])
+                if f.get("id") == "unsupported_dependency" and f.get("evidence") in {"@myorg/core", "@myorg/core/utils"}
+            ]
+            self.assertEqual(scoped_findings, [])
 
     def test_same_patch_dependencies_are_ecosystem_scoped(self):
         with TemporaryDirectory() as td:

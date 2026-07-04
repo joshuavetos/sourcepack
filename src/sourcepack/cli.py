@@ -652,8 +652,14 @@ def _dependency_name_for_import(name: str) -> str:
     return PY_IMPORT_ALIASES.get(normalized, normalized)
 
 
+def _is_js_local_specifier(imported: str) -> bool:
+    return imported.startswith((".", "/"))
+
+
 def _js_package_root(imported: str) -> str:
     imported = imported.strip().lower()
+    if _is_js_local_specifier(imported):
+        return imported
     parts = imported.split("/")
     if imported.startswith("@") and len(parts) >= 2 and parts[0] != "@":
         return "/".join(parts[:2])
@@ -2053,7 +2059,7 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
                     unsupported.discard(dep_name)
         elif suffix in JS_EXTS:
             for imported in extract_imports_from_text(added, suffix):
-                if imported.startswith(".") or imported.startswith("/"):
+                if _is_js_local_specifier(imported):
                     continue
                 local_alias = _js_alias_local(imported, files, contents)
                 pkg = _js_package_root(imported)

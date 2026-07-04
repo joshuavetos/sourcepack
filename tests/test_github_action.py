@@ -741,3 +741,30 @@ def test_composite_action_like_prompt_context_does_not_satisfy_missing_baseline(
     assert "refresh" not in command_log
     assert "repair" not in command_log
     assert "bless" not in command_log
+
+
+def test_sourcepack_workflow_self_dogfood_json_uses_runner_temp():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert 'report_path="$RUNNER_TEMP/sourcepack-self-dogfood.json"' in text
+    assert '> "$report_path"' in text
+    assert 'cat "$report_path"' in text
+    assert '> sourcepack-self-dogfood.json' not in text
+
+
+def test_sourcepack_workflow_inline_guard_reads_report_path_from_argv():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert 'python - "$sourcepack_status" "$report_path" <<\'PY\'' in text
+    assert 'report_path = sys.argv[2]' in text
+    assert 'with open(report_path, encoding="utf-8") as fh:' in text
+    assert 'with open("sourcepack-self-dogfood.json"' not in text
+
+
+def test_sourcepack_workflow_does_not_add_exceptions_for_new_file_or_baseline_corrupt():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert 'finding_id == "new_file"' not in text
+    assert 'finding_id == "baseline_corrupt"' not in text
+
+
+def test_gitattributes_marks_sourcepack_baseline_binary():
+    text = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert ".sourcepack/baseline/** -text" in text.splitlines()

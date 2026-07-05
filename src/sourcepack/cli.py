@@ -2017,8 +2017,8 @@ def _diff_header_paths(line: str) -> tuple[str | None, str | None, bool]:
         return None, None, True
     remainder = line[len(prefix):]
     sep = " b/"
-    split_at = remainder.rfind(sep)
-    if split_at < 0:
+    split_at = remainder.find(sep)
+    if split_at < 0 or split_at != remainder.rfind(sep):
         return None, None, True
     old_raw = "a/" + remainder[:split_at]
     new_raw = "b/" + remainder[split_at + len(sep):]

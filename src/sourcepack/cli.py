@@ -2384,8 +2384,10 @@ def cli_diff(args) -> int:
     from .policy import PolicyMode
     if getattr(args, "ci", False):
         args.json = True
+    if bool(getattr(args, "base_ref", None)) != bool(getattr(args, "head_ref", None)):
+        raise SystemExit("--base-ref and --head-ref must be provided together")
     mode = PolicyMode.CI if getattr(args, "ci", False) else PolicyMode.STRICT if getattr(args, "strict", False) else PolicyMode.LOCAL
-    judgment = judge_repo_change(args.repo, staged=args.staged, policy_mode=mode)
+    judgment = judge_repo_change(args.repo, staged=args.staged, policy_mode=mode, base_ref=getattr(args, "base_ref", None), head_ref=getattr(args, "head_ref", None))
     report = finalize_diff_report(Path(judgment.report.get("repo_path", args.repo)), judgment.report, args)
     return emit_diff_report(report, args, note=report.get("note"))
 
@@ -2924,6 +2926,8 @@ def run_cli(args_list=None):
     diff_cmd.add_argument("--json", action="store_true")
     diff_cmd.add_argument("--strict", action="store_true", help="exit nonzero on WARN as well as FAIL")
     diff_cmd.add_argument("--ci", action="store_true", help="non-interactive CI mode; implies --strict and prints JSON")
+    diff_cmd.add_argument("--base-ref", help="base git ref for committed-range diff mode; requires --head-ref")
+    diff_cmd.add_argument("--head-ref", help="head git ref for committed-range diff mode; requires --base-ref")
     install_hook = subs.add_parser("install-hook")
     install_hook.add_argument("repo")
     install_hook.add_argument("--strict", action="store_true")

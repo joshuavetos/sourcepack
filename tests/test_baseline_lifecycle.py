@@ -298,3 +298,58 @@ def test_receipt_invalid_hash_entry_fails_verification_and_diff_closed(tmp_path:
     _write_receipt(repo, receipt)
 
     _assert_verify_corrupt_reason(repo, "receipt.json contains invalid hash entry")
+
+
+def git_commit(repo: Path, message: str) -> str:
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "commit", "-m", message], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    cp = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return cp.stdout.strip()
+
+
+def test_committed_range_empty_returns_pass_no_diff(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    create_baseline(repo)
+    head = git_commit(repo, "commit trusted baseline")
+
+    cp, data = json_cli(repo, "diff", ".", "--ci", "--json", "--base-ref", head, "--head-ref", head)
+
+    assert cp.returncode == 0, cp.stderr + cp.stdout
+    assert data["verdict"] == "PASS"
+    assert "no_diff" in finding_ids(data)
+
+
+def test_committed_range_mode_catches_committed_changes_in_clean_worktree(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    create_baseline(repo)
+    base = git_commit(repo, "commit trusted baseline")
+    (repo / "app.py").write_text("def answer():\n    return 43\n", encoding="utf-8")
+    head = git_commit(repo, "change tracked file")
+
+    clean_cp = subprocess.run(["git", "status", "--short"], cwd=repo, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert clean_cp.stdout == ""
+    cp, data = json_cli(repo, "diff", ".", "--ci", "--json", "--base-ref", base, "--head-ref", head)
+
+    assert cp.returncode == 0, cp.stderr + cp.stdout
+    assert data["verdict"] == "PASS"
+    ids = finding_ids(data)
+    assert "no_diff" not in ids
+    assert "app.py" in data.get("raw_patch_judgment", {}).get("modified_files", [])
+
+
+def test_committed_range_preserves_missing_file_behavior_for_clean_worktree(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    create_baseline(repo)
+    base = git_commit(repo, "commit trusted baseline")
+    (repo / "new_notes.md").write_text("notes\n", encoding="utf-8")
+    head = git_commit(repo, "add untrusted file")
+
+    clean_cp = subprocess.run(["git", "status", "--short"], cwd=repo, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert clean_cp.stdout == ""
+    cp, data = json_cli(repo, "diff", ".", "--ci", "--json", "--base-ref", base, "--head-ref", head)
+
+    assert cp.returncode != 0
+    assert data["verdict"] == "WARN"
+    assert "new_file" in finding_ids(data)
+    assert any(finding.get("path") == "new_notes.md" for finding in data.get("findings", []))
+    assert "no_diff" not in finding_ids(data)

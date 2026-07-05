@@ -289,7 +289,7 @@ def test_wrapper_resolves_sourcepack_executable_before_subprocess_run():
 def test_sourcepack_workflow_runs_gate_before_editable_install_and_validation_gates():
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     install_index = text.index("Install package and test dependencies")
-    gate_index = text.index("python -B -m sourcepack.cli diff . --ci --json")
+    gate_index = text.index("python -B -m sourcepack.cli diff . --ci --json --base-ref")
     tests_index = text.index("Full pytest suite")
     assert gate_index < install_index < tests_index
 
@@ -741,6 +741,19 @@ def test_composite_action_like_prompt_context_does_not_satisfy_missing_baseline(
     assert "refresh" not in command_log
     assert "repair" not in command_log
     assert "bless" not in command_log
+
+
+def test_sourcepack_workflow_self_dogfood_judges_base_head_range():
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    command = 'python -B -m sourcepack.cli diff . --ci --json --base-ref "$BASE_SHA" --head-ref "$HEAD_SHA" > "$report_path"'
+    assert command in text
+    assert 'python -B -m sourcepack.cli diff . --ci --json > "$report_path"' not in text
+    assert 'BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}' in text
+    assert 'HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}' in text
+    assert 'def changed_files() -> list[str]:' in text
+    assert '"diff", "--name-only", f"{base_sha}...{head_sha}"' in text
+    for forbidden in ("sourcepack baseline", "sourcepack init", "baseline --force", "continue-on-error: true"):
+        assert forbidden not in text
 
 
 def test_sourcepack_workflow_self_dogfood_json_uses_runner_temp():

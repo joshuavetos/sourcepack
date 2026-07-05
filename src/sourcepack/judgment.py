@@ -1482,6 +1482,34 @@ def _is_high_risk_binary_path(rel: str) -> bool:
     return normalized.startswith(high_risk_prefixes) or Path(normalized).name in high_risk_names
 
 
+def _binary_diff_paths_from_patch(patch_text: str) -> list[str]:
+    paths: list[str] = []
+    current_path: str | None = None
+
+    for line in patch_text.splitlines():
+        if line.startswith("diff --git "):
+            current_path = None
+            parts = line.split()
+            if len(parts) >= 4:
+                parsed_new, new_unsafe = _normalize_diff_path(parts[3])
+                parsed_old, old_unsafe = _normalize_diff_path(parts[2])
+                if new_unsafe or old_unsafe:
+                    current_path = "unknown"
+                else:
+                    current_path = parsed_new or parsed_old or None
+            continue
+
+        if line.startswith("Binary files "):
+            m = re.search(r" b/(.+?) differ", line)
+            paths.append(m.group(1) if m else current_path or "unknown")
+            continue
+
+        if line == "GIT binary patch":
+            paths.append(current_path or "unknown")
+
+    return sorted(set(paths))
+
+
 UNSUPPORTED_ECOSYSTEM_MARKERS = {
     "gemfile": ("Gemfile", "Ruby/Bundler dependency validation is not implemented"),
     "composer.json": ("composer.json", "PHP/Composer dependency validation is not implemented"),
@@ -1521,7 +1549,7 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     if any(ch.unsafe_path for ch in changes):
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "path_escape": True, "path_escape_paths": unsafe_paths}
-    if patch_text.strip() and not changes and "Binary files " not in patch_text:
+    if patch_text.strip() and not changes and not _binary_diff_paths_from_patch(patch_text):
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     report = analyze_patch(packet_path, patch_text, changes)
     packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest, packet); contents = _packet_file_contents(packet)
@@ -1604,15 +1632,11 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     declared = patch_declared["python"] | patch_declared["js"]
     existing_deps = existing_declared["python"] | existing_declared["js"]
     declared_only = {d for d in declared if d not in existing_deps}
-    binary_paths = []
+    binary_paths = _binary_diff_paths_from_patch(patch_text)
     binary_blockers = []
-    for line in patch_text.splitlines():
-        if line.startswith("Binary files "):
-            m = re.search(r" b/(.+?) differ", line)
-            rel = m.group(1) if m else "unknown"
-            binary_paths.append(rel)
-            if rel == "unknown" or _is_high_risk_binary_path(rel):
-                binary_blockers.append(rel)
+    for rel in binary_paths:
+        if rel == "unknown" or _is_high_risk_binary_path(rel):
+            binary_blockers.append(rel)
     if binary_paths:
         report["binary_diffs"] = sorted(set(binary_paths))
     if binary_blockers:

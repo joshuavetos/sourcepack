@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from sourcepack.judgment import build_repo_change_report
+
 
 def run_cli(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
@@ -354,6 +356,33 @@ def test_committed_range_mode_reports_binary_changes_with_text_changes(tmp_path:
     cp, data = json_cli(repo, "diff", ".", "--ci", "--json", "--base-ref", base, "--head-ref", head)
 
     assert cp.returncode != 0
+    assert data["verdict"] == "WARN"
+    assert "binary_diff" in finding_ids(data)
+    assert data.get("raw_patch_judgment", {}).get("binary_diffs") == ["image.bin"]
+    assert "app.py" in data.get("raw_patch_judgment", {}).get("modified_files", [])
+    assert "no_diff" not in finding_ids(data)
+
+
+def test_committed_range_mode_reports_git_binary_patch_with_text_changes(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    create_baseline(repo)
+    base = git_commit(repo, "commit trusted baseline")
+    (repo / "app.py").write_text("def answer():\n    return 43\n", encoding="utf-8")
+    (repo / "image.bin").write_bytes(b"\x00\x01\x02\x03")
+    head = git_commit(repo, "change text and add binary")
+
+    raw_diff = subprocess.run(
+        ["git", "diff", "--binary", base + "..." + head],
+        cwd=repo,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout
+    assert "GIT binary patch" in raw_diff
+
+    data = build_repo_change_report(repo, patch_text=raw_diff, ci=True)
+
     assert data["verdict"] == "WARN"
     assert "binary_diff" in finding_ids(data)
     assert data.get("raw_patch_judgment", {}).get("binary_diffs") == ["image.bin"]

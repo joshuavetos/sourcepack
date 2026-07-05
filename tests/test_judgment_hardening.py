@@ -169,6 +169,35 @@ literal 4
     assert "binary_diff" in finding_ids
 
 
+def test_git_binary_patch_ambiguous_b_slash_path_fails_closed(tmp_path):
+    packet = write_packet(tmp_path, {"README.md": "demo\n"})
+    patch = """diff --git a/.github/workflows/foo b/bar.bin b/.github/workflows/foo b/bar.bin
+new file mode 100644
+index 0000000..1234567
+GIT binary patch
+literal 4
+"""
+
+    report = judgment.judge_patch_text(packet, patch)
+
+    assert report["binary_diffs"] == ["unknown"]
+    assert report["binary_diff_blockers"] == ["unknown"]
+    assert report["verdict"] == "FAIL"
+
+
+def test_cli_binary_diff_path_helper_fails_closed_for_ambiguous_b_slash_path():
+    from sourcepack import cli
+
+    patch = """diff --git a/.github/workflows/foo b/bar.bin b/.github/workflows/foo b/bar.bin
+new file mode 100644
+index 0000000..1234567
+GIT binary patch
+literal 4
+"""
+
+    assert cli._binary_diff_paths_from_patch(patch) == judgment._binary_diff_paths_from_patch(patch)
+    assert cli._binary_diff_paths_from_patch(patch) == ["unknown"]
+
 def test_git_binary_patch_ordinary_path_without_spaces_warns(tmp_path):
     packet = write_packet(tmp_path, {"README.md": "demo\n"})
     patch = """diff --git a/assets/logo.bin b/assets/logo.bin

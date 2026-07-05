@@ -148,3 +148,64 @@ def test_tracked_file_inventory_marks_unsafe_git_paths(monkeypatch, tmp_path):
     assert by_path["../evil.py"]["included_in_prompt_context"] is False
     assert by_path["safe.py"]["included_in_prompt_context"] is True
     assert by_path["safe.py"]["file_type"] == "text"
+
+
+def test_git_binary_patch_high_risk_path_with_spaces_blocks(tmp_path):
+    packet = write_packet(tmp_path, {"README.md": "demo\n"})
+    patch = """diff --git a/.github/workflows/foo bar.bin b/.github/workflows/foo bar.bin
+new file mode 100644
+index 0000000..1234567
+GIT binary patch
+literal 4
+"""
+
+    report = judgment.judge_patch_text(packet, patch)
+    traffic = judgment.patch_report_to_traffic(report)
+    finding_ids = {finding.get("id") for finding in traffic.get("findings", [])}
+
+    assert ".github/workflows/foo bar.bin" in report["binary_diffs"]
+    assert ".github/workflows/foo bar.bin" in report["binary_diff_blockers"]
+    assert report["verdict"] == "FAIL"
+    assert "binary_diff" in finding_ids
+
+
+def test_git_binary_patch_ordinary_path_without_spaces_warns(tmp_path):
+    packet = write_packet(tmp_path, {"README.md": "demo\n"})
+    patch = """diff --git a/assets/logo.bin b/assets/logo.bin
+new file mode 100644
+index 0000000..1234567
+GIT binary patch
+literal 4
+"""
+
+    report = judgment.judge_patch_text(packet, patch)
+
+    assert report["binary_diffs"] == ["assets/logo.bin"]
+    assert "binary_diff_blockers" not in report
+    assert report["verdict"] == "WARN"
+
+
+def test_binary_files_path_with_spaces_is_preserved(tmp_path):
+    packet = write_packet(tmp_path, {"README.md": "demo\n"})
+    patch = """diff --git a/assets/foo bar.bin b/assets/foo bar.bin
+Binary files a/assets/foo bar.bin and b/assets/foo bar.bin differ
+"""
+
+    report = judgment.judge_patch_text(packet, patch)
+
+    assert report["binary_diffs"] == ["assets/foo bar.bin"]
+    assert "binary_diff_blockers" not in report
+
+
+def test_cli_binary_diff_path_helper_matches_judgment_for_spaces():
+    from sourcepack import cli
+
+    patch = """diff --git a/.github/workflows/foo bar.bin b/.github/workflows/foo bar.bin
+new file mode 100644
+index 0000000..1234567
+GIT binary patch
+literal 4
+"""
+
+    assert cli._binary_diff_paths_from_patch(patch) == judgment._binary_diff_paths_from_patch(patch)
+    assert cli._binary_diff_paths_from_patch(patch) == [".github/workflows/foo bar.bin"]

@@ -1938,9 +1938,10 @@ def _workspace_package_names(packet: Path) -> set[str]:
     for pattern in patterns:
         if not isinstance(pattern, str) or not pattern.endswith("/*"):
             continue
-        prefix = pattern[:-2].strip("/")
+        prefix = pattern[:-2].replace("\\", "/").strip("/")
         for rel, content in contents.items():
-            if Path(rel).name == "package.json" and rel.startswith(prefix + "/"):
+            rel_posix = rel.replace("\\", "/")
+            if PurePosixPath(rel_posix).name == "package.json" and rel_posix.startswith(prefix + "/"):
                 try:
                     package = json.loads(content)
                 except json.JSONDecodeError:
@@ -2010,6 +2011,47 @@ UNSUPPORTED_ECOSYSTEM_MARKERS = {
 }
 
 
+def _diff_header_paths(line: str) -> tuple[str | None, str | None, bool]:
+    prefix = "diff --git a/"
+    if not line.startswith(prefix):
+        return None, None, True
+    remainder = line[len(prefix):]
+    sep = " b/"
+    split_at = remainder.rfind(sep)
+    if split_at < 0:
+        return None, None, True
+    old_raw = "a/" + remainder[:split_at]
+    new_raw = "b/" + remainder[split_at + len(sep):]
+    old_path, old_unsafe = _normalize_diff_path(old_raw)
+    new_path, new_unsafe = _normalize_diff_path(new_raw)
+    return old_path, new_path, bool(old_unsafe or new_unsafe)
+
+
+def _binary_diff_paths_from_patch(patch_text: str) -> list[str]:
+    paths: list[str] = []
+    current_new_path: str | None = None
+    current_unsafe = False
+    for line in patch_text.splitlines():
+        if line.startswith("diff --git "):
+            _old_path, new_path, unsafe = _diff_header_paths(line)
+            current_new_path = new_path
+            current_unsafe = unsafe
+        elif line.startswith("Binary files "):
+            m = re.search(r" b/(.+) differ$", line)
+            raw = m.group(1) if m else None
+            if raw is None:
+                paths.append("unknown")
+                continue
+            rel, unsafe = _normalize_diff_path(raw)
+            paths.append("unknown" if unsafe else rel)
+        elif line == "GIT binary patch":
+            if current_unsafe or not current_new_path:
+                paths.append("unknown")
+            else:
+                paths.append(current_new_path)
+    return paths
+
+
 def _unsupported_ecosystem_uncertainties(files: set[str], changes: list[PatchFileChange]) -> list[dict]:
     names = {Path(f).name.lower() for f in files}
     names.update(Path(ch.path).name.lower() for ch in changes)
@@ -2031,7 +2073,7 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     unsafe_paths = sorted({ch.path for ch in changes if ch.unsafe_path and ch.path})
     if any(ch.unsafe_path for ch in changes):
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "path_escape": True, "path_escape_paths": unsafe_paths}
-    if patch_text.strip() and not changes and "Binary files " not in patch_text:
+    if patch_text.strip() and not changes and "Binary files " not in patch_text and "GIT binary patch" not in patch_text:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     report = analyze_patch(packet_path, patch_text, changes)
     packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest, packet); contents = _packet_file_contents(packet)
@@ -2078,15 +2120,11 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     declared = patch_declared["python"] | patch_declared["js"]
     existing_deps = existing_declared["python"] | existing_declared["js"]
     declared_only = {d for d in declared if d not in existing_deps}
-    binary_paths = []
+    binary_paths = _binary_diff_paths_from_patch(patch_text)
     binary_blockers = []
-    for line in patch_text.splitlines():
-        if line.startswith("Binary files "):
-            m = re.search(r" b/(.+?) differ", line)
-            rel = m.group(1) if m else "unknown"
-            binary_paths.append(rel)
-            if rel == "unknown" or _is_high_risk_binary_path(rel):
-                binary_blockers.append(rel)
+    for rel in binary_paths:
+        if rel == "unknown" or _is_high_risk_binary_path(rel):
+            binary_blockers.append(rel)
     if binary_paths:
         report["binary_diffs"] = sorted(set(binary_paths))
     if binary_blockers:

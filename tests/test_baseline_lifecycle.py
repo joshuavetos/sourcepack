@@ -337,6 +337,29 @@ def test_committed_range_mode_catches_committed_changes_in_clean_worktree(tmp_pa
     assert "app.py" in data.get("raw_patch_judgment", {}).get("modified_files", [])
 
 
+def test_committed_range_mode_reports_binary_changes_with_text_changes(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    create_baseline(repo)
+    base = git_commit(repo, "commit trusted baseline")
+    (repo / "app.py").write_text("def answer():\n    return 43\n", encoding="utf-8")
+    (repo / "image.bin").write_bytes(b"\x00\x01\x02\x03")
+    head = git_commit(repo, "change text and add binary")
+
+    clean_cp = subprocess.run(["git", "status", "--short"], cwd=repo, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert clean_cp.stdout == ""
+    raw_diff = subprocess.run(["git", "diff", base + "..." + head], cwd=repo, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+    assert "Binary files" in raw_diff
+    assert "GIT binary patch" not in raw_diff
+
+    cp, data = json_cli(repo, "diff", ".", "--ci", "--json", "--base-ref", base, "--head-ref", head)
+
+    assert cp.returncode != 0
+    assert data["verdict"] == "WARN"
+    assert "binary_diff" in finding_ids(data)
+    assert data.get("raw_patch_judgment", {}).get("binary_diffs") == ["image.bin"]
+    assert "app.py" in data.get("raw_patch_judgment", {}).get("modified_files", [])
+    assert "no_diff" not in finding_ids(data)
+
 def test_committed_range_preserves_missing_file_behavior_for_clean_worktree(tmp_path: Path) -> None:
     repo = init_repo(tmp_path)
     create_baseline(repo)

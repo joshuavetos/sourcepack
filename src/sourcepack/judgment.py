@@ -1808,7 +1808,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("gitignore_unwritable", "error", "git", f"Cannot write .gitignore: {err}")])
     if patch_text is None:
         if base_ref is not None and head_ref is not None:
-            diff_args = ["diff", "--binary", f"{base_ref}...{head_ref}"]
+            diff_args = ["diff", f"{base_ref}...{head_ref}"]
         else:
             diff_args = ["diff", "--staged"] if staged else ["diff"]
         if repo != git_root:

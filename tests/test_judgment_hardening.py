@@ -22,7 +22,7 @@ def test_run_git_missing_executable_returns_127(monkeypatch, tmp_path):
 
 def test_run_git_timeout_returns_124(monkeypatch, tmp_path):
     def fake_run(*args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd=["git", "status"], timeout=10, output="partial out", stderr="partial err")
+        raise subprocess.TimeoutExpired(cmd=["git", "status"], timeout=10, output=b"partial out", stderr=b"partial err")
 
     monkeypatch.setattr(judgment.subprocess, "run", fake_run)
 

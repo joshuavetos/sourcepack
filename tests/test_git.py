@@ -28,8 +28,8 @@ def test_run_git_timeout_returns_normalized_completed_process_with_partial_outpu
         raise subprocess.TimeoutExpired(
             cmd=["git", "status"],
             timeout=git_mod.GIT_TIMEOUT_SECONDS,
-            output="partial stdout",
-            stderr="partial stderr",
+            output=b"partial stdout",
+            stderr=b"partial stderr",
         )
 
     monkeypatch.setattr(git_mod.subprocess, "run", fake_run)

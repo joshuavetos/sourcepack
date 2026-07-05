@@ -224,3 +224,77 @@ def test_init_auto_force_permits_dirty_git_worktree(tmp_path: Path) -> None:
 
     assert cp.returncode == 0, cp.stderr + cp.stdout
     assert (repo / ".sourcepack" / "baseline" / "active.json").exists()
+
+
+def _receipt_path(repo: Path) -> Path:
+    return active_build(repo) / "packet" / "receipt.json"
+
+
+def _read_receipt(repo: Path) -> dict:
+    return json.loads(_receipt_path(repo).read_text(encoding="utf-8"))
+
+
+def _write_receipt(repo: Path, receipt: dict) -> None:
+    _receipt_path(repo).write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+
+
+def _assert_verify_corrupt_reason(repo: Path, reason: str) -> dict:
+    cp, status = json_cli(repo, "baseline", "verify", "--json")
+    assert cp.returncode != 0
+    assert status["state"] == "corrupt"
+    assert reason in status["details"]["reason"]
+    data = assert_ci_diff_fails_closed(repo, "baseline_corrupt")
+    assert data["baseline_state"] == "corrupt"
+    return status
+
+
+def test_receipt_absolute_artifact_path_fails_verification_and_diff_closed(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    create_baseline(repo)
+    receipt = _read_receipt(repo)
+    receipt["hashes"]["/tmp/outside.txt"] = "0" * 64
+    _write_receipt(repo, receipt)
+
+    _assert_verify_corrupt_reason(repo, "receipt.json tracks unsafe artifact path")
+
+
+def test_receipt_traversal_artifact_path_fails_verification_and_diff_closed(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    create_baseline(repo)
+    receipt = _read_receipt(repo)
+    receipt["hashes"]["../outside.txt"] = "0" * 64
+    _write_receipt(repo, receipt)
+
+    _assert_verify_corrupt_reason(repo, "receipt.json tracks unsafe artifact path")
+
+
+def test_receipt_missing_tracked_artifact_fails_verification_and_diff_closed(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    create_baseline(repo)
+    receipt = _read_receipt(repo)
+    receipt["hashes"]["missing-artifact.txt"] = "0" * 64
+    _write_receipt(repo, receipt)
+
+    _assert_verify_corrupt_reason(repo, "receipt-tracked artifact missing")
+
+
+def test_receipt_hash_mismatch_fails_verification_and_diff_closed(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    create_baseline(repo)
+    packet = active_build(repo) / "packet"
+    receipt = _read_receipt(repo)
+    tracked_name = "context.md"
+    assert tracked_name in receipt["hashes"]
+    (packet / tracked_name).write_text("tampered\n", encoding="utf-8")
+
+    _assert_verify_corrupt_reason(repo, "receipt hash mismatch")
+
+
+def test_receipt_invalid_hash_entry_fails_verification_and_diff_closed(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    create_baseline(repo)
+    receipt = _read_receipt(repo)
+    receipt["hashes"]["manifest.json"] = 123
+    _write_receipt(repo, receipt)
+
+    _assert_verify_corrupt_reason(repo, "receipt.json contains invalid hash entry")

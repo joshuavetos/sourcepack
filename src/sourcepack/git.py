@@ -36,6 +36,14 @@ def _git_failure_state(cp: subprocess.CompletedProcess[str]) -> str | None:
     return None
 
 
+def _timeout_output_text(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, str):
+        return value
+    return ""
+
+
 def run_git(repo: str | Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     """Run a bounded git command in repo.
 
@@ -63,8 +71,8 @@ def run_git(repo: str | Path, args: list[str]) -> subprocess.CompletedProcess[st
             "git executable not found",
         )
     except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        stdout = _timeout_output_text(exc.stdout)
+        stderr = _timeout_output_text(exc.stderr)
 
         timeout_message = f"git command timed out after {GIT_TIMEOUT_SECONDS} seconds"
         if stderr:

@@ -13,21 +13,26 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ['3.11']
+
     runs-on: ${{ matrix.os }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
       - name: SourcePack self-dogfooding gate
         shell: bash
         env:
           PYTHONPATH: src
           PYTHONDONTWRITEBYTECODE: "1"
+          EVENT_NAME: ${{ github.event_name }}
           BASELINE_TRUST_LABEL_PRESENT: ${{ contains(github.event.pull_request.labels.*.name, 'baseline-trust-update') }}
           WORKFLOW_TRUST_LABEL_PRESENT: ${{ contains(github.event.pull_request.labels.*.name, 'workflow-trust-update') }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -49,49 +54,148 @@ jobs:
           import os
           import subprocess
           import sys
+          from pathlib import Path
 
           sourcepack_status = int(sys.argv[1])
           report_path = sys.argv[2]
+
+          event_name = os.environ.get("EVENT_NAME", "")
+          is_pull_request = event_name == "pull_request"
+
           baseline_label_present = os.environ.get("BASELINE_TRUST_LABEL_PRESENT") == "true"
           workflow_label_present = os.environ.get("WORKFLOW_TRUST_LABEL_PRESENT") == "true"
+
           base_sha = os.environ.get("BASE_SHA", "")
           head_sha = os.environ.get("HEAD_SHA", "")
+
+          repo_root = Path.cwd()
+
+          def fail(message: str) -> None:
+              print(message, file=sys.stderr)
+              sys.exit(sourcepack_status)
 
           def changed_files() -> list[str]:
               if not base_sha or not head_sha:
                   return []
+
               result = subprocess.run(
                   ["git", "diff", "--name-only", f"{base_sha}...{head_sha}"],
                   check=True,
                   text=True,
                   stdout=subprocess.PIPE,
               )
-              return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+              return [line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()]
 
-          with open(report_path, encoding="utf-8") as fh:
-              report = json.load(fh)
-          ci_blocking_findings = [
-              finding for finding in report.get("findings", [])
-              if finding.get("severity") in {"error", "warn"}
-          ]
-          if not ci_blocking_findings:
-              ci_blocking_findings = [
+          def load_report() -> dict:
+              with open(report_path, encoding="utf-8") as fh:
+                  return json.load(fh)
+
+          def ci_findings(report: dict) -> list[dict]:
+              findings = [
+                  finding for finding in report.get("findings", [])
+                  if finding.get("severity") in {"error", "warn"}
+              ]
+              if findings:
+                  return findings
+              return [
                   finding for finding in report.get("blockers", [])
                   if finding.get("severity") in {"error", "warn"}
               ]
-          if not ci_blocking_findings:
-              print("SourcePack gate failed without recognized CI-blocking findings; failing normally.", file=sys.stderr)
-              sys.exit(sourcepack_status)
+
+          def active_baseline_packet() -> tuple[str, Path]:
+              active_path = repo_root / ".sourcepack" / "baseline" / "active.json"
+              if not active_path.exists():
+                  fail("SourcePack baseline changed, but .sourcepack/baseline/active.json is missing.")
+
+              try:
+                  active = json.loads(active_path.read_text(encoding="utf-8"))
+              except json.JSONDecodeError as exc:
+                  fail(f"SourcePack baseline active pointer is invalid JSON: {exc}")
+
+              build_id = str(active.get("active_build_id") or "")
+              packet_value = str(active.get("packet_path") or "")
+
+              if not build_id:
+                  fail("SourcePack baseline active pointer is missing active_build_id.")
+              if not packet_value:
+                  fail("SourcePack baseline active pointer is missing packet_path.")
+
+              packet_path = repo_root / packet_value
+              if not packet_path.exists():
+                  fail(f"SourcePack active baseline packet does not exist: {packet_value}")
+
+              return build_id, packet_path
+
+          def ensure_clean_baseline_packet(changed_baseline_paths: list[str]) -> None:
+              if not changed_baseline_paths:
+                  return
+
+              build_id, packet_path = active_baseline_packet()
+
+              polluted_matches: list[str] = []
+              required_test_seen = False
+
+              for path in packet_path.rglob("*"):
+                  if not path.is_file():
+                      continue
+
+                  rel = path.relative_to(repo_root).as_posix()
+
+                  try:
+                      text = path.read_text(encoding="utf-8", errors="ignore")
+                  except OSError as exc:
+                      fail(f"Could not inspect active baseline packet file {rel}: {exc}")
+
+                  if (
+                      "examples/golden/output" in text
+                      or "examples\\golden\\output" in text
+                      or "examples/golden/output" in rel
+                      or "examples\\golden\\output" in rel
+                  ):
+                      polluted_matches.append(rel)
+
+                  if "tests/test_judgment_hardening.py" in text or "test_judgment_hardening" in text:
+                      required_test_seen = True
+
+              if polluted_matches:
+                  print(
+                      f"SourcePack active baseline build {build_id} contains generated golden output evidence.",
+                      file=sys.stderr,
+                  )
+                  print(
+                      "Generated files under examples/golden/output must not be trusted baseline evidence.",
+                      file=sys.stderr,
+                  )
+                  for rel in sorted(set(polluted_matches)):
+                      print(f"- polluted baseline packet file: {rel}", file=sys.stderr)
+                  sys.exit(sourcepack_status)
+
+              if not required_test_seen:
+                  fail(
+                      f"SourcePack active baseline build {build_id} does not contain "
+                      "tests/test_judgment_hardening.py. Refresh the baseline from a clean repo state."
+                  )
+
+              print(f"Active SourcePack baseline build {build_id} passed baseline packet sanity checks.")
+
+          report = load_report()
+          findings = ci_findings(report)
+
+          if not findings:
+              fail("SourcePack gate failed without recognized CI-blocking findings; failing normally.")
 
           paths = changed_files()
           changed_baseline_paths = [path for path in paths if path.startswith(".sourcepack/baseline/")]
           changed_workflow_paths = [path for path in paths if path.startswith(".github/workflows/")]
+
           protected_baseline_findings = []
           workflow_change_findings = []
           unexpected_findings = []
-          for finding in ci_blocking_findings:
+
+          for finding in findings:
               finding_id = finding.get("id")
-              path = str(finding.get("path") or "")
+              path = str(finding.get("path") or "").replace("\\", "/")
+
               if finding_id == "protected_artifact" and path.startswith(".sourcepack/baseline/"):
                   protected_baseline_findings.append(finding)
               elif finding_id == "workflow_change" and path.startswith(".github/workflows/"):
@@ -100,48 +204,109 @@ jobs:
                   unexpected_findings.append(finding)
 
           if unexpected_findings:
-              print("SourcePack gate failed for findings beyond labelled trust-review classes; failing normally.", file=sys.stderr)
+              print(
+                  "SourcePack gate failed for findings beyond trust-review classes; failing normally.",
+                  file=sys.stderr,
+              )
               for finding in unexpected_findings:
-                  print(f"- {finding.get('id')} {finding.get('severity')} {finding.get('path')}: {finding.get('message')}", file=sys.stderr)
+                  print(
+                      f"- {finding.get('id')} {finding.get('severity')} "
+                      f"{finding.get('path')}: {finding.get('message')}",
+                      file=sys.stderr,
+                  )
               sys.exit(sourcepack_status)
 
-          missing_labels = []
-          if protected_baseline_findings and not baseline_label_present:
-              missing_labels.append("baseline-trust-update")
-          if workflow_change_findings and not workflow_label_present:
-              missing_labels.append("workflow-trust-update")
           if protected_baseline_findings and not changed_baseline_paths:
-              print("SourcePack reported protected baseline artifacts, but the PR file list does not include .sourcepack/baseline/; failing normally.", file=sys.stderr)
-              sys.exit(sourcepack_status)
+              fail(
+                  "SourcePack reported protected baseline artifacts, but the checked range does not "
+                  "include .sourcepack/baseline/ changes."
+              )
+
           if workflow_change_findings and not changed_workflow_paths:
-              print("SourcePack reported workflow changes, but the PR file list does not include .github/workflows/; failing normally.", file=sys.stderr)
-              sys.exit(sourcepack_status)
-          if missing_labels:
-              print("SourcePack detected trust-sensitive CI-blocking findings. This PR requires intentional trust review.", file=sys.stderr)
-              print(f"Missing maintainer label(s): {', '.join(missing_labels)}", file=sys.stderr)
+              fail(
+                  "SourcePack reported workflow changes, but the checked range does not include "
+                  ".github/workflows/ changes."
+              )
+
+          ensure_clean_baseline_packet(changed_baseline_paths)
+
+          if is_pull_request:
+              missing_labels = []
+
+              if protected_baseline_findings and not baseline_label_present:
+                  missing_labels.append("baseline-trust-update")
+
+              if workflow_change_findings and not workflow_label_present:
+                  missing_labels.append("workflow-trust-update")
+
+              if missing_labels:
+                  print(
+                      "SourcePack detected trust-sensitive CI-blocking findings. "
+                      "This PR requires intentional trust review.",
+                      file=sys.stderr,
+                  )
+                  print(f"Missing maintainer label(s): {', '.join(missing_labels)}", file=sys.stderr)
+
+                  if protected_baseline_findings:
+                      print(
+                          "Protected baseline artifact changes require 'baseline-trust-update'.",
+                          file=sys.stderr,
+                      )
+
+                  if workflow_change_findings:
+                      print(
+                          "Workflow automation changes require 'workflow-trust-update'.",
+                          file=sys.stderr,
+                      )
+
+                  sys.exit(sourcepack_status)
+
               if protected_baseline_findings:
-                  print("Protected baseline artifact changes require 'baseline-trust-update'.", file=sys.stderr)
+                  print(
+                      "::warning::SourcePack detected protected baseline artifact changes. "
+                      "The maintainer-applied 'baseline-trust-update' label allows these findings "
+                      "after intentional trust-state review."
+                  )
+                  print("Protected baseline artifacts requiring review:")
+                  for finding in protected_baseline_findings:
+                      print(f"- {finding.get('path')}: {finding.get('message')}")
+
               if workflow_change_findings:
-                  print("Workflow automation changes require 'workflow-trust-update'.", file=sys.stderr)
-              sys.exit(sourcepack_status)
+                  print(
+                      "::warning::SourcePack detected workflow automation changes. "
+                      "The maintainer-applied 'workflow-trust-update' label allows these findings "
+                      "after reviewing the workflow diff."
+                  )
+                  print("Workflow automation findings requiring review:")
+                  for finding in workflow_change_findings:
+                      print(f"- {finding.get('path')}: {finding.get('message')}")
+
+              sys.exit(0)
+
+          print(
+              "::warning::SourcePack detected only trust-review findings on a push event. "
+              "PR labels are not available on push events, so the push gate permits only the "
+              "narrow trust classes already validated by path and baseline sanity checks."
+          )
 
           if protected_baseline_findings:
-              print("::warning::SourcePack detected protected baseline artifact changes. This PR requires intentional trust-state review.")
-              print("::warning::The maintainer-applied 'baseline-trust-update' label allows these baseline findings without creating, refreshing, repairing, or blessing baseline state.")
-              print("Protected baseline artifacts requiring review:")
+              print("Protected baseline artifacts observed on push:")
               for finding in protected_baseline_findings:
                   print(f"- {finding.get('path')}: {finding.get('message')}")
+
           if workflow_change_findings:
-              print("::warning::SourcePack detected workflow automation changes. This PR requires intentional workflow trust review.")
-              print("::warning::The maintainer-applied 'workflow-trust-update' label allows these workflow_change findings after reviewing the workflow diff.")
-              print("Workflow automation findings requiring review:")
+              print("Workflow automation findings observed on push:")
               for finding in workflow_change_findings:
                   print(f"- {finding.get('path')}: {finding.get('message')}")
+
+          sys.exit(0)
           PY
+
       - name: Install package and test dependencies
         run: |
           python -m pip install -e .
           python -m pip install pytest build twine
+
       - name: Compile SourcePack modules
         run: |
           python -m py_compile src/sourcepack/cli.py
@@ -152,25 +317,36 @@ jobs:
           python -m py_compile src/sourcepack/policy.py
           python -m py_compile tools/behavior_matrix.py
           python -m py_compile tools/golden_demo.py
+
       - name: Unit tests
         run: python -m unittest
+
       - name: Behavior matrix tests
         run: pytest -q tests/test_behavior_matrix.py
+
       - name: Golden demo tests
         run: pytest -q tests/test_golden_demo.py
+
       - name: README truth tests
         run: pytest -q tests/test_readme_truth.py
+
       - name: Full pytest suite
         run: pytest -q
+
       - name: Behavior matrix
         run: python tools/behavior_matrix.py
+
       - name: Behavior matrix JSON
         run: python tools/behavior_matrix.py --json
+
       - name: Golden demos
         run: python tools/golden_demo.py --clean
+
       - name: Doctor
         run: sourcepack doctor
+
       - name: Demo
         run: sourcepack demo
+
       - name: Release smoke
         run: python tools/release_smoke.py

@@ -1784,7 +1784,9 @@ def untracked_files_as_diff(repo: str | Path) -> str:
         chunks.extend(f"+{line}" for line in lines)
     return "\n".join(chunks) + ("\n" if chunks else "")
 
-def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, ci: bool = False) -> dict:
+def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, ci: bool = False, base_ref: str | None = None, head_ref: str | None = None) -> dict:
+    if (base_ref is None) != (head_ref is None):
+        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", "--base-ref and --head-ref must be provided together.")])
     repo_arg = Path(repo_path).resolve(); cp = run_git(repo_arg, ["rev-parse", "--show-toplevel"])
     if cp.returncode != 0:
         if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
@@ -1805,7 +1807,10 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
     if err:
         return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("gitignore_unwritable", "error", "git", f"Cannot write .gitignore: {err}")])
     if patch_text is None:
-        diff_args = ["diff", "--staged"] if staged else ["diff"]
+        if base_ref is not None and head_ref is not None:
+            diff_args = ["diff", "--binary", f"{base_ref}...{head_ref}"]
+        else:
+            diff_args = ["diff", "--staged"] if staged else ["diff"]
         if repo != git_root:
             diff_args.append("--relative")
         cp = run_git(repo, diff_args); diff_text = cp.stdout
@@ -1813,7 +1818,10 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable", "error", "git", "Git executable not found.")])
         if cp.returncode == GIT_RETURNCODE_TIMEOUT:
             return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_timeout", "error", "git", f"Git command timed out after {GIT_TIMEOUT_SECONDS} seconds.")])
-        if not staged:
+        if cp.returncode != 0:
+            message = cp.stderr.strip() or "Git diff failed."
+            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", message)])
+        if base_ref is None and head_ref is None and not staged:
             extra = untracked_files_as_diff(repo)
             if extra and not (added and _only_sourcepack_gitignore_change(repo)):
                 diff_text = (diff_text + "\n" + extra).strip() + "\n"
@@ -2149,10 +2157,10 @@ class Judgment:
         return policy_exit_code(self.verdict, self.policy_mode)
 
 
-def judge_repo_change(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, policy_mode: PolicyMode | str = PolicyMode.LOCAL) -> Judgment:
+def judge_repo_change(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, policy_mode: PolicyMode | str = PolicyMode.LOCAL, base_ref: str | None = None, head_ref: str | None = None) -> Judgment:
     """Judge repository changes without CLI parsing, stdout rendering, or cli.py imports."""
     mode = normalize_policy_mode(policy_mode)
-    report = build_repo_change_report(Path(repo_path).resolve(), staged=staged, patch_text=patch_text, ci=(mode is PolicyMode.CI))
+    report = build_repo_change_report(Path(repo_path).resolve(), staged=staged, patch_text=patch_text, ci=(mode is PolicyMode.CI), base_ref=base_ref, head_ref=head_ref)
     if mode is PolicyMode.CI:
         report["ci"] = True
     return Judgment(str(Path(repo_path).resolve()), mode, report)

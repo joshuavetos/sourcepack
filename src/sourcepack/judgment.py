@@ -1809,8 +1809,10 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         if repo != git_root:
             diff_args.append("--relative")
         cp = run_git(repo, diff_args); diff_text = cp.stdout
-        if cp.returncode == 127:
+        if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
             return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable", "error", "git", "Git executable not found.")])
+        if cp.returncode == GIT_RETURNCODE_TIMEOUT:
+            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_timeout", "error", "git", f"Git command timed out after {GIT_TIMEOUT_SECONDS} seconds.")])
         if not staged:
             extra = untracked_files_as_diff(repo)
             if extra and not (added and _only_sourcepack_gitignore_change(repo)):

@@ -1,0 +1,200 @@
+[IGN] .git/ - ignored_directory
+[IGN] .gitattributes - hidden_file
+[IGN] .github/ - hidden_directory
+[IGN] .gitignore - hidden_file
+[IGN] .pytest_cache/ - ignored_directory
+[IGN] .sourcepack-published - hidden_file
+[IGN] .sourcepack/ - ignored_directory
+[IGN] .sourcepack_corpus_cache/ - hidden_directory
+[IGN] examples/demo_repo/.env - hidden_file
+[IGN] examples/fake_ai_patch.diff - unsupported_extension
+[IGN] examples/golden/output/fail-protected-artifact/repo/.git/ - ignored_directory
+[IGN] examples/golden/output/fail-protected-artifact/repo/.gitignore - hidden_file
+[IGN] examples/golden/output/fail-protected-artifact/repo/.sourcepack/ - ignored_directory
+[IGN] examples/golden/output/fail-protected-artifact/repo/.sourcepackignore - hidden_file
+[IGN] examples/golden/output/fail-unsupported-command/repo/.git/ - ignored_directory
+[IGN] examples/golden/output/fail-unsupported-command/repo/.gitignore - hidden_file
+[IGN] examples/golden/output/fail-unsupported-command/repo/.sourcepack/ - ignored_directory
+[IGN] examples/golden/output/fail-unsupported-command/repo/.sourcepackignore - hidden_file
+[IGN] examples/golden/output/fail-unsupported-dependency/repo/.git/ - ignored_directory
+[IGN] examples/golden/output/fail-unsupported-dependency/repo/.gitignore - hidden_file
+[IGN] examples/golden/output/fail-unsupported-dependency/repo/.sourcepack/ - ignored_directory
+[IGN] examples/golden/output/fail-unsupported-dependency/repo/.sourcepackignore - hidden_file
+[IGN] examples/golden/output/pass-clean/repo/.git/ - ignored_directory
+[IGN] examples/golden/output/pass-clean/repo/.gitignore - hidden_file
+[IGN] examples/golden/output/pass-clean/repo/.sourcepack/ - ignored_directory
+[IGN] examples/golden/output/pass-clean/repo/.sourcepackignore - hidden_file
+[IGN] examples/golden/output/trust-boundary/repo/.git/ - ignored_directory
+[IGN] examples/golden/output/trust-boundary/repo/.gitignore - hidden_file
+[IGN] examples/golden/output/trust-boundary/repo/.sourcepack/ - ignored_directory
+[IGN] examples/golden/output/trust-boundary/repo/.sourcepackignore - hidden_file
+[IGN] examples/golden/output/warn-new-file/repo/.git/ - ignored_directory
+[IGN] examples/golden/output/warn-new-file/repo/.gitignore - hidden_file
+[IGN] examples/golden/output/warn-new-file/repo/.sourcepack/ - ignored_directory
+[IGN] examples/golden/output/warn-new-file/repo/.sourcepackignore - hidden_file
+[IGN] scripts/__pycache__/ - ignored_directory
+[IGN] src/sourcepack/__pycache__/ - ignored_directory
+[IGN] src/sourcepack/assets/__pycache__/ - ignored_directory
+[IGN] src/sourcepack/ecosystems/__pycache__/ - ignored_directory
+[IGN] src/sourcepack/examples/demo_repo/.env - hidden_file
+[IGN] src/sourcepack/examples/fake_ai_patch.diff - unsupported_extension
+[IGN] src/sourcepack/reports/__pycache__/ - ignored_directory
+[IGN] tests/__pycache__/ - ignored_directory
+[IGN] tools/__pycache__/ - ignored_directory
+[INC] CHANGELOG.md
+[INC] LICENSE
+[INC] README.md
+[INC] SECURITY.md
+[INC] action.yml
+[INC] corpus/repos.example.json
+[INC] docs/ai-agent-workflow.md
+[INC] docs/architecture.md
+[INC] docs/assets/README.md
+[INC] docs/baseline-lifecycle.md
+[INC] docs/ci.md
+[INC] docs/examples/sourcepack-action.yml
+[INC] docs/github-action-quickstart.md
+[INC] docs/limitations.md
+[INC] docs/problem-fit.md
+[INC] docs/public-alpha-readiness.md
+[INC] docs/real-corpus-validation.md
+[INC] docs/reason-codes.md
+[INC] docs/release-checklist.md
+[INC] docs/releases/v1.10.0a0-publish-checklist.md
+[INC] docs/releases/v1.10.0a0.md
+[INC] docs/systemic-upgrade-status.md
+[INC] docs/threat-model.md
+[INC] docs/vscode-extension-plan.md
+[INC] examples/demo_repo/README.md
+[INC] examples/demo_repo/pyproject.toml
+[INC] examples/demo_repo/sourcepack/cli.py
+[INC] examples/demo_repo/sourcepack/judge.py
+[INC] examples/demo_repo/sourcepack/verify.py
+[INC] examples/demo_repo/tests/test_verify.py
+[INC] examples/fake_ai_answer.md
+[INC] examples/golden/output/fail-protected-artifact/repo/README.md
+[INC] examples/golden/output/fail-protected-artifact/repo/pyproject.toml
+[INC] examples/golden/output/fail-protected-artifact/repo/sourcepack.config.json
+[INC] examples/golden/output/fail-protected-artifact/summary.json
+[INC] examples/golden/output/fail-protected-artifact/terminal.txt
+[INC] examples/golden/output/fail-unsupported-command/repo/README.md
+[INC] examples/golden/output/fail-unsupported-command/repo/package.json
+[INC] examples/golden/output/fail-unsupported-command/repo/pyproject.toml
+[INC] examples/golden/output/fail-unsupported-command/repo/sourcepack.config.json
+[INC] examples/golden/output/fail-unsupported-command/summary.json
+[INC] examples/golden/output/fail-unsupported-command/terminal.txt
+[INC] examples/golden/output/fail-unsupported-dependency/repo/README.md
+[INC] examples/golden/output/fail-unsupported-dependency/repo/app.py
+[INC] examples/golden/output/fail-unsupported-dependency/repo/pyproject.toml
+[INC] examples/golden/output/fail-unsupported-dependency/repo/sourcepack.config.json
+[INC] examples/golden/output/fail-unsupported-dependency/summary.json
+[INC] examples/golden/output/fail-unsupported-dependency/terminal.txt
+[INC] examples/golden/output/pass-clean/repo/README.md
+[INC] examples/golden/output/pass-clean/repo/pyproject.toml
+[INC] examples/golden/output/pass-clean/repo/sourcepack.config.json
+[INC] examples/golden/output/pass-clean/summary.json
+[INC] examples/golden/output/pass-clean/terminal.txt
+[INC] examples/golden/output/trust-boundary/repo/README.md
+[INC] examples/golden/output/trust-boundary/repo/deploy.sh
+[INC] examples/golden/output/trust-boundary/repo/pyproject.toml
+[INC] examples/golden/output/trust-boundary/repo/sourcepack.config.json
+[INC] examples/golden/output/trust-boundary/summary.json
+[INC] examples/golden/output/trust-boundary/terminal.txt
+[INC] examples/golden/output/warn-new-file/repo/README.md
+[INC] examples/golden/output/warn-new-file/repo/api.py
+[INC] examples/golden/output/warn-new-file/repo/pyproject.toml
+[INC] examples/golden/output/warn-new-file/repo/sourcepack.config.json
+[INC] examples/golden/output/warn-new-file/summary.json
+[INC] examples/golden/output/warn-new-file/terminal.txt
+[INC] pyproject.toml
+[INC] pytest.ini
+[INC] schemas/judgment_report.schema.json
+[INC] schemas/patch_judgment_report.schema.json
+[INC] schemas/reality_map.schema.json
+[INC] schemas/receipt.schema.json
+[INC] scripts/__init__.py
+[INC] scripts/release_smoke.py
+[INC] scripts/sourcepack_action.py
+[INC] src/sourcepack/__init__.py
+[INC] src/sourcepack/assets/__init__.py
+[INC] src/sourcepack/assets/audit_template.md
+[INC] src/sourcepack/assets/packet_instructions.md
+[INC] src/sourcepack/baseline.py
+[INC] src/sourcepack/cli.py
+[INC] src/sourcepack/commands.py
+[INC] src/sourcepack/dependencies.py
+[INC] src/sourcepack/diff_parser.py
+[INC] src/sourcepack/ecosystems/__init__.py
+[INC] src/sourcepack/ecosystems/generic.py
+[INC] src/sourcepack/ecosystems/node.py
+[INC] src/sourcepack/ecosystems/python.py
+[INC] src/sourcepack/errors.py
+[INC] src/sourcepack/evidence.py
+[INC] src/sourcepack/examples/demo_repo/README.md
+[INC] src/sourcepack/examples/demo_repo/pyproject.toml
+[INC] src/sourcepack/examples/demo_repo/sourcepack/cli.py
+[INC] src/sourcepack/examples/demo_repo/sourcepack/judge.py
+[INC] src/sourcepack/examples/demo_repo/sourcepack/verify.py
+[INC] src/sourcepack/examples/demo_repo/tests/test_verify.py
+[INC] src/sourcepack/examples/fake_ai_answer.md
+[INC] src/sourcepack/execution_ledger.py
+[INC] src/sourcepack/git.py
+[INC] src/sourcepack/judgment.py
+[INC] src/sourcepack/packet.py
+[INC] src/sourcepack/paths.py
+[INC] src/sourcepack/policy.py
+[INC] src/sourcepack/reason_codes.py
+[INC] src/sourcepack/replay.py
+[INC] src/sourcepack/reports/__init__.py
+[INC] src/sourcepack/reports/html.py
+[INC] src/sourcepack/reports/json.py
+[INC] src/sourcepack/reports/markdown.py
+[INC] src/sourcepack/reports/sarif.py
+[INC] src/sourcepack/schemas.py
+[INC] src/sourcepack/workbench.py
+[INC] src/sourcepack/workbench_static/index.html
+[INC] tests/__init__.py
+[INC] tests/simulation_helpers.py
+[INC] tests/test_baseline_integrity.py
+[INC] tests/test_baseline_lifecycle.py
+[INC] tests/test_baseline_lifecycle_cli.py
+[INC] tests/test_behavior_matrix.py
+[INC] tests/test_ci_docs_truth.py
+[INC] tests/test_clipboard.py
+[INC] tests/test_command_resolver.py
+[INC] tests/test_confidence_report.py
+[INC] tests/test_core_rendering.py
+[INC] tests/test_dependency_inventory_behavior.py
+[INC] tests/test_dependency_resolver.py
+[INC] tests/test_diff_parser.py
+[INC] tests/test_engine_inversion.py
+[INC] tests/test_evidence_model.py
+[INC] tests/test_execution_ledger.py
+[INC] tests/test_final_boss_integration.py
+[INC] tests/test_gauntlet.py
+[INC] tests/test_git.py
+[INC] tests/test_github_action.py
+[INC] tests/test_golden_demo.py
+[INC] tests/test_judgment.py
+[INC] tests/test_judgment_hardening.py
+[INC] tests/test_local_policy.py
+[INC] tests/test_policy_integration.py
+[INC] tests/test_policy_validation.py
+[INC] tests/test_readme_truth.py
+[INC] tests/test_real_corpus_validation.py
+[INC] tests/test_reason_code_docs.py
+[INC] tests/test_release_docs.py
+[INC] tests/test_release_smoke.py
+[INC] tests/test_replay_audit.py
+[INC] tests/test_report_ui.py
+[INC] tests/test_reports_json.py
+[INC] tests/test_scanner_behavior.py
+[INC] tests/test_secret_redaction.py
+[INC] tests/test_simulation_harness.py
+[INC] tests/test_smoke.py
+[INC] tests/test_ugly_repos.py
+[INC] tests/test_workbench.py
+[INC] tools/behavior_matrix.py
+[INC] tools/golden_demo.py
+[INC] tools/real_corpus_validation.py
+[INC] tools/release_smoke.py

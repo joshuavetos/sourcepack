@@ -1,0 +1,9 @@
+{
+  "created_at": "2026-07-05T19:02:56.143976+00:00",
+  "packet_path": ".sourcepack/baseline/builds/20260705T190255587814Z-23372/packet",
+  "scanner_config_hash": "275a9b238ead2e3f9c8f865c3abd22660c066174eb57177beb003b63386e4031",
+  "branch": "work",
+  "head_commit": "aa081bcd941a1f7389f1dae7a3a86805b59fe472",
+  "dirty": true,
+  "dirty_state": null
+}

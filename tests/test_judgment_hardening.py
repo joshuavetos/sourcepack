@@ -115,6 +115,24 @@ def test_build_repo_change_report_initial_git_timeout(monkeypatch, tmp_path):
     assert "no_git_repo" not in finding_ids
 
 
+def test_build_repo_change_report_later_git_diff_timeout_fails(monkeypatch, tmp_path):
+    def fake_run_git(repo, args):
+        if args == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(["git", *args], 0, str(tmp_path), "")
+        if args == ["diff"]:
+            return subprocess.CompletedProcess(["git", *args], judgment.GIT_RETURNCODE_TIMEOUT, "", "timeout")
+        raise AssertionError(f"unexpected git call: {args}")
+
+    monkeypatch.setattr(judgment, "run_git", fake_run_git)
+
+    report = judgment.build_repo_change_report(tmp_path)
+    finding_ids = {finding.get("id") for finding in report.get("findings", [])}
+
+    assert report["verdict"] == "FAIL"
+    assert "git_timeout" in finding_ids
+    assert "no_diff" not in finding_ids
+
+
 def test_tracked_file_inventory_marks_unsafe_git_paths(monkeypatch, tmp_path):
     def fake_run_git(repo, args):
         assert args == ["ls-files", "-z"]

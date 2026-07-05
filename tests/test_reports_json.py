@@ -1,5 +1,3 @@
-import pytest
-
 from sourcepack.reports.json import normalized_finding, traffic_report
 
 
@@ -18,10 +16,13 @@ def test_normalized_finding_preserves_fields_and_canonicalizes_id():
 
 
 def test_normalized_finding_rejects_unknown_error_and_warn_but_allows_info():
-    with pytest.raises(ValueError):
-        normalized_finding("not_a_code", "error", "review", "bad")
-    with pytest.raises(ValueError):
-        normalized_finding("not_a_code", "warn", "review", "bad")
+    for severity in ("error", "warn"):
+        try:
+            normalized_finding("not_a_code", severity, "review", "bad")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{severity} severity accepted an unknown reason code")
 
     finding = normalized_finding("not_a_code", "info", "review", "note")
     assert finding["id"] == "not_a_code"

@@ -30,12 +30,17 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
           BASELINE_TRUST_LABEL_PRESENT: ${{ contains(github.event.pull_request.labels.*.name, 'baseline-trust-update') }}
           WORKFLOW_TRUST_LABEL_PRESENT: ${{ contains(github.event.pull_request.labels.*.name, 'workflow-trust-update') }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
         run: |
           set +e
           report_path="$RUNNER_TEMP/sourcepack-self-dogfood.json"
-          python -B -m sourcepack.cli diff . --ci --json --base-ref "$BASE_SHA" --head-ref "$HEAD_SHA" > "$report_path"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            python -B -m sourcepack.cli diff . --ci --json --base-ref "$BASE_SHA" --head-ref "$HEAD_SHA" > "$report_path"
+          else
+            python -B -m sourcepack.cli diff . --ci --json > "$report_path"
+          fi
           sourcepack_status=$?
           cat "$report_path"
           set -e
@@ -52,13 +57,14 @@ jobs:
 
           sourcepack_status = int(sys.argv[1])
           report_path = sys.argv[2]
+          event_name = os.environ.get("EVENT_NAME", "")
           baseline_label_present = os.environ.get("BASELINE_TRUST_LABEL_PRESENT") == "true"
           workflow_label_present = os.environ.get("WORKFLOW_TRUST_LABEL_PRESENT") == "true"
           base_sha = os.environ.get("BASE_SHA", "")
           head_sha = os.environ.get("HEAD_SHA", "")
 
           def changed_files() -> list[str]:
-              if not base_sha or not head_sha:
+              if event_name != "pull_request" or not base_sha or not head_sha:
                   return []
               result = subprocess.run(
                   ["git", "diff", "--name-only", f"{base_sha}...{head_sha}"],

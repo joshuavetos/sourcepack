@@ -194,7 +194,9 @@ def test_sourcepack_workflow_avoids_duplicate_unlabelled_pr_branch_push_checks()
     assert "github.event.pull_request.labels.*.name" in text
     assert "BASELINE_TRUST_LABEL_PRESENT" in text
     assert "WORKFLOW_TRUST_LABEL_PRESENT" in text
-    assert "github.event.pull_request.base.sha || github.event.before" in text
+    assert "EVENT_NAME: ${{ github.event_name }}" in text
+    assert "BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}" in text
+    assert "HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}" in text
 
 
 def test_sourcepack_workflow_dogfoods_committed_baseline_without_creating_trust_state():
@@ -746,11 +748,14 @@ def test_composite_action_like_prompt_context_does_not_satisfy_missing_baseline(
 def test_sourcepack_workflow_self_dogfood_judges_base_head_range():
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     command = 'python -B -m sourcepack.cli diff . --ci --json --base-ref "$BASE_SHA" --head-ref "$HEAD_SHA" > "$report_path"'
+    push_command = 'python -B -m sourcepack.cli diff . --ci --json > "$report_path"'
     assert command in text
-    assert 'python -B -m sourcepack.cli diff . --ci --json > "$report_path"' not in text
-    assert 'BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}' in text
-    assert 'HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}' in text
+    assert push_command in text
+    assert 'if [ "$EVENT_NAME" = "pull_request" ]; then' in text
+    assert "BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}" in text
+    assert "HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}" in text
     assert 'def changed_files() -> list[str]:' in text
+    assert 'if event_name != "pull_request" or not base_sha or not head_sha:' in text
     assert '"diff", "--name-only", f"{base_sha}...{head_sha}"' in text
     for forbidden in ("sourcepack baseline", "sourcepack init", "baseline --force", "continue-on-error: true"):
         assert forbidden not in text

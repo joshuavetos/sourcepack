@@ -398,6 +398,34 @@ diff --git a/README.md b/README.md
             self.assertIn("unsupported_ecosystem", finding_ids)
 
 
+    def test_workspace_scoped_package_with_windows_style_packet_paths_is_supported(self):
+        with TemporaryDirectory() as td:
+            repo = self.make_repo(Path(td), {
+                "package.json": '{"workspaces": ["packages/*"]}',
+                "packages/core/package.json": '{"name":"@myorg/core"}',
+                "app.js": "console.log(1)\n",
+            })
+            packet = repo / validate_baseline(repo)["packet_path"]
+            manifest_path = packet / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for rec in manifest["included_files"]:
+                rec["relative_path"] = rec["relative_path"].replace("/", "\\")
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            context_path = packet / "context.md"
+            context_path.write_text(context_path.read_text(encoding="utf-8").replace("packages/core/package.json", "packages\\core\\package.json"), encoding="utf-8")
+
+            report = judge_patch_text(packet, """diff --git a/use.js b/use.js
+new file mode 100644
+--- /dev/null
++++ b/use.js
+@@ -0,0 +1 @@
++import { shared } from "@myorg/core/utils"
+""")
+            traffic = __import__("sourcepack.cli", fromlist=["patch_report_to_traffic"]).patch_report_to_traffic(report)
+
+            self.assertNotIn("unsupported_dependency", {finding.get("id") for finding in traffic.get("findings", [])})
+
+
 if __name__ == "__main__":
     unittest.main()
 

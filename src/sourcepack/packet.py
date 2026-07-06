@@ -10,17 +10,17 @@ import subprocess
 import tomllib
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable
 from xml.sax.saxutils import escape as xml_escape
 
+from .diff_parser import normalize_diff_path
 from .ecosystems.python import PY_IMPORT_ALIASES
 
 try:
     from . import __version__
 except Exception:
     __version__ = "1.10.0-alpha"
-
 
 
 DEFAULT_IGNORED_DIRS = {
@@ -86,6 +86,28 @@ def matches_any(name: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
 
+def _decode_git_path(raw: bytes) -> str:
+    return raw.decode("utf-8", "surrogateescape").replace("\\", "/")
+
+
+def _git_tracked_paths(root: Path) -> set[str] | None:
+    try:
+        cp = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=root,
+            text=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except (OSError, ValueError):
+        return None
+
+    if cp.returncode != 0:
+        return None
+
+    return {_decode_git_path(path) for path in cp.stdout.split(b"\0") if path}
+
+
 def redact_secrets(text: str):
     redactions = []
     redacted = text
@@ -117,11 +139,19 @@ class IgnoredFile:
 
 
 class SourceScanner:
-    def __init__(self, input_path: str | Path, max_file_size: int = 1_000_000, include_hidden: bool = False, redact: bool = True):
+    def __init__(
+        self,
+        input_path: str | Path,
+        max_file_size: int = 1_000_000,
+        include_hidden: bool = False,
+        redact: bool = True,
+        trust_git_tracked: bool = True,
+    ):
         self.input_path = Path(input_path).resolve()
         self.max_file_size = max_file_size
         self.include_hidden = include_hidden
         self.redact = redact
+        self.trust_git_tracked = trust_git_tracked
         self.included_files: list[IncludedFile] = []
         self.ignored_files: list[IgnoredFile] = []
         self.redactions: list[dict] = []
@@ -129,76 +159,109 @@ class SourceScanner:
 
     def ignore(self, path: Path, reason: str):
         rel = str(path.relative_to(self.input_path)) if path.is_absolute() or self.input_path in path.parents else str(path)
-        self.ignored_files.append(IgnoredFile(rel, reason))
+        self.ignored_files.append(IgnoredFile(rel.replace("\\", "/"), reason))
+
+    def _include_file(self, fp: Path, rel_str: str) -> None:
+        try:
+            size = fp.stat().st_size
+        except OSError:
+            self.ignored_files.append(IgnoredFile(rel_str, "stat_error"))
+            return
+
+        if size > self.max_file_size:
+            self.ignored_files.append(IgnoredFile(rel_str, "max_file_size_exceeded"))
+            return
+
+        if fp.suffix and fp.suffix.lower() not in DEFAULT_TEXT_EXTENSIONS:
+            self.ignored_files.append(IgnoredFile(rel_str, "unsupported_extension"))
+            return
+
+        if is_probably_binary(fp):
+            self.ignored_files.append(IgnoredFile(rel_str, "binary_detected"))
+            return
+
+        try:
+            content = fp.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            self.ignored_files.append(IgnoredFile(rel_str, "decode_error"))
+            return
+        except OSError:
+            self.ignored_files.append(IgnoredFile(rel_str, "read_error"))
+            return
+
+        source_sha256 = sha256_text(content)
+        if self.redact:
+            redacted, reds = redact_secrets(content)
+            for r in reds:
+                r["file"] = rel_str
+            self.redactions.extend(reds)
+            content = redacted
+
+        packet_sha256 = sha256_text(content)
+        self.included_files.append(IncludedFile(
+            relative_path=rel_str,
+            absolute_path=str(fp.resolve()),
+            size_bytes=size,
+            sha256=packet_sha256,
+            source_sha256=source_sha256,
+            packet_sha256=packet_sha256,
+            estimated_tokens=estimate_tokens(content),
+            extension=fp.suffix.lower(),
+            content=content,
+        ))
 
     def scan(self):
         if not self.input_path.exists():
             raise FileNotFoundError(f"Input path does not exist: {self.input_path}")
         if not self.input_path.is_dir():
             raise NotADirectoryError(f"Input path is not a directory: {self.input_path}")
+
+        tracked_paths = _git_tracked_paths(self.input_path) if self.trust_git_tracked else None
+
         for root, dirs, files in os.walk(self.input_path, followlinks=False):
             root_path = Path(root)
             dirs[:] = sorted(dirs)
             files = sorted(files)
             kept_dirs = []
+
             for d in dirs:
                 dpath = root_path / d
                 rel = dpath.relative_to(self.input_path)
+                rel_str = str(rel).replace("\\", "/")
                 if d in DEFAULT_IGNORED_DIRS:
-                    self.ignored_files.append(IgnoredFile(str(rel) + "/", "ignored_directory"))
+                    self.ignored_files.append(IgnoredFile(rel_str + "/", "ignored_directory"))
                 elif not self.include_hidden and d.startswith("."):
-                    self.ignored_files.append(IgnoredFile(str(rel) + "/", "hidden_directory"))
+                    self.ignored_files.append(IgnoredFile(rel_str + "/", "hidden_directory"))
                 elif dpath.is_symlink():
-                    self.ignored_files.append(IgnoredFile(str(rel) + "/", "symlink_skipped"))
+                    self.ignored_files.append(IgnoredFile(rel_str + "/", "symlink_skipped"))
                 else:
                     kept_dirs.append(d)
             dirs[:] = kept_dirs
+
             for filename in files:
                 fp = root_path / filename
                 rel = fp.relative_to(self.input_path)
+                rel_str = str(rel).replace("\\", "/")
                 self.total_seen += 1
-                rel_str = str(rel)
+
                 if fp.is_symlink():
-                    self.ignored_files.append(IgnoredFile(rel_str, "symlink_skipped")); continue
+                    self.ignored_files.append(IgnoredFile(rel_str, "symlink_skipped"))
+                    continue
+
                 if not self.include_hidden and filename.startswith("."):
-                    self.ignored_files.append(IgnoredFile(rel_str, "hidden_file")); continue
+                    self.ignored_files.append(IgnoredFile(rel_str, "hidden_file"))
+                    continue
+
                 if matches_any(filename, DEFAULT_IGNORED_PATTERNS) or matches_any(rel_str, DEFAULT_IGNORED_PATTERNS):
-                    self.ignored_files.append(IgnoredFile(rel_str, "ignored_pattern")); continue
-                try:
-                    size = fp.stat().st_size
-                except OSError:
-                    self.ignored_files.append(IgnoredFile(rel_str, "stat_error")); continue
-                if size > self.max_file_size:
-                    self.ignored_files.append(IgnoredFile(rel_str, "max_file_size_exceeded")); continue
-                if fp.suffix and fp.suffix.lower() not in DEFAULT_TEXT_EXTENSIONS:
-                    self.ignored_files.append(IgnoredFile(rel_str, "unsupported_extension")); continue
-                if is_probably_binary(fp):
-                    self.ignored_files.append(IgnoredFile(rel_str, "binary_detected")); continue
-                try:
-                    content = fp.read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    self.ignored_files.append(IgnoredFile(rel_str, "decode_error")); continue
-                except OSError:
-                    self.ignored_files.append(IgnoredFile(rel_str, "read_error")); continue
-                source_sha256 = sha256_text(content)
-                if self.redact:
-                    redacted, reds = redact_secrets(content)
-                    for r in reds:
-                        r["file"] = rel_str
-                    self.redactions.extend(reds)
-                    content = redacted
-                packet_sha256 = sha256_text(content)
-                self.included_files.append(IncludedFile(
-                    relative_path=rel_str,
-                    absolute_path=str(fp.resolve()),
-                    size_bytes=size,
-                    sha256=packet_sha256,
-                    source_sha256=source_sha256,
-                    packet_sha256=packet_sha256,
-                    estimated_tokens=estimate_tokens(content),
-                    extension=fp.suffix.lower(),
-                    content=content,
-                ))
+                    self.ignored_files.append(IgnoredFile(rel_str, "ignored_pattern"))
+                    continue
+
+                if tracked_paths is not None and rel_str not in tracked_paths:
+                    self.ignored_files.append(IgnoredFile(rel_str, "untracked_file_skipped"))
+                    continue
+
+                self._include_file(fp, rel_str)
+
         self.included_files.sort(key=lambda x: x.relative_path)
         self.ignored_files.sort(key=lambda x: x.relative_path)
         return self
@@ -207,19 +270,13 @@ class SourceScanner:
 def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
     included = {str(rec.get("relative_path", "")).replace("\\", "/") for rec in included_records}
     files: list[dict] = []
-    source = "scanner_included_files"
-    try:
-        cp = subprocess.run(["git", "ls-files", "-z"], cwd=root, text=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except (OSError, ValueError):
-        cp = None
-    if cp is not None and cp.returncode == 0:
-        raw_paths = [p.decode("utf-8", "surrogateescape") for p in cp.stdout.split(b"\0") if p]
-        source = "git_ls_files" if raw_paths else "scanner_included_files"
-        if not raw_paths:
-            raw_paths = sorted(included)
-    else:
+    raw_paths = _git_tracked_paths(root)
+    source = "git_ls_files" if raw_paths is not None else "scanner_included_files"
+
+    if raw_paths is None:
         raw_paths = sorted(included)
-    for raw in raw_paths:
+
+    for raw in sorted(raw_paths):
         rel = raw.replace("\\", "/")
         path = root / rel
         rec = {"relative_path": rel, "included_in_prompt_context": rel in included, "source": source}
@@ -314,7 +371,6 @@ class PacketWriter:
         receipt = {"generated_at": utc_now(), "tool_version": __version__, "hashes": hashes}
         (self.out / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
         return self.out
-
 
 
 def _included_paths(manifest: dict) -> set[str]:
@@ -489,6 +545,7 @@ def render_ai_instructions(reality_map: dict) -> str:
     lines.extend(f"- {boundary}" for boundary in reality_map.get("claim_boundaries", []))
     return "\n".join(lines) + "\n"
 
+
 def load_manifest(packet: Path) -> dict:
     return json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
 
@@ -532,7 +589,6 @@ def verify_packet(packet_path: str | Path, against: str | Path | None = None) ->
                     ok = False
                     continue
                 expected_source_hash = rec.get("source_sha256")
-                expected_source_hash = rec.get("source_sha256")
                 if expected_source_hash is None:
                     expected_source_hash = rec.get("sha256")
                     redacted, _ = redact_secrets(content)
@@ -542,6 +598,8 @@ def verify_packet(packet_path: str | Path, against: str | Path | None = None) ->
                 if content_hash != expected_source_hash:
                     print(f"FAIL source changed {rel}")
                     ok = False
+
+        tracked_paths = _git_tracked_paths(source)
         current_files = []
         for root, dirs, files in os.walk(source, followlinks=False):
             dirs[:] = [d for d in sorted(dirs) if d not in DEFAULT_IGNORED_DIRS and not d.startswith(".")]
@@ -549,7 +607,9 @@ def verify_packet(packet_path: str | Path, against: str | Path | None = None) ->
                 fp = Path(root) / filename
                 if filename.startswith(".") or fp.suffix.lower() not in DEFAULT_TEXT_EXTENSIONS:
                     continue
-                rel = str(fp.relative_to(source))
+                rel = str(fp.relative_to(source)).replace("\\", "/")
+                if tracked_paths is not None and rel not in tracked_paths:
+                    continue
                 if rel not in included:
                     current_files.append(rel)
         for rel in current_files:
@@ -571,7 +631,7 @@ def _normalize_ai_ref(ref: str) -> str | None:
         ref = ref[2:]
     if not ref or ref.startswith("/") or re.match(r"^[A-Za-z]:/", ref):
         return None
-    normalized, unsafe = _normalize_diff_path(ref)
+    normalized, unsafe = normalize_diff_path(ref)
     if unsafe or not normalized:
         return None
     return normalized
@@ -824,7 +884,6 @@ def feature_inventory(manifest: dict, packet: Path, deps: set[str] | None = None
     return features
 
 
-
 def scanner_config_hash() -> str:
     payload = {
         "ignored_dirs": sorted(DEFAULT_IGNORED_DIRS),
@@ -833,5 +892,6 @@ def scanner_config_hash() -> str:
         "max_file_size": 1_000_000,
         "include_hidden": False,
         "redact": True,
+        "trust_git_tracked": True,
     }
     return sha256_text(json.dumps(payload, sort_keys=True))

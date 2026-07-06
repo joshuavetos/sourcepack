@@ -86,6 +86,23 @@ def test_source_scanner_falls_back_to_filesystem_when_git_has_no_tracked_files(t
     assert "app.py" in included_paths(scanner)
     assert ignored_reasons(scanner).get("app.py") != "untracked_file_skipped"
 
+
+def test_source_scanner_skips_untracked_files_in_empty_tracked_subdirectory(tmp_path):
+    init_git_repo(tmp_path)
+
+    (tmp_path / "app.py").write_text("def answer():\n    return 42\n", encoding="utf-8")
+    git_add_commit(tmp_path, "app.py")
+
+    scan_root = tmp_path / "examples" / "golden" / "output" / "fail-unsupported-dependency" / "repo"
+    scan_root.mkdir(parents=True)
+    (scan_root / "generated.py").write_text("import fastapi\n", encoding="utf-8")
+
+    scanner = SourceScanner(scan_root).scan()
+
+    assert included_paths(scanner) == []
+    assert ignored_reasons(scanner)["generated.py"] == "untracked_file_skipped"
+
+
 def test_source_scanner_uses_tracked_files_as_trust_boundary_in_git_repo(tmp_path):
     init_git_repo(tmp_path)
 
@@ -113,6 +130,35 @@ def test_source_scanner_preserves_existing_filesystem_behavior_outside_git_repo(
     scanner = SourceScanner(tmp_path).scan()
 
     assert included_paths(scanner) == ["scratch.py", "tracked_by_nothing.py"]
+
+
+def test_source_scanner_includes_tracked_files_relative_to_tracked_subdirectory(tmp_path):
+    init_git_repo(tmp_path)
+
+    package = tmp_path / "packages" / "api"
+    package.mkdir(parents=True)
+    (package / "app.py").write_text("def app():\n    return 'api'\n", encoding="utf-8")
+    (package / "untracked.py").write_text("print('generated')\n", encoding="utf-8")
+    git_add_commit(tmp_path, "packages/api/app.py")
+
+    scanner = SourceScanner(package).scan()
+
+    assert included_paths(scanner) == ["app.py"]
+    assert ignored_reasons(scanner)["untracked.py"] == "untracked_file_skipped"
+
+
+def test_source_scanner_preserves_filesystem_behavior_when_git_command_fails(tmp_path, monkeypatch):
+    (tmp_path / "app.py").write_text("print('included when git unavailable')\n", encoding="utf-8")
+
+    def fail_git(*args, **kwargs):
+        raise OSError("git unavailable")
+
+    monkeypatch.setattr(subprocess, "run", fail_git)
+
+    scanner = SourceScanner(tmp_path).scan()
+
+    assert included_paths(scanner) == ["app.py"]
+    assert ignored_reasons(scanner).get("app.py") != "untracked_file_skipped"
 
 
 def test_packet_writer_does_not_derive_reality_from_untracked_generated_output(tmp_path):

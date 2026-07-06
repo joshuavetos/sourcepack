@@ -410,7 +410,9 @@ def test_wrapper_uses_which_resolved_fake_sourcepack_command(tmp_path, monkeypat
     fake = write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n', calls_file=calls_file)
     monkeypatch.setenv("PATH", path_with(bin_dir))
     module = load_wrapper()
-    assert module.shutil.which("sourcepack") == str(fake)
+    resolved = module.shutil.which("sourcepack")
+    assert resolved is not None
+    assert norm_path_for_compare(resolved) == norm_path_for_compare(str(fake))
     code = module.main([
         "--repo", str(tmp_path),
         "--baseline-path", ".sourcepack/baseline",

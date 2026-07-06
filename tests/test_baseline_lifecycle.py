@@ -269,14 +269,18 @@ def _write_receipt(repo: Path, receipt: dict) -> None:
     _receipt_path(repo).write_text(json.dumps(receipt, indent=2), encoding="utf-8")
 
 
-def _assert_verify_corrupt_reason(repo: Path, reason: str) -> dict:
+def assert_corrupt_reason_contains_one_of(repo: Path, reasons: set[str]) -> dict:
     cp, status = json_cli(repo, "baseline", "verify", "--json")
     assert cp.returncode != 0
     assert status["state"] == "corrupt"
-    assert reason in status["details"]["reason"]
+    assert any(reason in status["details"]["reason"] for reason in reasons)
     data = assert_ci_diff_fails_closed(repo, "baseline_corrupt")
     assert data["baseline_state"] == "corrupt"
     return status
+
+
+def _assert_verify_corrupt_reason(repo: Path, reason: str) -> dict:
+    return assert_corrupt_reason_contains_one_of(repo, {reason})
 
 
 def test_receipt_absolute_artifact_path_fails_verification_and_diff_closed(tmp_path: Path) -> None:
@@ -286,7 +290,13 @@ def test_receipt_absolute_artifact_path_fails_verification_and_diff_closed(tmp_p
     receipt["hashes"]["/tmp/outside.txt"] = "0" * 64
     _write_receipt(repo, receipt)
 
-    _assert_verify_corrupt_reason(repo, "receipt.json tracks unsafe artifact path")
+    assert_corrupt_reason_contains_one_of(
+        repo,
+        {
+            "receipt.json tracks unsafe artifact path",
+            "receipt.json tracks path outside packet",
+        },
+    )
 
 
 def test_receipt_traversal_artifact_path_fails_verification_and_diff_closed(tmp_path: Path) -> None:

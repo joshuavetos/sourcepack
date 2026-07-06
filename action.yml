@@ -93,6 +93,11 @@ runs:
             'This is a trust-boundary behavior, not a package crash.')"
           printf '%s\n' "$MESSAGE" | tee "$REPORT_DIR/sourcepack.stderr.txt" >&2
           printf '%s\n' 'baseline preflight' > "$REPORT_DIR/sourcepack-command.txt"
+          cat > "$REPORT_DIR/sourcepack-command.json" <<'JSON'
+{
+  "command": ["baseline preflight"]
+}
+JSON
           : > "$REPORT_DIR/sourcepack.stdout.txt"
           {
             printf '%s\n\n' '# SourcePack Action summary'
@@ -105,7 +110,7 @@ runs:
               printf '%s\n' '- WARN fails in selected mode: false'
             fi
             printf '%s\n' "- Report directory: $REPORT_DIR"
-            printf '%s\n' '- Artifacts: sourcepack.stderr.txt, sourcepack.stdout.txt, sourcepack-command.txt'
+            printf '%s\n' '- Artifacts: sourcepack.stderr.txt, sourcepack.stdout.txt, sourcepack-command.txt, sourcepack-command.json'
             printf '%s\n' '- Missing baseline: SourcePack failed closed because trusted baseline state is missing. CI will not create or update trusted baseline state. Create or refresh the baseline locally or in a separate trusted maintainer-controlled setup workflow. This is a trust-boundary behavior, not a package crash.'
           } > "$REPORT_DIR/sourcepack.md"
           if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then

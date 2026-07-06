@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import os
 import shlex
 import subprocess
 import sys
@@ -9,6 +11,18 @@ ACTION = ROOT / "action.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "sourcepack.yml"
 EXAMPLE_WORKFLOW = ROOT / "docs" / "examples" / "sourcepack-action.yml"
 WRAPPER = ROOT / "scripts" / "sourcepack_action.py"
+
+
+def norm_path_for_compare(value: str) -> str:
+    return os.path.normcase(os.path.normpath(value))
+
+
+def read_command_json(report_dir: Path) -> list[str]:
+    data = json.loads((report_dir / "sourcepack-command.json").read_text(encoding="utf-8"))
+    command = data["command"]
+    assert isinstance(command, list)
+    assert all(isinstance(item, str) for item in command)
+    return command
 
 
 def load_action():
@@ -85,7 +99,6 @@ def test_required_inputs_exist():
     assert inputs["baseline-path"]["default"] == ".sourcepack/baseline"
 
 
-
 def run_bodies(text: str) -> list[str]:
     bodies: list[str] = []
     lines = text.splitlines()
@@ -145,7 +158,15 @@ def test_action_writes_or_preserves_report_output():
     assert "sourcepack.stderr.txt" in text
     assert "sourcepack.stdout.txt" in text
     assert "sourcepack-command.txt" in text
+    assert "sourcepack-command.json" in text
     assert "upload-artifact" in text
+
+
+def test_action_missing_baseline_preflight_writes_structured_command_artifact():
+    text = action_text()
+    assert 'cat > "$REPORT_DIR/sourcepack-command.json"' in text
+    assert '"command": ["baseline preflight"]' in text
+    assert "sourcepack-command.txt, sourcepack-command.json" in text
 
 
 def test_ci_workflow_keeps_existing_validation_gates():
@@ -170,8 +191,6 @@ def test_ci_workflow_keeps_existing_validation_gates():
         "python tools/release_smoke.py",
     ]
     assert [token for token in required if token not in text] == []
-
-
 
 
 def test_sourcepack_workflow_limits_push_to_main_and_keeps_pr_trigger():
@@ -214,7 +233,6 @@ def test_sourcepack_workflow_dogfoods_committed_baseline_without_creating_trust_
     assert "baseline --force" not in text
 
 
-
 def test_sourcepack_workflow_baseline_trust_exception_is_label_gated_and_narrow():
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "BASELINE_TRUST_LABEL_PRESENT" in text
@@ -223,7 +241,6 @@ def test_sourcepack_workflow_baseline_trust_exception_is_label_gated_and_narrow(
     assert "Protected baseline artifact changes require 'baseline-trust-update'." in text
     assert "baseline_label_present" in text
     assert "without creating, refreshing, repairing, or blessing baseline state" in text
-
 
 
 def test_sourcepack_workflow_workflow_trust_exception_is_label_gated_and_narrow():
@@ -332,7 +349,9 @@ def test_wrapper_creates_report_dir_and_captures_command_output(tmp_path, monkey
     code = module.main(["--repo", str(tmp_path), "--baseline-path", ".sourcepack/baseline", "--report-dir", "reports"])
     assert code == 0
     report_dir = tmp_path / "reports"
-    assert (report_dir / "sourcepack-command.txt").read_text(encoding="utf-8").startswith(f"{fake} diff")
+    command = read_command_json(report_dir)
+    assert norm_path_for_compare(command[0]) == norm_path_for_compare(str(fake))
+    assert command[1:3] == ["diff", str(tmp_path.resolve())]
     assert "PASS" in (report_dir / "sourcepack.stdout.txt").read_text(encoding="utf-8")
     assert "err" in (report_dir / "sourcepack.stderr.txt").read_text(encoding="utf-8")
     assert (report_dir / "sourcepack.json").exists()
@@ -399,7 +418,9 @@ def test_wrapper_uses_which_resolved_fake_sourcepack_command(tmp_path, monkeypat
     fake = write_fake_sourcepack(bin_dir, stdout='{"verdict":"PASS"}\n', calls_file=calls_file)
     monkeypatch.setenv("PATH", path_with(bin_dir))
     module = load_wrapper()
-    assert module.shutil.which("sourcepack") == str(fake)
+    resolved = module.shutil.which("sourcepack")
+    assert resolved is not None
+    assert norm_path_for_compare(resolved) == norm_path_for_compare(str(fake))
     code = module.main([
         "--repo", str(tmp_path),
         "--baseline-path", ".sourcepack/baseline",
@@ -407,8 +428,8 @@ def test_wrapper_uses_which_resolved_fake_sourcepack_command(tmp_path, monkeypat
     ])
     assert code == 0
     assert calls_file.exists()
-    command = (tmp_path / "reports" / "sourcepack-command.txt").read_text(encoding="utf-8")
-    assert str(fake) in command
+    command = read_command_json(tmp_path / "reports")
+    assert norm_path_for_compare(command[0]) == norm_path_for_compare(str(fake))
 
 
 def test_wrapper_fail_on_warn_is_explicit_in_command(tmp_path, monkeypatch):
@@ -427,7 +448,7 @@ def test_wrapper_fail_on_warn_is_explicit_in_command(tmp_path, monkeypatch):
         "--fail-on-warn", "true",
     ])
     assert code == 0
-    command = (tmp_path / "reports" / "sourcepack-command.txt").read_text(encoding="utf-8")
+    command = read_command_json(tmp_path / "reports")
     assert "--strict" in command
 
 
@@ -569,8 +590,9 @@ def test_wrapper_preserves_exact_command_and_delegates_to_cli(tmp_path, monkeypa
     monkeypatch.setenv("PATH", path_with(bin_dir))
     module = load_wrapper()
     assert module.main(["--repo", str(tmp_path), "--report-dir", "out", "--mode", "strict"]) == 0
-    command = (tmp_path / "out" / "sourcepack-command.txt").read_text(encoding="utf-8").strip()
-    assert command == f"{fake} diff {tmp_path} --json --strict"
+    command = read_command_json(tmp_path / "out")
+    assert norm_path_for_compare(command[0]) == norm_path_for_compare(str(fake))
+    assert command[1:] == ["diff", str(tmp_path.resolve()), "--json", "--strict"]
     assert f"diff {tmp_path} --json --strict" in calls.read_text(encoding="utf-8")
 
 
@@ -638,9 +660,11 @@ def test_composite_action_like_run_writes_artifacts_command_summary_and_sarif(tm
         "sourcepack.stdout.txt",
         "sourcepack.stderr.txt",
         "sourcepack-command.txt",
+        "sourcepack-command.json",
         "sourcepack.sarif.json",
     ]:
         assert (report_dir / artifact).exists(), artifact
+    assert read_command_json(report_dir) == expected_command
     assert (report_dir / "sourcepack-command.txt").read_text(encoding="utf-8") == shlex.join(expected_command) + "\n"
     assert (report_dir / "sourcepack.sarif.json").read_text(encoding="utf-8") == '{"version":"2.1.0","runs":[]}'
     markdown = (report_dir / "sourcepack.md").read_text(encoding="utf-8")

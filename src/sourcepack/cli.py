@@ -2813,21 +2813,30 @@ def cli_allow(args) -> int:
     print(json.dumps(entry, indent=2))
     return 0
 
+def _display_repo_relative_path(path: Path, repo: Path) -> str:
+    try:
+        return path.resolve().relative_to(repo.resolve()).as_posix()
+    except ValueError:
+        return str(path).replace("\\", "/")
+
+
 def cli_policy_validate(args) -> int:
-    result = validate_policy_config(getattr(args, "repo", "."))
+    repo = Path(getattr(args, "repo", "."))
+    result = validate_policy_config(repo)
+    policy_display_path = _display_repo_relative_path(Path(result.policy_path), repo)
     if getattr(args, "json", False):
         print(json.dumps(result.to_json_dict(), indent=2))
         return 0 if result.valid else 1
     if not result.policy_present:
-        print(f"No policy file found at {result.policy_path}; policy config is optional.")
+        print(f"No policy file found at {policy_display_path}; policy config is optional.")
         return 0
-    print(f"Policy file: {result.policy_path}")
+    print(f"Policy file: {policy_display_path}")
     if result.errors:
         for error in result.errors:
             if error.startswith("policy_config_invalid_json:"):
-                print(f"ERROR: invalid JSON in {result.policy_path}: {error}")
+                print(f"ERROR: invalid JSON in {policy_display_path}: {error}")
             elif error == "policy_config_invalid:root_must_be_object":
-                print(f"ERROR: policy root must be a JSON object in {result.policy_path}")
+                print(f"ERROR: policy root must be a JSON object in {policy_display_path}")
             else:
                 print(f"ERROR: {error}")
         return 1

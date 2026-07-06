@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,18 @@ SCENARIOS = {
     "fail-protected-artifact": {"verdict": "FAIL", "reasons": ["protected_artifact"]},
     "trust-boundary": {"verdict": "WARN", "reasons": ["new_file"]},
 }
+
+
+def remove_tree(path: Path) -> None:
+    def onerror(func, value, exc_info):
+        try:
+            os.chmod(value, stat.S_IWRITE)
+            func(value)
+        except Exception:
+            raise
+
+    if path.exists():
+        shutil.rmtree(path, onerror=onerror)
 
 
 def run(cmd: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -117,7 +130,7 @@ def reason_ids(report: dict) -> list[str]:
 def run_scenario(name: str) -> dict:
     scenario_dir = OUT / name
     if scenario_dir.exists():
-        shutil.rmtree(scenario_dir)
+        remove_tree(scenario_dir)
     repo = scenario_dir / "repo"
     scenario_dir.mkdir(parents=True, exist_ok=True)
     BUILDERS[name](repo)
@@ -163,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--clean", action="store_true")
     args = parser.parse_args(argv)
     if args.clean and OUT.exists():
-        shutil.rmtree(OUT)
+        remove_tree(OUT)
     names = [args.scenario] if args.scenario else list(SCENARIOS)
     summaries = [run_scenario(name) for name in names]
     print(json.dumps({"output_dir": str(OUT), "summaries": summaries}, indent=2))

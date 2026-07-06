@@ -106,7 +106,48 @@ def _git_tracked_paths(root: Path) -> set[str] | None:
         return None
 
     tracked_paths = {_decode_git_path(path) for path in cp.stdout.split(b"\0") if path}
-    return tracked_paths or None
+    if tracked_paths:
+        return tracked_paths
+
+    try:
+        top_level_cp = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except (OSError, ValueError):
+        return None
+
+    if top_level_cp.returncode != 0:
+        return None
+
+    top_level = top_level_cp.stdout.strip()
+    if not top_level:
+        return None
+
+    try:
+        all_tracked_cp = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=top_level,
+            text=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except (OSError, ValueError):
+        return None
+
+    if all_tracked_cp.returncode != 0:
+        return None
+
+    all_tracked_paths = {
+        _decode_git_path(path) for path in all_tracked_cp.stdout.split(b"\0") if path
+    }
+    if not all_tracked_paths:
+        return None
+
+    return set()
 
 
 def redact_secrets(text: str):

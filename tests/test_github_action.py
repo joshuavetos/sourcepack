@@ -158,7 +158,15 @@ def test_action_writes_or_preserves_report_output():
     assert "sourcepack.stderr.txt" in text
     assert "sourcepack.stdout.txt" in text
     assert "sourcepack-command.txt" in text
+    assert "sourcepack-command.json" in text
     assert "upload-artifact" in text
+
+
+def test_action_missing_baseline_preflight_writes_structured_command_artifact():
+    text = action_text()
+    assert 'cat > "$REPORT_DIR/sourcepack-command.json"' in text
+    assert '"command": ["baseline preflight"]' in text
+    assert "sourcepack-command.txt, sourcepack-command.json" in text
 
 
 def test_ci_workflow_keeps_existing_validation_gates():

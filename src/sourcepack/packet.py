@@ -91,6 +91,7 @@ def _decode_git_path(raw: bytes) -> str:
 
 
 def _git_tracked_paths(root: Path) -> set[str] | None:
+    """Return tracked paths from git, or None when git cannot be used."""
     try:
         cp = subprocess.run(
             ["git", "ls-files", "-z"],
@@ -216,6 +217,9 @@ class SourceScanner:
         if not self.input_path.is_dir():
             raise NotADirectoryError(f"Input path is not a directory: {self.input_path}")
 
+        # In Git repositories, trusted packet generation is tracked-file-first.
+        # Existing ignore/hidden/binary/redaction rules still run, but files not
+        # returned by `git ls-files` are never included as trusted evidence.
         tracked_paths = _git_tracked_paths(self.input_path) if self.trust_git_tracked else None
 
         for root, dirs, files in os.walk(self.input_path, followlinks=False):

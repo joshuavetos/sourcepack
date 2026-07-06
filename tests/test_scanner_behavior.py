@@ -1,6 +1,6 @@
 import subprocess
 
-from sourcepack.judgment import SourceScanner, sha256_text
+from sourcepack.packet import SourceScanner, sha256_text
 
 
 def test_source_scanner_includes_text_and_records_ignored_reasons(tmp_path):
@@ -68,3 +68,9 @@ def test_source_scanner_prefers_git_tracked_files_when_available(tmp_path):
     assert [file.relative_path for file in scanner.included_files] == ["app.py"]
     ignored = {item.relative_path: item.reason for item in scanner.ignored_files}
     assert ignored["scratch.py"] == "untracked_file_skipped"
+
+
+def test_judgment_scanner_import_uses_canonical_packet_scanner():
+    from sourcepack import judgment
+
+    assert judgment.SourceScanner is SourceScanner

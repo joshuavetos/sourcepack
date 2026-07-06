@@ -18,6 +18,7 @@ from xml.sax.saxutils import escape as xml_escape
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
 from .baseline import BaselineLockError, acquire_baseline_lock, baseline_corrupt_result, baseline_report_fields, build_current_baseline, protected_baseline_path, release_baseline_lock, resolve_active_baseline, validate_baseline
 from .ecosystems.python import PY_IMPORT_ALIASES
+from .packet import PacketWriter, SourceScanner
 from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_paths
 from .reports.json import normalized_finding, traffic_report, write_user_report
 from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code, load_policy_config, finding_ignored_by_policy, policy_path_matches
@@ -126,7 +127,7 @@ class IgnoredFile:
     reason: str
 
 
-class SourceScanner:
+class _LegacySourceScanner:
     def __init__(self, input_path: str | Path, max_file_size: int = 1_000_000, include_hidden: bool = False, redact: bool = True):
         self.input_path = Path(input_path).resolve()
         self.max_file_size = max_file_size
@@ -251,10 +252,10 @@ def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
     return {"schema_version": "sourcepack.file_inventory.v1", "generated_at": utc_now(), "source": source, "files": files}
 
 
-class PacketWriter:
+class _LegacyPacketWriter:
     OUTPUT_FILES = ["manifest.json", "context.md", "context.xml", "file_tree.txt", "ignored_files.txt", "token_report.json", "redactions.json", "reality_map.json", "ai_instructions.md", "file_inventory.json"]
 
-    def __init__(self, out: str | Path, scanner: SourceScanner, force: bool = False):
+    def __init__(self, out: str | Path, scanner: _LegacySourceScanner, force: bool = False):
         self.out = Path(out)
         self.scanner = scanner
         self.force = force
@@ -332,11 +333,6 @@ class PacketWriter:
         return self.out
 
 
-
-# Use the canonical tracked-file-first scanner and packet writer.
-# The legacy definitions above are kept for compatibility with existing module
-# layout, but all packet/baseline call sites below resolve these canonical names.
-from .packet import PacketWriter, SourceScanner
 
 
 def _included_paths(manifest: dict) -> set[str]:

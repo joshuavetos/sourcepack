@@ -224,7 +224,9 @@ def test_cli_baseline_skips_untracked_generated_output_as_trusted_evidence(tmp_p
     assert ignored[generated_rel] == "untracked_file_skipped"
     assert "examples/golden/output" not in (packet / "context.md").read_text(encoding="utf-8")
     assert "examples/golden/output" not in (packet / "context.xml").read_text(encoding="utf-8")
-    assert f"[INC] {generated_rel}" not in (packet / "file_tree.txt").read_text(encoding="utf-8")
+    file_tree = (packet / "file_tree.txt").read_text(encoding="utf-8")
+    assert f"[INC] {generated_rel}" not in file_tree
+    assert f"[IGN] {generated_rel} - untracked_file_skipped" in file_tree
 
     reality_map = json.loads((packet / "reality_map.json").read_text(encoding="utf-8"))
     assert generated_rel not in reality_map["confirmed_files"]

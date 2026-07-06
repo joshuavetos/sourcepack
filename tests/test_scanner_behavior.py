@@ -76,6 +76,16 @@ def test_source_scanner_redacts_and_keeps_source_hash_separate_from_packet_hash(
     assert included.source_sha256 != included.packet_sha256
 
 
+
+def test_source_scanner_falls_back_to_filesystem_when_git_has_no_tracked_files(tmp_path):
+    init_git_repo(tmp_path)
+    (tmp_path / "app.py").write_text("print('untracked initial file')\n", encoding="utf-8")
+
+    scanner = SourceScanner(tmp_path).scan()
+
+    assert "app.py" in included_paths(scanner)
+    assert ignored_reasons(scanner).get("app.py") != "untracked_file_skipped"
+
 def test_source_scanner_uses_tracked_files_as_trust_boundary_in_git_repo(tmp_path):
     init_git_repo(tmp_path)
 

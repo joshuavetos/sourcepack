@@ -105,7 +105,8 @@ def _git_tracked_paths(root: Path) -> set[str] | None:
     if cp.returncode != 0:
         return None
 
-    return {_decode_git_path(path) for path in cp.stdout.split(b"\0") if path}
+    tracked_paths = {_decode_git_path(path) for path in cp.stdout.split(b"\0") if path}
+    return tracked_paths or None
 
 
 def redact_secrets(text: str):

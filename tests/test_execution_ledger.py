@@ -59,8 +59,8 @@ def test_stdout_stderr_hashing_and_excerpt_truncation():
         repo = Path(td) / "repo"
         init_repo(repo)
         entry = run_and_record(["python", "-c", "import sys; print('x'*3000); print('err', file=sys.stderr)"], cwd=repo)
-        assert entry.stdout_sha256 == hashlib.sha256((("x" * 3000) + "\n").encode()).hexdigest()
-        assert entry.stderr_sha256 == hashlib.sha256(b"err\n").hexdigest()
+        assert entry.stdout_sha256 == hashlib.sha256((("x" * 3000) + os.linesep).encode()).hexdigest()
+        assert entry.stderr_sha256 == hashlib.sha256(("err" + os.linesep).encode()).hexdigest()
         assert entry.stdout_excerpt.endswith("…[truncated]")
         assert "err" in entry.stderr_excerpt
 

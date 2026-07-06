@@ -64,6 +64,7 @@ def _artifact_list(report_dir: Path) -> list[str]:
         "sourcepack.stdout.txt",
         "sourcepack.stderr.txt",
         "sourcepack-command.txt",
+        "sourcepack-command.json",
     ]
     return [name for name in names if (report_dir / name).exists()]
 
@@ -86,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     report_dir.mkdir(parents=True, exist_ok=True)
 
     command_log = report_dir / "sourcepack-command.txt"
+    command_json = report_dir / "sourcepack-command.json"
     stdout_log = report_dir / "sourcepack.stdout.txt"
     stderr_log = report_dir / "sourcepack.stderr.txt"
     json_report = report_dir / "sourcepack.json"
@@ -101,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
             "This is a trust-boundary behavior, not a package crash.\n"
         )
         _write(command_log, "baseline preflight\n")
+        _write(command_json, json.dumps({"command": ["baseline preflight"]}, indent=2) + "\n")
         _write(stdout_log, "")
         _write(stderr_log, message)
         _write(
@@ -111,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             f"- Mode: {args.mode}\n"
             f"- WARN fails in selected mode: {args.mode in {'ci', 'strict'} or _truthy(args.fail_on_warn)}\n"
             f"- Report directory: {report_dir}\n"
-            "- Artifacts: sourcepack.md, sourcepack.stderr.txt, sourcepack.stdout.txt, sourcepack-command.txt\n"
+            "- Artifacts: sourcepack.md, sourcepack.stderr.txt, sourcepack.stdout.txt, sourcepack-command.txt, sourcepack-command.json\n"
             "- Missing baseline: SourcePack failed closed because trusted baseline state is missing. "
             "CI will not create or update trusted baseline state. Create or refresh the baseline locally "
             "or in a separate trusted maintainer-controlled setup workflow. This is a trust-boundary behavior, not a package crash.\n",
@@ -125,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     if not sourcepack_executable:
         message = "SourcePack executable not found on PATH.\n"
         _write(command_log, "sourcepack lookup failed\n")
+        _write(command_json, json.dumps({"command": ["sourcepack lookup failed"]}, indent=2) + "\n")
         _write(stdout_log, "")
         _write(stderr_log, message)
         print(message, file=sys.stderr, end="")
@@ -140,6 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         command.append("--strict")
 
     _write(command_log, shlex.join(command) + "\n")
+    _write(command_json, json.dumps({"command": command}, indent=2) + "\n")
     result = _run(command, repo)
     _write(stdout_log, result.stdout)
     _write(stderr_log, result.stderr)

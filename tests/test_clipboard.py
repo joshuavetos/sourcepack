@@ -9,8 +9,11 @@ def test_copy_to_clipboard_does_not_execute_shell_commands():
     # We'll mock `shutil.which` to pretend our dummy executable is the clipboard,
     # and mock `subprocess.run` to verify its arguments.
 
-    with patch("shutil.which", return_value="/usr/bin/dummy_clip"), \
+    with patch("platform.system", return_value="Linux"), \
+         patch("shutil.which", return_value="/usr/bin/dummy_clip"), \
          patch("subprocess.run") as mock_run:
+
+        mock_run.return_value.returncode = 0
 
         # This string looks like shell injection
         malicious_input = "$(whoami); touch /tmp/pwned"
@@ -20,7 +23,7 @@ def test_copy_to_clipboard_does_not_execute_shell_commands():
         copy_to_clipboard(malicious_input)
 
         # Verify it was called with shell=False (default or explicit)
-        assert mock_run.called
+        mock_run.assert_called_once()
         args, kwargs = mock_run.call_args
 
         # The command should be a list, which prevents shell execution when shell=False

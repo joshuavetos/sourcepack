@@ -203,6 +203,34 @@ def test_baseline_force_permits_dirty_git_worktree(tmp_path: Path) -> None:
     assert (repo / ".sourcepack" / "baseline" / "active.json").exists()
 
 
+def test_cli_baseline_skips_untracked_generated_output_as_trusted_evidence(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    generated = repo / "examples" / "golden" / "output" / "fail-unsupported-dependency" / "repo" / "app.py"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("import fastapi\n", encoding="utf-8")
+
+    cp, data = json_cli(repo, "baseline", ".", "--json", "--quiet", "--force")
+
+    assert cp.returncode == 0, cp.stderr + cp.stdout
+    assert data["verdict"] in {"PASS", "WARN"}
+    packet = active_build(repo) / "packet"
+    manifest = json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
+    included_paths = {item["relative_path"] for item in manifest["included_files"]}
+    ignored = {item["relative_path"]: item["reason"] for item in manifest["ignored_files"]}
+    generated_rel = "examples/golden/output/fail-unsupported-dependency/repo/app.py"
+
+    assert "app.py" in included_paths
+    assert generated_rel not in included_paths
+    assert ignored[generated_rel] == "untracked_file_skipped"
+    assert "examples/golden/output" not in (packet / "context.md").read_text(encoding="utf-8")
+    assert "examples/golden/output" not in (packet / "context.xml").read_text(encoding="utf-8")
+    assert f"[INC] {generated_rel}" not in (packet / "file_tree.txt").read_text(encoding="utf-8")
+
+    reality_map = json.loads((packet / "reality_map.json").read_text(encoding="utf-8"))
+    assert generated_rel not in reality_map["confirmed_files"]
+    assert "fastapi" not in reality_map["detected_dependencies"]
+    assert "FastAPI" not in reality_map["frameworks"]
+
 def test_init_auto_refuses_dirty_git_worktree_without_force_before_sourcepack_mutation(tmp_path: Path) -> None:
     repo = init_repo(tmp_path)
     (repo / "app.py").write_text("def answer():\n    return 43\n", encoding="utf-8")

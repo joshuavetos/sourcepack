@@ -333,6 +333,12 @@ class PacketWriter:
 
 
 
+# Use the canonical tracked-file-first scanner and packet writer.
+# The legacy definitions above are kept for compatibility with existing module
+# layout, but all packet/baseline call sites below resolve these canonical names.
+from .packet import PacketWriter, SourceScanner
+
+
 def _included_paths(manifest: dict) -> set[str]:
     return {rec.get("relative_path", "").replace("\\", "/") for rec in manifest.get("included_files", [])}
 

@@ -1,3 +1,5 @@
+import subprocess
+
 from sourcepack.judgment import SourceScanner, sha256_text
 
 
@@ -50,3 +52,19 @@ def test_source_scanner_redacts_and_keeps_source_hash_separate_from_packet_hash(
     assert included.source_sha256 == sha256_text(original)
     assert included.packet_sha256 == sha256_text(included.content)
     assert included.source_sha256 != included.packet_sha256
+
+
+def test_source_scanner_prefers_git_tracked_files_when_available(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "config", "user.email", "sourcepack@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "SourcePack Test"], cwd=tmp_path, check=True)
+    (tmp_path / "app.py").write_text("print('tracked')\n", encoding="utf-8")
+    (tmp_path / "scratch.py").write_text("import fastapi\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=tmp_path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "commit", "-m", "track app"], cwd=tmp_path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    scanner = SourceScanner(tmp_path).scan()
+
+    assert [file.relative_path for file in scanner.included_files] == ["app.py"]
+    ignored = {item.relative_path: item.reason for item in scanner.ignored_files}
+    assert ignored["scratch.py"] == "untracked_file_skipped"

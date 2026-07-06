@@ -91,12 +91,12 @@ jobs:
                   return json.load(fh)
 
           def ci_findings(report: dict) -> list[dict]:
-              findings = [
+              ci_blocking_findings = [
                   finding for finding in report.get("findings", [])
                   if finding.get("severity") in {"error", "warn"}
               ]
-              if findings:
-                  return findings
+              if ci_blocking_findings:
+                  return ci_blocking_findings
               return [
                   finding for finding in report.get("blockers", [])
                   if finding.get("severity") in {"error", "warn"}
@@ -205,7 +205,7 @@ jobs:
 
           if unexpected_findings:
               print(
-                  "SourcePack gate failed for findings beyond trust-review classes; failing normally.",
+                  "SourcePack gate failed for findings beyond labelled trust-review classes; failing normally.",
                   file=sys.stderr,
               )
               for finding in unexpected_findings:
@@ -240,11 +240,17 @@ jobs:
                   missing_labels.append("workflow-trust-update")
 
               if missing_labels:
-                  print(
-                      "SourcePack detected trust-sensitive CI-blocking findings. "
-                      "This PR requires intentional trust review.",
-                      file=sys.stderr,
-                  )
+                  if protected_baseline_findings:
+                      print(
+                          "SourcePack detected protected baseline artifact changes. This PR requires intentional trust-state review.",
+                          file=sys.stderr,
+                      )
+
+                  if workflow_change_findings:
+                      print(
+                          "SourcePack detected workflow automation changes. This PR requires intentional workflow trust review.",
+                          file=sys.stderr,
+                      )
                   print(f"Missing maintainer label(s): {', '.join(missing_labels)}", file=sys.stderr)
 
                   if protected_baseline_findings:
@@ -265,7 +271,7 @@ jobs:
                   print(
                       "::warning::SourcePack detected protected baseline artifact changes. "
                       "The maintainer-applied 'baseline-trust-update' label allows these findings "
-                      "after intentional trust-state review."
+                      "without creating, refreshing, repairing, or blessing baseline state."
                   )
                   print("Protected baseline artifacts requiring review:")
                   for finding in protected_baseline_findings:
@@ -274,8 +280,8 @@ jobs:
               if workflow_change_findings:
                   print(
                       "::warning::SourcePack detected workflow automation changes. "
-                      "The maintainer-applied 'workflow-trust-update' label allows these findings "
-                      "after reviewing the workflow diff."
+                      "The maintainer-applied 'workflow-trust-update' label allows these "
+                      "workflow_change findings after reviewing the workflow diff."
                   )
                   print("Workflow automation findings requiring review:")
                   for finding in workflow_change_findings:

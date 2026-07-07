@@ -11,23 +11,19 @@ jobs:
   sourcepack:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out PR head
+      - name: Check out repository
         uses: actions/checkout@v4
         with:
-          # For workflow_dispatch, this resolves to the selected ref.
-          # For pull_request, this checks out the PR head commit.
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
-      # Required for pull_request guardrails:
+      # Required when this workflow is enabled for pull_request:
       # SourcePack checks a visible repo-state transition. A clean PR checkout
       # may already contain the proposed changes as committed files, leaving no
       # local workspace delta for SourcePack to inspect.
       #
-      # This step keeps the PR files in the working tree while resetting the
-      # index to the trusted base commit, making the PR delta visible.
-      #
-      # Leave this step enabled only for pull_request events.
+      # Keep this step enabled for pull_request events. It keeps PR files in the
+      # working tree while resetting the index to the trusted base commit, making
+      # the PR delta visible to SourcePack.
       - name: Materialize PR delta as workspace changes
         if: ${{ github.event_name == 'pull_request' }}
         shell: bash

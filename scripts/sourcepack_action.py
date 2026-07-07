@@ -110,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
             markdown_report,
             "# SourcePack Action summary\n\n"
             "- Verdict: FAIL\n"
-            "- Traffic light: FAIL\n"
+            "- Traffic light: RED LIGHT\n"
             f"- Mode: {args.mode}\n"
             f"- WARN fails in selected mode: {args.mode in {'ci', 'strict'} or _truthy(args.fail_on_warn)}\n"
             f"- Report directory: {report_dir}\n"
@@ -145,7 +145,9 @@ def main(argv: list[str] | None = None) -> int:
 
     _write(command_log, shlex.join(command) + "\n")
     _write(command_json, json.dumps({"command": command}, indent=2) + "\n")
+
     result = _run(command, repo)
+
     _write(stdout_log, result.stdout)
     _write(stderr_log, result.stderr)
 
@@ -155,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     latest_json = repo / ".sourcepack" / "reports" / "latest.json"
     if latest_json.exists():
         shutil.copyfile(latest_json, json_report)
+
     latest_sarif = repo / ".sourcepack" / "reports" / "latest.sarif.json"
     sarif_status = "disabled"
     if _truthy(args.sarif):

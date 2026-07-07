@@ -1,54 +1,67 @@
 name: SourcePack
 description: Run the SourcePack CLI in CI without creating or updating trusted baseline state.
+
 inputs:
   mode:
     description: SourcePack CLI mode: ci, strict, or local.
     required: false
     default: ci
+
   sourcepack-version:
     description: Optional SourcePack package version to install from the configured Python package source. Empty installs from the current checkout.
     required: false
     default: ''
+
   python-version:
     description: Python version for the action runtime.
     required: false
     default: '3.11'
+
   baseline-path:
     description: Trusted SourcePack baseline path consumed by CI.
     required: false
     default: .sourcepack/baseline
+
   report-dir:
     description: Directory where SourcePack action reports are written.
     required: false
     default: sourcepack-report
+
   json:
     description: Preserve JSON report output.
     required: false
     default: 'true'
+
   markdown:
     description: Write a minimal markdown summary around existing SourcePack CLI output.
     required: false
     default: 'true'
+
   sarif:
     description: Preserve SARIF report output when the installed SourcePack version writes it.
     required: false
     default: 'true'
+
   fail-on-warn:
     description: Make WARN fail the action outside modes that already fail on WARN.
     required: false
     default: 'false'
+
   run-doctor:
     description: Run sourcepack doctor before diff evaluation.
     required: false
     default: 'true'
+
   upload-artifact:
     description: Upload report-dir as a GitHub Actions artifact.
     required: false
     default: 'true'
+
   comment-pr:
     description: Reserved for future opt-in PR commenting; not implemented by this action.
     required: false
     default: 'false'
+
 runs:
   using: composite
   steps:
@@ -56,6 +69,7 @@ runs:
       uses: actions/setup-python@v5
       with:
         python-version: ${{ inputs.python-version }}
+
     - name: Install SourcePack
       shell: bash
       env:
@@ -67,13 +81,16 @@ runs:
         else
           python -m pip install -e "$GITHUB_ACTION_PATH"
         fi
+
     - name: SourcePack version
       shell: bash
       run: sourcepack --version
+
     - name: SourcePack doctor
       if: ${{ inputs.run-doctor == 'true' }}
       shell: bash
       run: sourcepack doctor
+
     - name: Verify SourcePack baseline
       shell: bash
       env:
@@ -94,15 +111,15 @@ runs:
           printf '%s\n' "$MESSAGE" | tee "$REPORT_DIR/sourcepack.stderr.txt" >&2
           printf '%s\n' 'baseline preflight' > "$REPORT_DIR/sourcepack-command.txt"
           cat > "$REPORT_DIR/sourcepack-command.json" <<'JSON'
-{
-  "command": ["baseline preflight"]
-}
-JSON
+        {
+          "command": ["baseline preflight"]
+        }
+        JSON
           : > "$REPORT_DIR/sourcepack.stdout.txt"
           {
             printf '%s\n\n' '# SourcePack Action summary'
             printf '%s\n' '- Verdict: FAIL'
-            printf '%s\n' '- Traffic light: FAIL'
+            printf '%s\n' '- Traffic light: RED LIGHT'
             printf '%s\n' "- Mode: $SOURCEPACK_MODE"
             if [ "$SOURCEPACK_MODE" = 'ci' ] || [ "$SOURCEPACK_MODE" = 'strict' ] || [ "$FAIL_ON_WARN" = 'true' ]; then
               printf '%s\n' '- WARN fails in selected mode: true'
@@ -119,6 +136,7 @@ JSON
           printf '%s\n' "SourcePack report directory: $REPORT_DIR"
           exit 2
         fi
+
     - name: Run SourcePack diff
       shell: bash
       env:
@@ -139,6 +157,7 @@ JSON
           --markdown "$SOURCEPACK_MARKDOWN" \
           --sarif "$SOURCEPACK_SARIF" \
           --fail-on-warn "$FAIL_ON_WARN"
+
     - name: Upload SourcePack reports
       if: ${{ always() && inputs.upload-artifact == 'true' }}
       uses: actions/upload-artifact@v4

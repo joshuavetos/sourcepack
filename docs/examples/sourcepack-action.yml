@@ -6,6 +6,19 @@ on:
   # under .sourcepack/baseline.
   #
   # pull_request:
+  #   types: [opened, synchronize, reopened]
+
+# Required for normal SourcePack action use:
+# - contents: read allows checkout and repository reads.
+# - pull-requests: write and issues: write are only needed when comment-pr is true.
+#
+# On pull requests from forks, GitHub may restrict token write permissions.
+# In that case SourcePack should still write artifacts and step summaries, while
+# PR commenting may be skipped or recorded as failed in sourcepack-pr-comment.txt.
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
 
 jobs:
   sourcepack:
@@ -38,6 +51,7 @@ jobs:
           mode: ci
           upload-artifact: 'true'
           sarif: 'true'
+          comment-pr: 'true'
           # fail-on-warn: 'true'
 
       # Optional if your repository has enabled code scanning and you accept

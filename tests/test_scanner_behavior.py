@@ -192,5 +192,16 @@ def test_packet_writer_does_not_derive_reality_from_untracked_generated_output(t
     assert "app.py" in reality_map["confirmed_files"]
 
 
+def test_cli_and_judgment_scanner_writer_exports_are_canonical():
+    import sourcepack.cli as cli
+    import sourcepack.judgment as judgment
+    import sourcepack.packet as packet
+
+    assert cli.SourceScanner is packet.SourceScanner
+    assert cli.PacketWriter is packet.PacketWriter
+    assert judgment.SourceScanner is packet.SourceScanner
+    assert judgment.PacketWriter is packet.PacketWriter
+
+
 def test_scanner_behavior_file_can_run_directly_under_pytest(tmp_path):
     assert sys.version_info >= (3, 11)

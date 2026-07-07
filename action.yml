@@ -58,7 +58,7 @@ inputs:
     default: 'true'
 
   comment-pr:
-    description: Reserved for future opt-in PR commenting; not implemented by this action.
+    description: Post or update a SourcePack summary comment on pull requests when true.
     required: false
     default: 'false'
 
@@ -147,6 +147,8 @@ runs:
         SOURCEPACK_MARKDOWN: ${{ inputs.markdown }}
         SOURCEPACK_SARIF: ${{ inputs.sarif }}
         FAIL_ON_WARN: ${{ inputs.fail-on-warn }}
+        COMMENT_PR: ${{ inputs.comment-pr }}
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         python "$GITHUB_ACTION_PATH/scripts/sourcepack_action.py" \
@@ -156,7 +158,8 @@ runs:
           --json "$SOURCEPACK_JSON" \
           --markdown "$SOURCEPACK_MARKDOWN" \
           --sarif "$SOURCEPACK_SARIF" \
-          --fail-on-warn "$FAIL_ON_WARN"
+          --fail-on-warn "$FAIL_ON_WARN" \
+          --comment-pr "$COMMENT_PR"
 
     - name: Upload SourcePack reports
       if: ${{ always() && inputs.upload-artifact == 'true' }}

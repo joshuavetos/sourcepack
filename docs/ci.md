@@ -86,6 +86,8 @@ Reports are written to `sourcepack-report/` by default:
 - `sourcepack.stderr.txt` for captured SourcePack stderr.
 - `sourcepack-command.txt` for a human-readable command record.
 - `sourcepack-command.json` for structured command arguments usable by downstream tooling.
+- `sourcepack-pr-comment.md` for the rendered PR comment body when `comment-pr` is enabled.
+- `sourcepack-pr-comment.txt` for PR comment create/update/skip/failure status when `comment-pr` is enabled.
 
 If trusted baseline state is missing, the action reports that SourcePack failed closed, writes the same command artifacts, and exits without creating or updating baseline state.
 
@@ -100,6 +102,44 @@ If you choose to upload SARIF in GitHub code scanning, use the generated file on
   with:
     sarif_file: sourcepack-report/sourcepack.sarif.json
 ```
+
+## Pull request comments
+
+The `comment-pr` input renders a compact SourcePack PR review comment when enabled.
+
+The comment contains:
+
+- the SourcePack traffic light and verdict
+- the selected wrapper mode
+- finding counts
+- the exact SourcePack command
+- top findings, capped for readability
+- checked evidence categories when present in the JSON report
+- not-checked categories when present in the JSON report
+- the standard SourcePack limitation line
+
+The full JSON, Markdown, stdout, stderr, command record, SARIF, and PR-comment body remain in the uploaded report artifact. The PR comment is intentionally smaller than the full report.
+
+The comment uses a stable hidden marker:
+
+```markdown
+<!-- sourcepack-action-comment:v1 -->
+```
+
+The action uses that marker to update an existing SourcePack comment instead of posting duplicate comments on every PR synchronize event.
+
+PR commenting requires a writable GitHub token. In a workflow that enables `comment-pr`, use permissions shaped like:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+```
+
+On pull requests from forks, GitHub may restrict write permissions. In that case, SourcePack should still write report artifacts and the GitHub step summary. PR comment status is recorded in `sourcepack-pr-comment.txt`.
+
+PR commenting is presentation only. It does not change SourcePack's PASS/WARN/FAIL verdict, reason codes, SARIF output, artifacts, or exit code.
 
 ## Composite Action inputs
 
@@ -118,7 +158,7 @@ The repository action, whether used as `uses: ./` or as a tagged SourcePack acti
 | `fail-on-warn` | `false` | Add strict WARN handling outside modes that already fail on WARN. |
 | `run-doctor` | `true` | Run `sourcepack doctor` before diff evaluation. |
 | `upload-artifact` | `true` | Upload `report-dir` as a GitHub Actions artifact. |
-| `comment-pr` | `false` | Reserved for future opt-in PR commenting; not implemented by this action. |
+| `comment-pr` | `false` | Post or update a compact SourcePack summary comment on pull requests. Requires PR write permissions and a writable token. Comment failures are recorded separately and do not replace SourcePack judgment. |
 
 ## Replaying saved reports
 

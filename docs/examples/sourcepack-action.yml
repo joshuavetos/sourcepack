@@ -2,25 +2,54 @@ name: SourcePack Action Example
 
 on:
   workflow_dispatch:
-  # Enable pull_request only after .sourcepack/baseline is committed or provided
-  # by a separate trusted maintainer-controlled setup workflow.
+  # Enable pull_request only after reviewed trusted baseline state is committed
+  # under .sourcepack/baseline.
+  #
   # pull_request:
 
 jobs:
   sourcepack:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Check out PR head
         uses: actions/checkout@v4
+        with:
+          # For workflow_dispatch, this resolves to the selected ref.
+          # For pull_request, this checks out the PR head commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      # Required for pull_request guardrails:
+      # SourcePack checks a visible repo-state transition. A clean PR checkout
+      # may already contain the proposed changes as committed files, leaving no
+      # local workspace delta for SourcePack to inspect.
+      #
+      # This step keeps the PR files in the working tree while resetting the
+      # index to the trusted base commit, making the PR delta visible.
+      #
+      # Leave this step enabled only for pull_request events.
+      - name: Materialize PR delta as workspace changes
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin ${{ github.event.pull_request.base.ref }}
+          git reset --mixed ${{ github.event.pull_request.base.sha }}
+
       - name: Run SourcePack
         uses: ./
         with:
           mode: ci
-          # fail-on-warn: 'true'
           upload-artifact: 'true'
           sarif: 'true'
+          # fail-on-warn: 'true'
+
       # Optional if your repository has enabled code scanning and you accept
       # uploading local SourcePack report contents.
+      #
+      # SARIF is only a report format. It does not change SourcePack judgment,
+      # reason codes, or PASS/WARN/FAIL behavior.
+      #
       # - name: Upload SourcePack SARIF
       #   if: always()
       #   uses: github/codeql-action/upload-sarif@v3

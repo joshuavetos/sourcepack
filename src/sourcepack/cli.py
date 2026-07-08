@@ -28,6 +28,7 @@ from .reports.html import render_report_html
 from .reports.json import normalized_finding, traffic_report, write_user_report
 from .reports.markdown import LIGHT_BY_VERDICT, SEVERITY_ORDER, render_traffic
 from .execution_ledger import clear_ledger, entry_to_json, execution_findings, iter_entries, run_and_record, find_repo_root
+from .fleet import render_human_summary, summarize_reports
 from .policy import validate_policy_config
 from .replay import reconstruct_replay, render_replay_human
 
@@ -2703,6 +2704,16 @@ def cli_policy(args) -> int:
         print(f"Removed policy {args.policy_id}"); return 0
     return 1
 
+def cli_fleet(args) -> int:
+    if args.fleet_command == "summarize":
+        summary = summarize_reports(args.path)
+        if args.json:
+            print(json.dumps(summary, indent=2))
+        else:
+            print(render_human_summary(summary), end="")
+        return 0
+    return 1
+
 def cli_reset(args) -> int:
     repo = Path(args.repo).resolve(); target = repo / ".sourcepack" / "reports"
     if target.exists(): shutil.rmtree(target)
@@ -2850,6 +2861,11 @@ def run_cli(args_list=None):
     policy_validate.add_argument("--json", action="store_true")
     policy_remove = policy_subs.add_parser("remove")
     policy_remove.add_argument("policy_id")
+    fleet_cmd = subs.add_parser("fleet", help="summarize SourcePack reports across repos or report archives")
+    fleet_subs = fleet_cmd.add_subparsers(dest="fleet_command")
+    fleet_summarize = fleet_subs.add_parser("summarize", help="summarize a directory or file of SourcePack JSON reports")
+    fleet_summarize.add_argument("path")
+    fleet_summarize.add_argument("--json", action="store_true")
     reset_cmd = subs.add_parser("reset")
     reset_cmd.add_argument("repo", nargs="?", default=".")
     args = parser.parse_args(args_list)
@@ -2887,6 +2903,8 @@ def run_cli(args_list=None):
             return cli_allow(args)
         if args.command == "policy":
             return cli_policy(args)
+        if args.command == "fleet":
+            return cli_fleet(args)
         if args.command == "reset":
             return cli_reset(args)
         if args.command == "replay":

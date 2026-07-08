@@ -44,7 +44,7 @@ The `pull_request` trigger path is the actual PR guardrail path.
 
 A clean PR checkout alone is structurally unsafe for local-diff validation because committed PR changes are already part of the checked-out tree, leaving no local workspace delta for `sourcepack diff . --ci` to inspect.
 
-The explicit `git fetch --no-tags origin ${{ github.event.pull_request.base.ref }}` and `git reset --mixed ${{ github.event.pull_request.base.sha }}` steps are intentional. They make the trusted base ref available, keep the PR files in the working tree, and reset the index to the trusted base commit. That makes the PR delta visible to SourcePack's diff engine as local workspace modifications.
+The explicit `git fetch --no-tags origin ${{ github.event.pull_request.base.ref }}` and `git reset --mixed ${{ github.event.pull_request.base.sha }}` steps are intentional. They make the trusted base ref available, keep the PR files in the working tree, and reset the index to the trusted base commit. Those steps make the PR delta visible to SourcePack's diff engine as local workspace modifications.
 
 Do not create, refresh, repair, or bless `.sourcepack/baseline/` inside pull-request CI. Pull-request CI must consume the committed, reviewed trusted baseline state.
 

@@ -5,6 +5,8 @@
 ![License](https://img.shields.io/github/license/joshuavetos/sourcepack)
 ![Status](https://img.shields.io/badge/status-public%20alpha-orange)
 
+SourcePack blocks AI-generated code changes that rely on fake repo facts.
+
 SourcePack catches fake repo facts in AI-generated code changes before they become review facts.
 
 **SourcePack checks proposed diffs against locally verifiable evidence from the actual codebase.**
@@ -49,6 +51,8 @@ SourcePack focuses on locally verifiable repo-assumption failures:
 - They can reference missing scripts or unsupported commands.
 - They can reshape project structure based on prompt assumptions.
 - They can touch protected trust or workflow files without making that risk obvious.
+
+- SourcePack catches those locally verifiable failures before commit or in CI.
 
 SourcePack checks those claims against repo evidence before commit or in CI.
 
@@ -146,8 +150,6 @@ See [`docs/problem-fit.md`](docs/problem-fit.md) for fit, partial-fit, and not-f
 - does not prove external API truth
 - does not prove dependency safety
 - does not prove user intent
-- does not replace human review
-- does not make AI-generated code safe by itself
 
 ## Public proof links
 
@@ -193,6 +195,7 @@ sourcepack diff .
 sourcepack diff . --json
 sourcepack diff . --strict
 sourcepack diff . --ci
+sourcepack diff . --ci --json
 sourcepack report path
 sourcepack report open
 sourcepack status .
@@ -313,7 +316,7 @@ The primary proof unit is a repo-state transition, not a random repository.
 
 Screenshot assets are optional and should only be shown inline after the image files actually exist in the repository.
 
-Expected future asset targets:
+Expected future asset targets are expected screenshot targets:
 
 - `docs/assets/sourcepack-terminal-red.png` — terminal output from `fail-unsupported-dependency`.
 - `docs/assets/sourcepack-red-report.png` — HTML report from `fail-unsupported-dependency`.

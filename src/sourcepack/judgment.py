@@ -58,6 +58,17 @@ FEATURE_NAMES = ("pdf", "ocr", "web server", "react", "docker", "authentication"
 GIT_TIMEOUT_SECONDS: Final[int] = 10
 GIT_RETURNCODE_TIMEOUT: Final[int] = 124
 GIT_RETURNCODE_NOT_FOUND: Final[int] = 127
+NATURAL_LANGUAGE_COMMAND_TARGETS: Final[frozenset[str]] = frozenset({"a", "an", "the", "this", "that", "these", "those"})
+
+
+def _command_claims(pattern: str, text: str) -> set[str]:
+    commands = set()
+    for command in re.findall(pattern, text):
+        parts = command.split()
+        if len(parts) >= 2 and parts[1].lower() in NATURAL_LANGUAGE_COMMAND_TARGETS:
+            continue
+        commands.add(command)
+    return commands
 
 
 def utc_now() -> str:
@@ -833,7 +844,7 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
     packet_contents = _packet_file_contents(packet)
     make_text = packet_contents.get("Makefile") or packet_contents.get("makefile") or ""
     make_targets = {m.group(1) for m in re.finditer(r"^([A-Za-z0-9_.:-]+)\s*:", make_text, re.M)}
-    for cmd in sorted(set(re.findall(r"\bmake\s+[A-Za-z0-9_.:-]+", added_text))):
+    for cmd in sorted(_command_claims(r"\bmake\s+[A-Za-z0-9_.:-]+", added_text)):
         target = cmd.split(None, 1)[1]
         if target not in make_targets:
             report["unsupported_commands"].append(cmd)
@@ -1461,9 +1472,9 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
         if re.search(r"docker\s+compose\s+up", added_text, re.I):
             commands.add("docker compose up")
         commands.update(re.findall(r"npm\s+(?:run\s+)?[A-Za-z0-9:_-]+", added_text))
-        commands.update(re.findall(r"make\s+[A-Za-z0-9_.:-]+", added_text))
-        commands.update(re.findall(r"just\s+[A-Za-z0-9_.:-]+", added_text))
-        commands.update(re.findall(r"task\s+[A-Za-z0-9_.:-]+", added_text))
+        commands.update(_command_claims(r"make\s+[A-Za-z0-9_.:-]+", added_text))
+        commands.update(_command_claims(r"just\s+[A-Za-z0-9_.:-]+", added_text))
+        commands.update(_command_claims(r"task\s+[A-Za-z0-9_.:-]+", added_text))
         if re.search(r"\b(pytest|python\s+-m\s+pytest)\b", added_text, re.I):
             commands.add("pytest")
         report["unsupported_commands"] = []

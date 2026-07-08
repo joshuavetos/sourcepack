@@ -41,3 +41,12 @@ def test_tox_env_present_and_dynamic_inconclusive(tmp_path):
 def test_unsupported_parser_and_path_safety(tmp_path):
     assert resolve_command(tmp_path, "unknown thing").reason_code == "command_check_inconclusive"
     assert resolve_command(tmp_path, "make ../../x").reason_code in {"command_manifest_missing", "unsupported_command"}
+
+
+def test_natural_language_make_phrase_is_not_a_command_claim():
+    from sourcepack import judgment
+
+    assert judgment._command_claims(r"make\s+[A-Za-z0-9_.:-]+", "Those steps make the PR delta visible.") == set()
+    command_text = "Run " + "make " + "test before commit."
+    expected_command = "make " + "test"
+    assert judgment._command_claims(r"make\s+[A-Za-z0-9_.:-]+", command_text) == {expected_command}

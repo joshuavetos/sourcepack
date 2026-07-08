@@ -1048,5 +1048,133 @@ class SourcePackReportUiTest(unittest.TestCase):
             report = json.loads((repo / ".sourcepack" / "reports" / "latest.json").read_text(encoding="utf-8"))
             self.assertEqual(report["verdict"], "WARN")
 
+
+class SourcePackFleetCliTest(unittest.TestCase):
+    def write_json(self, path: Path, payload: dict) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return path
+
+    def write_fixture(self, tmp: Path) -> Path:
+        reports = tmp / "reports"
+        self.write_json(
+            reports / "traffic.json",
+            {
+                "schema_version": "traffic_report.v1",
+                "verdict": "FAIL",
+                "findings": [
+                    {
+                        "id": "unsupported_dependency",
+                        "severity": "error",
+                        "category": "dependency",
+                        "path": None,
+                        "message": "fastapi is imported but not declared.",
+                        "evidence": "fastapi",
+                        "suggestion": None,
+                    },
+                    {
+                        "id": "missing_file",
+                        "severity": "error",
+                        "category": "file",
+                        "path": "src/server.py",
+                        "message": "src/server.py not found in the trusted baseline.",
+                        "evidence": "src/server.py",
+                        "suggestion": None,
+                    },
+                ],
+            },
+        )
+        self.write_json(
+            reports / "unsupported.json",
+            {
+                "schema_version": "sourcepack.future.report.v1",
+                "verdict": "FAIL",
+                "findings": [
+                    {
+                        "id": "unsupported_dependency",
+                        "category": "dependency",
+                        "path": "future.py",
+                        "evidence": "futuredep",
+                    }
+                ],
+            },
+        )
+        (reports / "malformed.json").write_text("{not json", encoding="utf-8")
+        return reports
+
+    def test_fleet_summarize_json_cli_reports_coverage_and_counts(self):
+        with TemporaryDirectory() as td:
+            reports = self.write_fixture(Path(td))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = run_cli(["fleet", "summarize", str(reports), "--json"])
+
+        self.assertEqual(code, 0)
+        data = json.loads(buf.getvalue())
+        self.assertEqual(data["schema_version"], "sourcepack.fleet.summary.v1")
+        self.assertEqual(
+            data["coverage"],
+            {
+                "json_files_seen": 3,
+                "accepted_reports": 1,
+                "unreadable_reports": 1,
+                "unknown_schema_reports": 1,
+            },
+        )
+        self.assertEqual(
+            data["verdict_counts"],
+            {
+                "PASS": 0,
+                "WARN": 0,
+                "FAIL": 1,
+                "UNKNOWN": 0,
+            },
+        )
+        self.assertEqual(
+            data["reason_code_counts"],
+            [
+                {"schema_version": "traffic_report.v1", "reason_code": "missing_file", "count": 1},
+                {"schema_version": "traffic_report.v1", "reason_code": "unsupported_dependency", "count": 1},
+            ],
+        )
+        self.assertEqual(
+            data["dependency_counts"],
+            [{"schema_version": "traffic_report.v1", "dependency": "fastapi", "count": 1}],
+        )
+        self.assertEqual(
+            data["path_counts"],
+            [{"schema_version": "traffic_report.v1", "path": "src/server.py", "count": 1}],
+        )
+        self.assertEqual(data["unreadable_reports"][0]["path"], "malformed.json")
+        self.assertEqual(
+            data["unknown_schema_reports"],
+            [
+                {
+                    "path": "unsupported.json",
+                    "schema_version": "sourcepack.future.report.v1",
+                    "error": "unsupported schema_version",
+                }
+            ],
+        )
+
+    def test_fleet_summarize_human_cli_surfaces_coverage_and_top_reason_codes(self):
+        with TemporaryDirectory() as td:
+            reports = self.write_fixture(Path(td))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = run_cli(["fleet", "summarize", str(reports)])
+
+        self.assertEqual(code, 0)
+        output = buf.getvalue()
+        self.assertIn("SourcePack fleet summary", output)
+        self.assertIn("Accepted reports: 1", output)
+        self.assertIn("Unreadable reports: 1", output)
+        self.assertIn("Unknown-schema reports: 1", output)
+        self.assertIn("Top reason codes:", output)
+        self.assertIn("traffic_report.v1::unsupported_dependency: 1", output)
+        self.assertIn("traffic_report.v1::missing_file: 1", output)
+        self.assertIn("malformed.json", output)
+        self.assertIn("unsupported.json (sourcepack.future.report.v1)", output)
+
 if __name__ == "__main__":
     unittest.main()

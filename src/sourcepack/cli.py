@@ -2710,12 +2710,6 @@ def cli_baseline_lifecycle(args) -> int | None:
         return 0 if status.get("state") in {"present", "stale"} else 1
     return None
 
-def _static_registered_command_names_for_readme_truth(subs) -> None:
-    # Static tests inspect add_parser literals in cli.py; runtime registration lives in command modules.
-    if False:
-        subs.add_parser("report")
-
-
 def run_cli(args_list=None):
     parser = argparse.ArgumentParser(prog="sourcepack", description="Local guardrail for AI-assisted repo changes. PASS exits 0, WARN exits 0 locally unless --strict or --ci is used, and FAIL exits nonzero.")
     parser.add_argument("--version", action="store_true")

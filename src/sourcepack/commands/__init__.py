@@ -1,4 +1,5 @@
-from __future__ import annotations
+"""Command resolver and CLI command modules."""
+
 
 import configparser
 import json

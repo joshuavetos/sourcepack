@@ -70,3 +70,18 @@ def test_append_event_refuses_invalid_event_dict(tmp_path: Path):
 
     with pytest.raises(ValueError, match="invalid decision ledger event"):
         append_event(tmp_path / "ledger.jsonl", {"schema_version": "sourcepack.decision_ledger.event.v1"})
+
+
+def test_relative_report_artifact_hash_verifies_from_outside_repo(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    report_dir = repo / ".sourcepack" / "reports"
+    report_dir.mkdir(parents=True)
+    report = traffic_report("FAIL", findings=[normalized_finding("unsupported_dependency", "error", "dependency", "missing", evidence="requests")])
+    relative_report_path = Path(".sourcepack/reports/latest.json")
+    (repo / relative_report_path).write_text(json.dumps(report), encoding="utf-8")
+    ledger = tmp_path / "ledger.jsonl"
+    events = append_report_events(ledger, report=report, report_path=relative_report_path, command="test", repo=repo)
+    monkeypatch.chdir(tmp_path)
+    assert events[0]["artifact"]["path"] == relative_report_path.as_posix()
+    assert events[0]["artifact"]["sha256"]
+    assert verify_artifact_hash(events[0])["verified"] is True

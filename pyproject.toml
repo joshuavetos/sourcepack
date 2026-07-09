@@ -25,3 +25,6 @@ sourcepack = "sourcepack.cli:main"
 
 [tool.setuptools.package-data]
 sourcepack = ["assets/*.md", "examples/*.md", "examples/*.diff", "examples/demo_repo/**/*", "examples/demo_repo/**/.env", "workbench_static/*"]
+
+[tool.setuptools.exclude-package-data]
+sourcepack = ["**/__pycache__/*", "**/*.pyc"]

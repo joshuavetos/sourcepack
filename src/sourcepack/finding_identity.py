@@ -27,25 +27,16 @@ def _normalize_path(value: str | None) -> str | None:
     return "/".join(parts) or None
 
 
-def _scope(finding: dict[str, Any]) -> str | None:
-    for key in ("scope", "checked_status", "required_evidence_class"):
-        value = _text(finding.get(key))
-        if value:
-            return value.lower()
-    return None
-
-
 def finding_identity_payload(finding: dict[str, Any], *, report_schema_version: str = "traffic_report.v1") -> dict[str, Any]:
     category = (_text(finding.get("category")) or "finding").lower()
     reason_code = (_text(finding.get("id")) or "unknown").lower()
     path = _normalize_path(_text(finding.get("path")))
     evidence = _text(finding.get("evidence")) or _text(finding.get("missing_evidence"))
-    evidence_class = _text(finding.get("evidence_class"))
     command = None
     dependency = None
-    if category == "command" or reason_code.endswith("command") or evidence_class == "command_manifest":
+    if category == "command" or reason_code.endswith("command"):
         command = evidence.lower() if evidence else None
-    if category == "dependency" or "dependency" in reason_code or evidence_class == "dependency_manifest":
+    if category == "dependency" or "dependency" in reason_code:
         dependency = evidence.lower() if evidence else None
     return {
         "schema_version": FINDING_IDENTITY_SCHEMA_VERSION,
@@ -55,8 +46,6 @@ def finding_identity_payload(finding: dict[str, Any], *, report_schema_version: 
         "path": path,
         "dependency": dependency,
         "command": command,
-        "evidence_source": evidence_class,
-        "scope": _scope(finding),
     }
 
 

@@ -39,11 +39,19 @@ def sha256_file(path: str | Path) -> str:
     return h.hexdigest()
 
 
-def artifact_for(path: str | Path, *, schema_version: str | None = None) -> dict[str, Any]:
+def _artifact_disk_path(path: str | Path, *, repo: str | Path | None = None) -> Path:
     artifact_path = Path(path)
+    if artifact_path.is_absolute() or repo is None:
+        return artifact_path
+    return Path(repo) / artifact_path
+
+
+def artifact_for(path: str | Path, *, schema_version: str | None = None, repo: str | Path | None = None) -> dict[str, Any]:
+    artifact_path = Path(path)
+    disk_path = _artifact_disk_path(artifact_path, repo=repo)
     item: dict[str, Any] = {"path": str(artifact_path), "sha256": None, "schema_version": schema_version}
-    if artifact_path.is_file():
-        item["sha256"] = sha256_file(artifact_path)
+    if disk_path.is_file():
+        item["sha256"] = sha256_file(disk_path)
     return item
 
 
@@ -197,7 +205,7 @@ def verify_artifact_hash(event: dict[str, Any]) -> dict[str, Any]:
     expected = artifact.get("sha256")
     if not path or not expected:
         return {"verified": False, "reason": "artifact path or sha256 missing"}
-    file_path = Path(path)
+    file_path = _artifact_disk_path(path, repo=event.get("repo"))
     if not file_path.is_file():
         return {"verified": False, "reason": "artifact missing"}
     actual = sha256_file(file_path)
@@ -205,9 +213,9 @@ def verify_artifact_hash(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def append_report_events(path: str | Path, *, report: dict[str, Any], report_path: str | Path, command: str, repo: str | Path) -> list[dict[str, Any]]:
-    report_event = append_event(path, new_event("report_created", command=command, repo=repo, artifact=artifact_for(report_path, schema_version=report.get("schema_version")), data={"verdict": report.get("verdict")}))
+    report_event = append_event(path, new_event("report_created", command=command, repo=repo, artifact=artifact_for(report_path, schema_version=report.get("schema_version"), repo=repo), data={"verdict": report.get("verdict")}))
     events = [report_event]
     for finding in report.get("findings", []):
         if isinstance(finding, dict) and finding.get("severity") == "error":
-            events.append(append_event(path, new_event("fail_detected", command=command, repo=repo, artifact=artifact_for(report_path, schema_version=report.get("schema_version")), parent_event_id=report_event["event_id"], data={"finding_id": finding.get("finding_id"), "reason_code": finding.get("id"), "finding": finding})))
+            events.append(append_event(path, new_event("fail_detected", command=command, repo=repo, artifact=artifact_for(report_path, schema_version=report.get("schema_version"), repo=repo), parent_event_id=report_event["event_id"], data={"finding_id": finding.get("finding_id"), "reason_code": finding.get("id"), "finding": finding})))
     return events

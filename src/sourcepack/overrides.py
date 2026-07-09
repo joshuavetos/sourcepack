@@ -82,7 +82,7 @@ def create_override(
         "original_reason_code": target.get("id"),
     }
     if ledger_path is not None:
-        append_event(ledger_path, new_event("override_recorded", command=command, repo=repo, artifact=artifact_for(report_path, schema_version=report.get("schema_version")), parent_event_id=target_fail_event_id, data={"override": override, "finding_id": target_finding_id}))
+        append_event(ledger_path, new_event("override_recorded", command=command, repo=repo, artifact=artifact_for(report_path, schema_version=report.get("schema_version"), repo=repo), parent_event_id=target_fail_event_id, data={"override": override, "finding_id": target_finding_id}))
     return override
 
 

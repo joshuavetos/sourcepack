@@ -45,3 +45,12 @@ def test_path_identity_preserves_traversal_tokens_without_laundering():
     a = traffic_report("FAIL", findings=[normalized_finding("missing_file", "error", "file", "missing", path="src/../secrets.env")])["findings"][0]
     b = traffic_report("FAIL", findings=[normalized_finding("missing_file", "error", "file", "missing", path="secrets.env")])["findings"][0]
     assert a["finding_id"] != b["finding_id"]
+
+
+def test_raw_finding_id_matches_report_enriched_finding_id_for_dependency_and_command():
+    dep = normalized_finding("unsupported_dependency", "error", "dependency", "missing", evidence="requests")
+    cmd = normalized_finding("unsupported_command", "error", "command", "missing", evidence="npm run build")
+    report = traffic_report("FAIL", findings=[dep, cmd])
+    by_reason = {finding["id"]: finding["finding_id"] for finding in report["findings"]}
+    assert finding_id_for(dep) == by_reason["unsupported_dependency"]
+    assert finding_id_for(cmd) == by_reason["unsupported_command"]

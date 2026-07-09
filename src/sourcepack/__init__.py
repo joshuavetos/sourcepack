@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-__version__ = "1.10.0a2"
+__version__ = "1.10.0a3"
 
 # Keep subprocess-based development/test invocations runnable from temporary
 # repositories before the package is installed. Installed packages do not need

@@ -54,3 +54,19 @@ def test_fail_detected_is_per_finding(tmp_path: Path):
     assert [e["event_type"] for e in events].count("fail_detected") == 3
     result = read_events(ledger)
     assert len(filter_events(result.events, "fail_detected")) == 3
+
+
+def test_read_events_surfaces_supported_schema_missing_required_fields_as_invalid(tmp_path: Path):
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text('{"schema_version":"sourcepack.decision_ledger.event.v1"}\n', encoding="utf-8")
+    result = read_events(ledger)
+    assert result.events == []
+    assert len(result.invalid_events) == 1
+    assert "missing required field: event_id" in result.invalid_events[0]["errors"]
+
+
+def test_append_event_refuses_invalid_event_dict(tmp_path: Path):
+    import pytest
+
+    with pytest.raises(ValueError, match="invalid decision ledger event"):
+        append_event(tmp_path / "ledger.jsonl", {"schema_version": "sourcepack.decision_ledger.event.v1"})

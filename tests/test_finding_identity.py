@@ -33,3 +33,15 @@ def test_materially_different_facts_get_different_ids():
 
 def test_normalized_finding_remains_backward_compatible_until_report_enrichment():
     assert "finding_id" not in normalized_finding("missing_file", "error", "file", "missing", path="a.py")
+
+
+def test_same_unsupported_dependency_fact_shares_id_even_when_message_changes():
+    a = traffic_report("FAIL", findings=[normalized_finding("unsupported_dependency", "error", "dependency", "first wording", evidence="requests")])["findings"][0]
+    b = traffic_report("FAIL", findings=[normalized_finding("unsupported_dependency", "error", "dependency", "second wording", evidence="requests")])["findings"][0]
+    assert a["finding_id"] == b["finding_id"]
+
+
+def test_path_identity_preserves_traversal_tokens_without_laundering():
+    a = traffic_report("FAIL", findings=[normalized_finding("missing_file", "error", "file", "missing", path="src/../secrets.env")])["findings"][0]
+    b = traffic_report("FAIL", findings=[normalized_finding("missing_file", "error", "file", "missing", path="secrets.env")])["findings"][0]
+    assert a["finding_id"] != b["finding_id"]

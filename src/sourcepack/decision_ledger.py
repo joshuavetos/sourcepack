@@ -12,6 +12,19 @@ from sourcepack import __version__
 
 DECISION_LEDGER_EVENT_SCHEMA_VERSION = "sourcepack.decision_ledger.event.v1"
 SUPPORTED_SCHEMA_VERSIONS = {DECISION_LEDGER_EVENT_SCHEMA_VERSION}
+REQUIRED_EVENT_FIELDS = (
+    "schema_version",
+    "event_id",
+    "event_type",
+    "created_at",
+    "sourcepack_version",
+    "command",
+    "repo",
+    "artifact",
+    "parent_event_id",
+    "related_event_ids",
+    "data",
+)
 
 
 def utc_now() -> str:
@@ -60,7 +73,45 @@ def new_event(
     }
 
 
+def validate_event(event: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(event, dict):
+        return ["event is not an object"]
+    for field in REQUIRED_EVENT_FIELDS:
+        if field not in event:
+            errors.append(f"missing required field: {field}")
+    if event.get("schema_version") != DECISION_LEDGER_EVENT_SCHEMA_VERSION:
+        errors.append("unsupported schema_version")
+    for field in ("event_id", "event_type", "created_at", "sourcepack_version", "command", "repo"):
+        if field in event and not isinstance(event.get(field), str):
+            errors.append(f"field must be string: {field}")
+        elif field in event and not event.get(field).strip():
+            errors.append(f"field must be non-empty string: {field}")
+    artifact = event.get("artifact")
+    if "artifact" in event and not isinstance(artifact, dict):
+        errors.append("field must be object: artifact")
+    elif isinstance(artifact, dict):
+        for field in ("path", "sha256", "schema_version"):
+            if field not in artifact:
+                errors.append(f"artifact missing field: {field}")
+        for field in ("path", "sha256", "schema_version"):
+            value = artifact.get(field)
+            if value is not None and not isinstance(value, str):
+                errors.append(f"artifact field must be string or null: {field}")
+    if "parent_event_id" in event and event.get("parent_event_id") is not None and not isinstance(event.get("parent_event_id"), str):
+        errors.append("field must be string or null: parent_event_id")
+    related = event.get("related_event_ids")
+    if "related_event_ids" in event and (not isinstance(related, list) or any(not isinstance(item, str) for item in related)):
+        errors.append("field must be list of strings: related_event_ids")
+    if "data" in event and not isinstance(event.get("data"), dict):
+        errors.append("field must be object: data")
+    return errors
+
+
 def append_event(path: str | Path, event: dict[str, Any]) -> dict[str, Any]:
+    errors = validate_event(event)
+    if errors:
+        raise ValueError("invalid decision ledger event: " + "; ".join(errors))
     ledger_path = Path(path)
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     with ledger_path.open("a", encoding="utf-8") as fh:
@@ -73,15 +124,17 @@ class LedgerReadResult:
     events: list[dict[str, Any]]
     malformed_lines: list[dict[str, Any]]
     unsupported_schema_versions: list[dict[str, Any]]
+    invalid_events: list[dict[str, Any]]
 
 
 def read_events(path: str | Path) -> LedgerReadResult:
     events: list[dict[str, Any]] = []
     malformed: list[dict[str, Any]] = []
     unsupported: list[dict[str, Any]] = []
+    invalid: list[dict[str, Any]] = []
     ledger_path = Path(path)
     if not ledger_path.exists():
-        return LedgerReadResult(events, malformed, unsupported)
+        return LedgerReadResult(events, malformed, unsupported, invalid)
     for line_no, line in enumerate(ledger_path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
@@ -97,8 +150,12 @@ def read_events(path: str | Path) -> LedgerReadResult:
         if schema not in SUPPORTED_SCHEMA_VERSIONS:
             unsupported.append({"line": line_no, "schema_version": schema, "event": data})
             continue
+        errors = validate_event(data)
+        if errors:
+            invalid.append({"line": line_no, "errors": errors, "event": data})
+            continue
         events.append(data)
-    return LedgerReadResult(events, malformed, unsupported)
+    return LedgerReadResult(events, malformed, unsupported, invalid)
 
 
 def filter_events(events: Iterable[dict[str, Any]], event_type: str) -> list[dict[str, Any]]:

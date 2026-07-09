@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from sourcepack import __version__
-from sourcepack.decision_ledger import append_event, artifact_for, new_event
+from sourcepack.decision_ledger import append_event, artifact_for, filter_events, new_event, read_events
 
 OVERRIDE_SCHEMA_VERSION = "sourcepack.override.v1"
 
@@ -27,6 +27,18 @@ def find_target_finding(report: dict[str, Any], finding_id: str) -> dict[str, An
         if isinstance(finding, dict) and finding.get("finding_id") == finding_id and finding.get("severity") == "error":
             return finding
     return None
+
+
+def _verify_fail_event_link(ledger_path: str | Path, target_fail_event_id: str, target_finding_id: str) -> None:
+    result = read_events(ledger_path)
+    for event in filter_events(result.events, "fail_detected"):
+        if event.get("event_id") != target_fail_event_id:
+            continue
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        if data.get("finding_id") != target_finding_id:
+            raise ValueError("target_fail_event_id does not match target_finding_id")
+        return
+    raise ValueError("target_fail_event_id was not found in the decision ledger")
 
 
 def create_override(
@@ -50,6 +62,10 @@ def create_override(
     target = find_target_finding(report, target_finding_id)
     if target is None:
         raise ValueError("override target finding_id must reference a real FAIL finding")
+    if ledger_path is not None:
+        if not target_fail_event_id:
+            raise ValueError("target_fail_event_id is required when recording override to decision ledger")
+        _verify_fail_event_link(ledger_path, target_fail_event_id, target_finding_id)
     override = {
         "schema_version": OVERRIDE_SCHEMA_VERSION,
         "override_id": "spko_" + uuid.uuid4().hex,

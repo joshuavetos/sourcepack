@@ -23,10 +23,6 @@ def _normalize_path(value: str | None) -> str | None:
     for part in PurePosixPath(text).parts:
         if part in {"", "."}:
             continue
-        if part == "..":
-            if parts:
-                parts.pop()
-            continue
         parts.append(part)
     return "/".join(parts) or None
 

@@ -4,7 +4,8 @@ from pathlib import Path
 from sourcepack.reports.json import normalized_finding, traffic_report, write_user_report
 
 
-def test_stranger_demo_smoke_catches_unsupported_repo_fact(tmp_path: Path):
+def test_report_layer_stranger_demo_smoke_catches_unsupported_repo_fact(tmp_path: Path):
+    # This smoke gate intentionally exercises the public report-building layer; it is not a full CLI end-to-end demo.
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "app.py").write_text("print('tiny')\n", encoding="utf-8")

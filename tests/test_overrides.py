@@ -60,3 +60,27 @@ def test_overridden_and_unoverridden_fails_are_distinguished_without_erasing(tmp
     assert classified["overridden"] == [report["findings"][0]["finding_id"]]
     assert classified["unoverridden"] == [report["findings"][1]["finding_id"]]
     assert len(report["findings"]) == 2
+
+
+def test_override_ledger_recording_fails_without_fail_event_id(tmp_path: Path):
+    report = _report()
+    with pytest.raises(ValueError, match="target_fail_event_id is required"):
+        create_override(report=report, report_path=tmp_path / "r.json", target_finding_id=report["findings"][0]["finding_id"], actor="me", reason="reviewed", scope="local", ledger_path=tmp_path / "ledger.jsonl")
+
+
+def test_override_ledger_recording_fails_when_fail_event_missing_from_ledger(tmp_path: Path):
+    report = _report()
+    ledger = tmp_path / "ledger.jsonl"
+    with pytest.raises(ValueError, match="not found"):
+        create_override(report=report, report_path=tmp_path / "r.json", target_finding_id=report["findings"][0]["finding_id"], target_fail_event_id="spke_missing", actor="me", reason="reviewed", scope="local", ledger_path=ledger)
+
+
+def test_override_ledger_recording_fails_when_fail_event_finding_id_mismatches(tmp_path: Path):
+    report = _report()
+    report_path = tmp_path / "r.json"
+    report_path.write_text("{}", encoding="utf-8")
+    ledger = tmp_path / "ledger.jsonl"
+    fail_event = filter_events(append_report_events(ledger, report=report, report_path=report_path, command="report", repo=tmp_path), "fail_detected")[0]
+    other_finding_id = report["findings"][1]["finding_id"]
+    with pytest.raises(ValueError, match="does not match"):
+        create_override(report=report, report_path=report_path, target_finding_id=other_finding_id, target_fail_event_id=fail_event["event_id"], actor="me", reason="reviewed", scope="local", ledger_path=ledger, repo=tmp_path)

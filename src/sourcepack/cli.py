@@ -29,6 +29,7 @@ from .reports.json import normalized_finding, traffic_report, write_user_report
 from .reports.markdown import LIGHT_BY_VERDICT, SEVERITY_ORDER, render_traffic
 from .execution_ledger import clear_ledger, entry_to_json, execution_findings, iter_entries, run_and_record, find_repo_root
 from .commands import fleet as fleet_command
+from .commands import report as report_command
 from .policy import validate_policy_config
 from .replay import reconstruct_replay, render_replay_human
 
@@ -1187,34 +1188,6 @@ PY_DEP_FILES = {"requirements.txt", "pyproject.toml", "setup.py", "setup.cfg"}
 JS_EXTS = {".js", ".jsx", ".ts", ".tsx"}
 
 
-
-def _latest_report_html_path(repo: str | Path) -> Path:
-    return ensure_sourcepack_dirs(repo)["latest_html"]
-
-
-def cli_report_path(args) -> int:
-    print(_latest_report_html_path(Path(args.repo).resolve()))
-    return 0
-
-
-def cli_report_open(args) -> int:
-    repo = Path(args.repo).resolve()
-    paths = ensure_sourcepack_dirs(repo)
-    if not paths["latest_json"].exists():
-        print(f"ERROR: no SourcePack report found at {paths['latest_json']}", file=sys.stderr)
-        return 1
-    try:
-        report = json.loads(paths["latest_json"].read_text(encoding="utf-8"))
-        paths["latest_html"].write_text(render_report_html(report), encoding="utf-8")
-    except Exception as exc:
-        print(f"ERROR: could not prepare SourcePack HTML report at {paths['latest_html']}: {exc}", file=sys.stderr)
-        return 1
-    uri = paths["latest_html"].resolve().as_uri()
-    opened = webbrowser.open(uri)
-    print(f"Report HTML: {paths['latest_html']}")
-    if not opened:
-        print("Browser open was not confirmed; open the path above manually.")
-    return 0
 
 
 def finalize_diff_report(repo: str | Path | None, report: dict, args, stem: str = "diff") -> dict:
@@ -2830,12 +2803,7 @@ def run_cli(args_list=None):
     workbench_cmd.add_argument("--host", default="127.0.0.1")
     workbench_cmd.add_argument("--port", type=int, default=0)
     workbench_cmd.add_argument("--no-open", action="store_true")
-    report_cmd = subs.add_parser("report", help="work with local SourcePack reports")
-    report_subs = report_cmd.add_subparsers(dest="report_command")
-    report_open = report_subs.add_parser("open", help="open .sourcepack/reports/latest.html")
-    report_open.add_argument("repo", nargs="?", default=".")
-    report_path = report_subs.add_parser("path", help="print .sourcepack/reports/latest.html")
-    report_path.add_argument("repo", nargs="?", default=".")
+    report_command.register(subs)
     explain_cmd = subs.add_parser("explain")
     explain_cmd.add_argument("reason_code")
     allow_cmd = subs.add_parser("allow")
@@ -2905,12 +2873,10 @@ def run_cli(args_list=None):
             from .workbench import serve_workbench
             return serve_workbench(args.repo, host=args.host, port=args.port, open_browser=not args.no_open)
         if args.command == "report":
-            if args.report_command == "open":
-                return cli_report_open(args)
-            if args.report_command == "path":
-                return cli_report_path(args)
-            parser.parse_args(["report", "--help"])
-            return 1
+            result = report_command.cli_report(args)
+            if result == 1 and getattr(args, "report_command", None) is None:
+                parser.parse_args(["report", "--help"])
+            return result
         if args.command == "build":
             scanner = SourceScanner(args.input, max_file_size=args.max_file_size, include_hidden=args.include_hidden, redact=not args.no_redact).scan()
             out = PacketWriter(args.out, scanner, force=args.force).write_all()

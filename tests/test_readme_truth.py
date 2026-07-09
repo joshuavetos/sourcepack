@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import ast
+import contextlib
+import io
 import re
 from pathlib import Path
 
@@ -13,13 +14,17 @@ def readme() -> str:
 
 
 def cli_subcommands() -> set[str]:
-    tree = ast.parse((ROOT / "src" / "sourcepack" / "cli.py").read_text(encoding="utf-8"))
-    commands: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "add_parser":
-            if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                commands.add(node.args[0].value)
-    return commands
+    from sourcepack.cli import run_cli
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        try:
+            run_cli(["--help"])
+        except SystemExit as exc:
+            assert exc.code == 0
+    usage_commands = re.search(r"\{([^}]+)\}", buf.getvalue())
+    assert usage_commands is not None
+    return {command.strip() for command in usage_commands.group(1).split(",")}
 
 
 def project_claims_published_package() -> bool:

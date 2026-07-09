@@ -12,6 +12,7 @@ from sourcepack.reports.sarif import render_sarif
 from sourcepack.reports.markdown import LIGHT_BY_VERDICT, render_traffic
 from sourcepack.reason_codes import normalize_reason_code, is_canonical_reason_code
 from sourcepack.evidence import REPLAY_BUNDLE_SCHEMA_VERSION, attach_evidence_to_finding, evidence_summary, make_evidence, make_evidence_item
+from sourcepack.finding_identity import attach_finding_id
 
 SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
 
@@ -113,7 +114,7 @@ def normalize_finding_evidence(finding: dict) -> dict:
 
 
 def traffic_report(verdict: str, headline: str | None = None, findings: list[dict] | None = None, checked_categories: list[str] | None = None, next_action: str | None = None, report_path: str = ".sourcepack/reports/latest.json", reason_type: str | None = None, not_checked: list[str] | None = None) -> dict:
-    findings = [normalize_finding_evidence(f) for f in (findings or [])]
+    findings = [attach_finding_id(normalize_finding_evidence(f)) for f in (findings or [])]
     findings = sorted(findings, key=lambda f: (SEVERITY_ORDER.get(f.get("severity", "info"), 9), f.get("id", ""), f.get("path") or ""))
     blockers = [f for f in findings if f.get("severity") == "error"]
     warnings = [f for f in findings if f.get("severity") == "warn"]

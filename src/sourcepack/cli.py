@@ -24,7 +24,7 @@ from xml.sax.saxutils import escape as xml_escape
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
 from .baseline import build_current_baseline as canonical_build_current_baseline
 from .ecosystems.python import PY_IMPORT_ALIASES
-from .packet import PacketWriter, SourceScanner
+from .packet import PacketWriter, SourceScanner, sourcepack_bootstrap_file
 from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_paths
 from .reports.html import render_report_html
 from .reports.json import normalized_finding, traffic_report, write_user_report
@@ -140,17 +140,22 @@ def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
     files: list[dict] = []
     source = "scanner_included_files"
     tracked = canonical_tracked_paths(root)
+    records: dict[str, str]
     if tracked is not None:
         raw_paths = sorted(tracked)
         source = "git_ls_files" if raw_paths else "scanner_included_files"
+        records = {raw.replace("\\", "/"): "git_ls_files" for raw in raw_paths}
         if not raw_paths:
-            raw_paths = sorted(included)
+            records = {rel: "scanner_included_files" for rel in sorted(included)}
+        else:
+            for rel in sorted(included):
+                if sourcepack_bootstrap_file(rel) and rel not in records:
+                    records[rel] = "scanner_included_files"
     else:
-        raw_paths = sorted(included)
-    for raw in raw_paths:
-        rel = raw.replace("\\", "/")
+        records = {rel: "scanner_included_files" for rel in sorted(included)}
+    for rel, record_source in sorted(records.items()):
         path = root / rel
-        rec = {"relative_path": rel, "included_in_prompt_context": rel in included, "source": source}
+        rec = {"relative_path": rel, "included_in_prompt_context": rel in included, "source": record_source}
         try:
             if path.exists() and path.is_file():
                 rec["sha256"] = sha256_file(path)

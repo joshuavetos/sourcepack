@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -412,6 +413,30 @@ def test_init_auto_includes_workspace_files_in_active_baseline(tmp_path: Path) -
     included = {item["relative_path"] for item in manifest["included_files"]}
     assert ".sourcepackignore" in included
     assert "sourcepack.config.json" in included
+
+    inventory = json.loads((packet / "file_inventory.json").read_text(encoding="utf-8"))
+    by_path = {item["relative_path"]: item for item in inventory["files"]}
+    for rel in (".sourcepackignore", "sourcepack.config.json"):
+        expected_hash = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+        assert rel in by_path
+        assert by_path[rel]["sha256"] == expected_hash
+        assert by_path[rel]["file_type"] == "text"
+        assert by_path[rel]["included_in_prompt_context"] is True
+        assert by_path[rel]["source"] == "scanner_included_files"
+
+    from sourcepack import judgment
+
+    patch = """diff --git a/.sourcepackignore b/.sourcepackignore
+--- a/.sourcepackignore
++++ b/.sourcepackignore
+@@ -1,2 +1,3 @@
+ # SourcePack ignore rules
+ .env
++tmp/
+"""
+    report = judgment.judge_patch_text(packet, patch)
+    assert "missing_file" not in report.get("missing_files", [])
+    assert report["verdict"] in {"PASS", "WARN"}
 
 
 def test_init_auto_late_unrelated_file_blocks_activation_and_pointer(tmp_path: Path, monkeypatch) -> None:

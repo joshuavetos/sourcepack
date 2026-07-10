@@ -252,7 +252,7 @@ def _gitignore_change_is_exact_sourcepack_addition(repo: str | Path) -> bool:
     except OSError:
         return False
     if status == "??":
-        return current in {b".sourcepack\n", b".sourcepack/\n"}
+        return current in {b".sourcepack\n", b".sourcepack/\n", b".sourcepack\r\n", b".sourcepack/\r\n"}
     before_cp = run_git_bytes(repo, ["show", "HEAD:.gitignore"])
     if before_cp.returncode != 0:
         return False

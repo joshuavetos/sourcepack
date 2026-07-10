@@ -537,3 +537,83 @@ def test_init_auto_passes_user_force_value_to_baseline(monkeypatch, tmp_path: Pa
     Args.force = True
     assert cli.cli_init(Args()) == 0
     assert seen == [False, True]
+
+
+def test_sourcepack_gitignore_exact_newline_variants_are_accepted(tmp_path: Path) -> None:
+    for name, content in {
+        "new-lf": b".sourcepack\n",
+        "new-crlf": b".sourcepack\r\n",
+        "new-slash-lf": b".sourcepack/\n",
+        "new-slash-crlf": b".sourcepack/\r\n",
+    }.items():
+        repo = tmp_path / name
+        repo.mkdir()
+        _init_repo(repo)
+        (repo / "app.py").write_text("print('ok')\n", encoding="utf-8")
+        subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "commit", "-m", "app"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (repo / ".gitignore").write_bytes(content)
+
+        assert baseline._gitignore_change_is_exact_sourcepack_addition(repo), name
+
+
+def test_sourcepack_gitignore_exact_tracked_append_newline_variants_are_accepted(tmp_path: Path) -> None:
+    for name, before, after in [
+        ("tracked-lf", b"dist\n", b"dist\n.sourcepack/\n"),
+        ("tracked-crlf", b"dist\r\n", b"dist\r\n.sourcepack/\r\n"),
+    ]:
+        repo = tmp_path / name
+        repo.mkdir()
+        _init_repo(repo)
+        (repo / ".gitignore").write_bytes(before)
+        subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "commit", "-m", "ignore"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (repo / ".gitignore").write_bytes(after)
+
+        assert baseline._gitignore_change_is_exact_sourcepack_addition(repo), name
+
+
+def test_sourcepack_gitignore_rejects_removed_or_modified_preexisting_rules(tmp_path: Path) -> None:
+    cases = {
+        "deleted-rule": (b"dist\nnode_modules\n", b"dist\n.sourcepack/\n"),
+        "modified-rule": (b"dist\n", b"build\n.sourcepack/\n"),
+    }
+    for name, (before, after) in cases.items():
+        repo = tmp_path / name
+        repo.mkdir()
+        _init_repo(repo)
+        (repo / ".gitignore").write_bytes(before)
+        subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "commit", "-m", "ignore"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (repo / ".gitignore").write_bytes(after)
+
+        assert not baseline._gitignore_change_is_exact_sourcepack_addition(repo), name
+
+
+def test_baseline_pre_activation_recheck_blocks_late_dirty_file_and_cleans_candidate(monkeypatch, tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=tmp_path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "commit", "-m", "app"], cwd=tmp_path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    paths, _ = baseline.build_current_baseline(tmp_path, quiet=True, force=False)
+    active_before = paths["active_pointer"].read_text(encoding="utf-8")
+    builds_before = {path.name for path in (tmp_path / ".sourcepack" / "baseline" / "builds").iterdir()}
+
+    original_write = baseline._write_baseline_packet
+
+    def write_then_dirty(repo, packet_path):
+        original_write(repo, packet_path)
+        (Path(repo) / "late.txt").write_text("late dirty\n", encoding="utf-8")
+
+    monkeypatch.setattr(baseline, "_write_baseline_packet", write_then_dirty)
+
+    try:
+        baseline.build_current_baseline(tmp_path, quiet=True, force=False)
+    except RuntimeError as exc:
+        assert "dirty working tree" in str(exc)
+    else:
+        raise AssertionError("baseline creation should fail")
+
+    assert paths["active_pointer"].read_text(encoding="utf-8") == active_before
+    builds_after = {path.name for path in (tmp_path / ".sourcepack" / "baseline" / "builds").iterdir()}
+    assert builds_after == builds_before

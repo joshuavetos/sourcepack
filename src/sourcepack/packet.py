@@ -257,13 +257,18 @@ def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
     raw_paths = _git_tracked_paths(root)
     source = "git_ls_files" if raw_paths is not None else "scanner_included_files"
 
+    records: dict[str, str] = {}
     if raw_paths is None:
-        raw_paths = sorted(included)
+        records = {rel: "scanner_included_files" for rel in sorted(included)}
+    else:
+        records = {raw.replace("\\", "/"): "git_ls_files" for raw in sorted(raw_paths)}
+        for rel in sorted(included):
+            if sourcepack_bootstrap_file(rel) and rel not in records:
+                records[rel] = "scanner_included_files"
 
-    for raw in sorted(raw_paths):
-        rel = raw.replace("\\", "/")
+    for rel, record_source in sorted(records.items()):
         path = root / rel
-        rec = {"relative_path": rel, "included_in_prompt_context": rel in included, "source": source}
+        rec = {"relative_path": rel, "included_in_prompt_context": rel in included, "source": record_source}
         try:
             if path.exists() and path.is_file():
                 rec["sha256"] = sha256_file(path)

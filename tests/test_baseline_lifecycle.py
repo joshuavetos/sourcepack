@@ -394,3 +394,48 @@ def test_committed_range_preserves_missing_file_behavior_for_clean_worktree(tmp_
     assert "new_file" in finding_ids(data)
     assert any(finding.get("path") == "new_notes.md" for finding in data.get("findings", []))
     assert "no_diff" not in finding_ids(data)
+
+
+def test_init_auto_includes_workspace_files_in_active_baseline(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+
+    cp = run_cli(repo, "init", ".", "--auto", "--no-hook", "--json")
+    json_start = cp.stdout.find("{\n")
+    data = json.loads(cp.stdout[json_start:]) if json_start >= 0 else {}
+
+    assert cp.returncode == 0, cp.stderr + cp.stdout
+    assert data["verdict"] == "PASS"
+    assert (repo / ".sourcepackignore").exists()
+    assert (repo / "sourcepack.config.json").exists()
+    packet = active_build(repo) / "packet"
+    manifest = json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
+    included = {item["relative_path"] for item in manifest["included_files"]}
+    assert ".sourcepackignore" in included
+    assert "sourcepack.config.json" in included
+
+
+def test_init_auto_late_unrelated_file_blocks_activation_and_pointer(tmp_path: Path, monkeypatch) -> None:
+    import sourcepack.cli as cli_mod
+
+    repo = init_repo(tmp_path)
+    original_ensure = cli_mod.ensure_gitignore_entry
+
+    def dirty_after_precheck(path):
+        result = original_ensure(path)
+        (Path(path) / "late.txt").write_text("late dirty\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(cli_mod, "ensure_gitignore_entry", dirty_after_precheck)
+
+    class Args:
+        path = str(repo)
+        auto = True
+        force = False
+        refresh_baseline = False
+        no_hook = True
+        install_hygiene_hooks = False
+        strict = False
+        json = True
+
+    assert cli_mod.cli_init(Args()) == 1
+    assert not (repo / ".sourcepack" / "baseline" / "active.json").exists()

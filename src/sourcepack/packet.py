@@ -86,6 +86,10 @@ def matches_any(name: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
 
+def sourcepack_bootstrap_file(path: str) -> bool:
+    return path.replace("\\", "/") in {".sourcepackignore", "sourcepack.config.json"}
+
+
 def _git_tracked_paths(root: Path) -> set[str] | None:
     return git_tracked_paths(root)
 def redact_secrets(text: str):
@@ -228,7 +232,7 @@ class SourceScanner:
                     self.ignored_files.append(IgnoredFile(rel_str, "symlink_skipped"))
                     continue
 
-                if not self.include_hidden and filename.startswith("."):
+                if not self.include_hidden and filename.startswith(".") and not sourcepack_bootstrap_file(rel_str):
                     self.ignored_files.append(IgnoredFile(rel_str, "hidden_file"))
                     continue
 
@@ -236,7 +240,7 @@ class SourceScanner:
                     self.ignored_files.append(IgnoredFile(rel_str, "ignored_pattern"))
                     continue
 
-                if tracked_paths is not None and rel_str not in tracked_paths:
+                if tracked_paths is not None and rel_str not in tracked_paths and not sourcepack_bootstrap_file(rel_str):
                     self.ignored_files.append(IgnoredFile(rel_str, "untracked_file_skipped"))
                     continue
 

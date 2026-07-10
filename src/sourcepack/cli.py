@@ -1978,8 +1978,15 @@ def untracked_files_as_diff(repo: str | Path) -> str:
 def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, ci: bool = False) -> dict:
     repo_arg = Path(repo_path).resolve(); cp = run_git(repo_arg, ["rev-parse", "--show-toplevel"])
     if cp.returncode != 0:
-        message = "Git executable not found." if cp.returncode == 127 else "No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use."
-        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable" if cp.returncode == 127 else "no_git_repo", "error", "git", message)])
+        if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
+            finding_id = "git_unavailable"; message = "Git executable not found."
+        elif cp.returncode == GIT_RETURNCODE_TIMEOUT:
+            finding_id = "git_timeout"; message = "Git command timed out."
+        elif cp.returncode == GIT_RETURNCODE_OS_ERROR:
+            finding_id = "git_diff_failed"; message = cp.stderr.strip() or "Git execution failed."
+        else:
+            finding_id = "no_git_repo"; message = "No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use."
+        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding(finding_id, "error", "git", message)])
     git_root = Path(cp.stdout.strip()).resolve()
     repo = repo_arg if validate_baseline(repo_arg).get("state") in {"present", "stale", "corrupt"} else git_root
     paths = ensure_sourcepack_dirs(repo); added, err = ensure_gitignore_entry(repo)
@@ -1992,8 +1999,14 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         if repo != git_root:
             diff_args.append("--relative")
         cp = run_git(repo, diff_args); diff_text = cp.stdout
-        if cp.returncode == 127:
+        if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
             return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable", "error", "git", "Git executable not found.")])
+        if cp.returncode == GIT_RETURNCODE_TIMEOUT:
+            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_timeout", "error", "git", "Git command timed out.")])
+        if cp.returncode == GIT_RETURNCODE_OS_ERROR:
+            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", cp.stderr.strip() or "Git execution failed.")])
+        if cp.returncode != 0:
+            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", cp.stderr.strip() or "Git diff failed.")])
         if not staged:
             extra = untracked_files_as_diff(repo)
             if extra and not (added and _only_sourcepack_gitignore_change(repo)):
@@ -2270,6 +2283,7 @@ def cli_init(args) -> int:
         else:
             print(render_traffic(rep), end="")
         return 1
+    init_workspace(repo)
     findings: list[dict] = []
     details = {"baseline_created": False, "baseline_refreshed": False, "hook_installed": False, "strict_mode": bool(args.strict), "sourcepack_gitignored": False, "dirty_worktree": False, "next_action": "continue."}
     paths = ensure_sourcepack_dirs(repo)
@@ -2315,7 +2329,6 @@ def cli_init(args) -> int:
     verdict = "FAIL" if any(f["severity"] == "error" for f in findings) else "WARN" if findings else "PASS"
     headline = "SourcePack automatic mode enabled." if verdict == "PASS" else "SourcePack automatic mode partially enabled." if verdict == "WARN" else "SourcePack automatic mode could not be enabled."
     rep = traffic_report(verdict, headline, findings, ["init", "baseline", "hook"], details.get("next_action", "continue."))
-    init_workspace(repo)
     write_auto_report(repo, rep, details)
     if args.json:
         print(json.dumps({**rep, **details}, indent=2)); return 0 if verdict != "FAIL" else 1

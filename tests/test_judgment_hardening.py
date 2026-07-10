@@ -209,3 +209,60 @@ literal 4
 
     assert cli._binary_diff_paths_from_patch(patch) == judgment._binary_diff_paths_from_patch(patch)
     assert cli._binary_diff_paths_from_patch(patch) == [".github/workflows/foo bar.bin"]
+
+
+def test_build_repo_change_report_initial_git_os_error_is_not_no_git_repo(monkeypatch, tmp_path):
+    def fake_run_git(repo, args):
+        assert args == ["rev-parse", "--show-toplevel"]
+        return subprocess.CompletedProcess(["git", *args], judgment.GIT_RETURNCODE_OS_ERROR, "", "permission denied")
+
+    monkeypatch.setattr(judgment, "run_git", fake_run_git)
+
+    report = judgment.build_repo_change_report(tmp_path)
+    finding_ids = {finding.get("id") for finding in report.get("findings", [])}
+
+    assert report["verdict"] == "FAIL"
+    assert "git_diff_failed" in finding_ids
+    assert "no_git_repo" not in finding_ids
+
+
+def test_build_repo_change_report_later_git_diff_os_error_is_not_baseline_failed(monkeypatch, tmp_path):
+    def fake_run_git(repo, args):
+        if args == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(["git", *args], 0, str(tmp_path), "")
+        if args == ["diff"]:
+            return subprocess.CompletedProcess(["git", *args], judgment.GIT_RETURNCODE_OS_ERROR, "", "permission denied")
+        raise AssertionError(f"unexpected git call: {args}")
+
+    monkeypatch.setattr(judgment, "run_git", fake_run_git)
+
+    report = judgment.build_repo_change_report(tmp_path)
+    finding_ids = {finding.get("id") for finding in report.get("findings", [])}
+
+    assert report["verdict"] == "FAIL"
+    assert "git_diff_failed" in finding_ids
+    assert "baseline_failed" not in finding_ids
+
+
+def test_build_repo_change_report_invalid_ref_pair_stays_git_diff_failed(tmp_path):
+    report = judgment.build_repo_change_report(tmp_path, base_ref="HEAD")
+    finding_ids = {finding.get("id") for finding in report.get("findings", [])}
+
+    assert report["verdict"] == "FAIL"
+    assert "git_diff_failed" in finding_ids
+    assert "baseline_failed" not in finding_ids
+
+
+def test_build_repo_change_report_initial_missing_git_remains_git_unavailable(monkeypatch, tmp_path):
+    def fake_run_git(repo, args):
+        assert args == ["rev-parse", "--show-toplevel"]
+        return subprocess.CompletedProcess(["git", *args], judgment.GIT_RETURNCODE_NOT_FOUND, "", "missing")
+
+    monkeypatch.setattr(judgment, "run_git", fake_run_git)
+
+    report = judgment.build_repo_change_report(tmp_path)
+    finding_ids = {finding.get("id") for finding in report.get("findings", [])}
+
+    assert report["verdict"] == "FAIL"
+    assert "git_unavailable" in finding_ids
+    assert "no_git_repo" not in finding_ids

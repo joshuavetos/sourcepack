@@ -57,9 +57,6 @@ SECRET_PATTERNS = [
 COMMON_DEPENDENCIES = ["fastapi", "flask", "django", "react", "vue", "svelte", "pytest", "typer", "click", "sqlalchemy", "prisma", "pydantic", "pyyaml", "pillow", "beautifulsoup4", "opencv-python", "scikit-learn", "python-dotenv", "pyjwt", "python-dateutil", "boto3", "requests"]
 FEATURE_NAMES = ("pdf", "ocr", "web server", "react", "docker", "authentication", "database")
 GIT_TIMEOUT_SECONDS: Final[int] = 10
-GIT_RETURNCODE_TIMEOUT: Final[int] = 124
-GIT_RETURNCODE_OS_ERROR: Final[int] = 126
-GIT_RETURNCODE_NOT_FOUND: Final[int] = 127
 NATURAL_LANGUAGE_COMMAND_TARGETS: Final[frozenset[str]] = frozenset({"a", "an", "the", "this", "that", "these", "those"})
 
 
@@ -1658,7 +1655,7 @@ def untracked_files_as_diff(repo: str | Path) -> str:
 
 def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, ci: bool = False, base_ref: str | None = None, head_ref: str | None = None) -> dict:
     if (base_ref is None) != (head_ref is None):
-        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("baseline_failed", "error", "git", "--base-ref and --head-ref must be provided together.")])
+        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", "--base-ref and --head-ref must be provided together.")])
     repo_arg = Path(repo_path).resolve(); cp = run_git(repo_arg, ["rev-parse", "--show-toplevel"])
     if cp.returncode != 0:
         if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
@@ -1667,6 +1664,9 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         elif cp.returncode == GIT_RETURNCODE_TIMEOUT:
             finding_id = "git_timeout"
             message = f"Git command timed out after {GIT_TIMEOUT_SECONDS} seconds."
+        elif cp.returncode == GIT_RETURNCODE_OS_ERROR:
+            finding_id = "git_diff_failed"
+            message = cp.stderr.strip() or "Git execution failed."
         else:
             finding_id = "no_git_repo"
             message = "No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use."
@@ -1692,7 +1692,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_timeout", "error", "git", f"Git command timed out after {GIT_TIMEOUT_SECONDS} seconds.")])
         if cp.returncode != 0:
             message = cp.stderr.strip() or "Git diff failed."
-            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("baseline_failed", "error", "git", message)])
+            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", message)])
         if base_ref is None and head_ref is None and not staged:
             extra = untracked_files_as_diff(repo)
             if extra and not (added and _only_sourcepack_gitignore_change(repo)):

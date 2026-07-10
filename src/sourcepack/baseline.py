@@ -7,7 +7,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, metadata as canonical_git_metadata, run_git
+from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, metadata as canonical_git_metadata, run_git, run_git_bytes
 from .paths import ensure_sourcepack_dirs, sourcepack_paths
 
 try:
@@ -16,10 +16,15 @@ except Exception:
     __version__ = "1.10.0-alpha"
 
 
+DEFAULT_SOURCEPACKIGNORE = "# SourcePack ignore rules\n.env\nnode_modules/\ndist/\nbuild/\n"
+DEFAULT_SOURCEPACK_CONFIG = json.dumps({"max_file_size": 1_000_000, "include_hidden": False, "redact_secrets": True}, indent=2)
+
 
 def protected_baseline_path(path: str) -> bool:
-    p = path.replace("\\", "/").lstrip("./")
-    return p.startswith(".sourcepack/baseline/")
+    p = path.replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p.startswith(".sourcepack/baseline/") or p == ".sourcepack/state/baseline.lock"
 
 
 def utc_now() -> str:
@@ -227,24 +232,79 @@ def _git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
     return False, None
 
 
-def _only_sourcepack_gitignore_change(repo: str | Path) -> bool:
+def _status_path(line: str) -> str:
+    return line[3:] if len(line) > 3 else line
+
+
+def _gitignore_change_is_exact_sourcepack_addition(repo: str | Path) -> bool:
     repo = Path(repo)
-    status = _run_git(repo, ["status", "--porcelain", "--", ".gitignore"])
-    others = _run_git(repo, ["status", "--porcelain"])
-    if status.returncode != 0 or others.returncode != 0:
+    cp = _run_git(repo, ["status", "--porcelain", "--", ".gitignore"])
+    if cp.returncode != 0:
         return False
-    lines = [line for line in others.stdout.splitlines() if line.strip()]
-    if not lines or any(not line.endswith(".gitignore") for line in lines):
+    lines = [line for line in cp.stdout.splitlines() if line.strip()]
+    if len(lines) != 1 or _status_path(lines[0]) != ".gitignore":
+        return False
+    status = lines[0][:2]
+    if status not in {"??", " M", "M "}:
         return False
     try:
-        text = (repo / ".gitignore").read_text(encoding="utf-8")
+        current = (repo / ".gitignore").read_bytes()
     except OSError:
         return False
-    tracked = _run_git(repo, ["show", "HEAD:.gitignore"])
-    before = tracked.stdout if tracked.returncode == 0 else ""
-    added = [line.strip() for line in text.splitlines() if line.strip() and line.strip() not in {line.strip() for line in before.splitlines()}]
-    return bool(added) and set(added) <= {".sourcepack", ".sourcepack/"}
+    if status == "??":
+        return current in {b".sourcepack\n", b".sourcepack/\n"}
+    before_cp = run_git_bytes(repo, ["show", "HEAD:.gitignore"])
+    if before_cp.returncode != 0:
+        return False
+    before = before_cp.stdout
+    if any(line.strip() in {b".sourcepack", b".sourcepack/", b".sourcepack/*"} for line in before.splitlines()):
+        return False
+    newline = b"\r\n" if b"\r\n" in before else b"\n"
+    separator = b"" if before.endswith((b"\n", b"\r\n")) or not before else newline
+    return current in {before + separator + b".sourcepack" + newline, before + separator + b".sourcepack/" + newline}
 
+
+def _bootstrap_file_change_is_exact(repo: Path, rel: str, expected: str) -> bool:
+    cp = _run_git(repo, ["status", "--porcelain", "--", rel])
+    if cp.returncode != 0:
+        return False
+    lines = [line for line in cp.stdout.splitlines() if line.strip()]
+    if not lines:
+        return True
+    if len(lines) != 1 or lines[0][:2] != "??" or _status_path(lines[0]) != rel:
+        return False
+    try:
+        return (repo / rel).read_text(encoding="utf-8") == expected
+    except OSError:
+        return False
+
+
+def _only_sourcepack_bootstrap_changes(repo: str | Path) -> bool:
+    repo = Path(repo)
+    cp = _run_git(repo, ["status", "--porcelain", "-uall"])
+    if cp.returncode != 0:
+        return False
+    lines = [line for line in cp.stdout.splitlines() if line.strip()]
+    if not lines:
+        return False
+    allowed = {".gitignore", ".sourcepackignore", "sourcepack.config.json"}
+    for line in lines:
+        rel = _status_path(line)
+        if protected_baseline_path(rel):
+            continue
+        if rel not in allowed:
+            return False
+    if any(_status_path(line) == ".gitignore" for line in lines) and not _gitignore_change_is_exact_sourcepack_addition(repo):
+        return False
+    if not _bootstrap_file_change_is_exact(repo, ".sourcepackignore", DEFAULT_SOURCEPACKIGNORE):
+        return False
+    if not _bootstrap_file_change_is_exact(repo, "sourcepack.config.json", DEFAULT_SOURCEPACK_CONFIG):
+        return False
+    return True
+
+
+def _only_sourcepack_gitignore_change(repo: str | Path) -> bool:
+    return _only_sourcepack_bootstrap_changes(repo) and _gitignore_change_is_exact_sourcepack_addition(repo)
 
 def scanner_config_hash() -> str:
     from .packet import scanner_config_hash as packet_scanner_config_hash
@@ -268,7 +328,7 @@ def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: st
     dirty, dirty_state = _git_worktree_dirty(repo)
     if dirty_state in {"git_unavailable", "git_timeout", "git_error"}:
         raise RuntimeError(f"SourcePack refused to create a trusted baseline because git status could not be verified: {dirty_state}")
-    if dirty and not force and not _only_sourcepack_gitignore_change(repo):
+    if dirty and not force and not _only_sourcepack_bootstrap_changes(repo):
         raise RuntimeError(DIRTY_BASELINE_REFUSAL)
     paths = ensure_sourcepack_dirs(repo)
     previous = validate_baseline(repo); created = previous.get("state") == "missing"
@@ -290,6 +350,11 @@ def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: st
             raise RuntimeError(f"metadata.json {meta_err}")
         if fail_stage == "before_pointer_replace":
             raise RuntimeError("injected failure before pointer replacement")
+        dirty_before_activate, dirty_state_before_activate = _git_worktree_dirty(repo)
+        if dirty_state_before_activate in {"git_unavailable", "git_timeout", "git_error"}:
+            raise RuntimeError(f"SourcePack refused to activate trusted baseline because git status could not be verified: {dirty_state_before_activate}")
+        if dirty_before_activate and not force and not _only_sourcepack_bootstrap_changes(repo):
+            raise RuntimeError(DIRTY_BASELINE_REFUSAL)
         pointer = {"schema_version": "baseline_pointer.v1", "active_build_id": build_id, "activated_at": utc_now(), "packet_path": _rel_to_repo(repo, packet), "metadata_path": _rel_to_repo(repo, build_dir / "metadata.json")}
         _write_json_atomic(paths["active_pointer"], pointer)
         if fail_stage == "after_pointer_replace":

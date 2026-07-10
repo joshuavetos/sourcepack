@@ -385,6 +385,13 @@ Execution evidence does not prove code correctness, security, runtime success in
 - **Common cause:** Hung Git process, extremely large repository operation, slow filesystem, or Git prompt waiting for input.
 - **Likely fix:** Check Git health, remove interactive prompts, and rerun in a clean environment.
 
+## git_diff_failed
+
+- **Meaning:** SourcePack could not acquire the requested Git diff.
+- **Typical severity:** `FAIL`.
+- **Common cause:** Invalid base/head refs, Git execution failure, or a repository state that prevents diff generation.
+- **Likely fix:** Verify the requested refs and Git repository health, then rerun SourcePack.
+
 ## gitignore_unwritable
 
 - **Meaning:** SourcePack could not update `.gitignore` when it needed to add local SourcePack ignores.

@@ -29,7 +29,7 @@ from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_pa
 from .reports.html import render_report_html
 from .reports.json import normalized_finding, traffic_report, write_user_report
 from .reports.markdown import LIGHT_BY_VERDICT, SEVERITY_ORDER, render_traffic
-from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_TIMEOUT, dirty_worktree as canonical_dirty_worktree, run_git as canonical_run_git, tracked_paths as canonical_tracked_paths
+from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git, tracked_paths as canonical_tracked_paths
 from .execution_ledger import clear_ledger, entry_to_json, execution_findings, iter_entries, run_and_record, find_repo_root
 from .commands import fleet as fleet_command
 from .commands import report as report_command
@@ -1836,7 +1836,9 @@ def run_git(repo: Path, args: list[str]):
 
 
 def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
-    return canonical_dirty_worktree(repo)
+    from .git import dirty_worktree
+
+    return dirty_worktree(repo)
 
 
 
@@ -1920,7 +1922,7 @@ def cli_baseline(args) -> int:
         rep=traffic_report("FAIL","could not create baseline.",[normalized_finding("gitignore_unwritable","error","git",f"Cannot write .gitignore: {err}")]); print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
     existed = validate_baseline(repo).get("state") in {"present", "stale", "corrupt"}
     try:
-        build_current_baseline(repo, quiet=getattr(args, "quiet", False), force=True); refreshed = existed or args.refresh
+        build_current_baseline(repo, quiet=getattr(args, "quiet", False), force=getattr(args, "force", False)); refreshed = existed or args.refresh
         if dirty:
             headline = "baseline refreshed while uncommitted changes are present." if refreshed else "baseline created while uncommitted changes are present."
             rep=traffic_report("WARN", headline, [normalized_finding("dirty_worktree", "warn", "baseline", "baseline now includes current uncommitted changes.")], ["baseline","verify"], "Commit or discard unintended changes before relying on this baseline.")
@@ -2011,7 +2013,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             rep = traffic_report("FAIL", "baseline missing while changes are present.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
             rep.update(baseline_report_fields(baseline_status)); return rep
         try:
-            build_current_baseline(repo, quiet=True, force=True); baseline_status = validate_baseline(repo)
+            build_current_baseline(repo, quiet=True, force=False); baseline_status = validate_baseline(repo)
             rep_note = "Created SourcePack baseline because none existed and no diff was present."
         except BaselineLockError as exc:
             return traffic_report("WARN", "baseline writer is locked.", [normalized_finding("baseline_locked", "warn", "tooling", str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")
@@ -2268,7 +2270,6 @@ def cli_init(args) -> int:
         else:
             print(render_traffic(rep), end="")
         return 1
-    init_workspace(repo)
     findings: list[dict] = []
     details = {"baseline_created": False, "baseline_refreshed": False, "hook_installed": False, "strict_mode": bool(args.strict), "sourcepack_gitignored": False, "dirty_worktree": False, "next_action": "continue."}
     paths = ensure_sourcepack_dirs(repo)
@@ -2283,7 +2284,7 @@ def cli_init(args) -> int:
     baseline_exists = baseline_exists_before_init
     if args.refresh_baseline or (not baseline_exists and (not dirty or getattr(args, "force", False))):
         try:
-            _, created = build_current_baseline(repo, force=True)
+            _, created = build_current_baseline(repo, force=getattr(args, "force", False))
             details["baseline_created"] = created
             details["baseline_refreshed"] = not created or args.refresh_baseline
             if dirty:
@@ -2314,6 +2315,7 @@ def cli_init(args) -> int:
     verdict = "FAIL" if any(f["severity"] == "error" for f in findings) else "WARN" if findings else "PASS"
     headline = "SourcePack automatic mode enabled." if verdict == "PASS" else "SourcePack automatic mode partially enabled." if verdict == "WARN" else "SourcePack automatic mode could not be enabled."
     rep = traffic_report(verdict, headline, findings, ["init", "baseline", "hook"], details.get("next_action", "continue."))
+    init_workspace(repo)
     write_auto_report(repo, rep, details)
     if args.json:
         print(json.dumps({**rep, **details}, indent=2)); return 0 if verdict != "FAIL" else 1

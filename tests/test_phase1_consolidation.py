@@ -86,11 +86,11 @@ def test_git_run_differentiates_missing_executable_permission_and_missing_cwd(mo
 
     monkeypatch.setattr(git_mod.subprocess, "run", denied)
     denied_cp = git_mod.run_git(tmp_path, ["status"])
-    assert denied_cp.returncode not in {git_mod.GIT_RETURNCODE_NOT_FOUND, git_mod.GIT_RETURNCODE_TIMEOUT}
+    assert denied_cp.returncode == git_mod.GIT_RETURNCODE_OS_ERROR
     assert "denied" in denied_cp.stderr
 
     missing_cwd_cp = git_mod.run_git(tmp_path / "missing", ["status"])
-    assert missing_cwd_cp.returncode not in {git_mod.GIT_RETURNCODE_NOT_FOUND, git_mod.GIT_RETURNCODE_TIMEOUT}
+    assert missing_cwd_cp.returncode == git_mod.GIT_RETURNCODE_OS_ERROR
     assert "working directory does not exist" in missing_cwd_cp.stderr
 
 
@@ -212,3 +212,180 @@ def test_no_direct_production_git_subprocess_invocation_remains_outside_git_modu
             if isinstance(first, ast.List) and first.elts and isinstance(first.elts[0], ast.Constant) and first.elts[0].value == "git":
                 offenders.append(f"{path.relative_to(root)}:{node.lineno}")
     assert offenders == []
+
+def test_dirty_worktree_maps_permission_error_to_git_error(monkeypatch, tmp_path: Path) -> None:
+    def denied(*args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(git_mod.subprocess, "run", denied)
+
+    assert git_mod.dirty_worktree(tmp_path) == (False, "git_error")
+
+
+def test_dirty_worktree_missing_working_directory_is_git_error_not_dirty(tmp_path: Path) -> None:
+    assert git_mod.dirty_worktree(tmp_path / "missing") == (False, "git_error")
+
+
+def test_dirty_worktree_os_error_during_root_check_is_not_not_git(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(git_mod, "run_git", lambda repo, args: _cp(args, git_mod.GIT_RETURNCODE_OS_ERROR, stderr="permission denied"))
+
+    assert git_mod.dirty_worktree(tmp_path) == (False, "git_error")
+
+
+def test_dirty_worktree_preserves_real_diff_quiet_one_as_dirty(monkeypatch, tmp_path: Path) -> None:
+    def fake_run_git(repo, args):
+        if args == ["rev-parse", "--show-toplevel"]:
+            return _cp(args, 0, stdout=str(tmp_path))
+        if args == ["diff", "--quiet"]:
+            return _cp(args, 1)
+        raise AssertionError(f"unexpected git call: {args}")
+
+    monkeypatch.setattr(git_mod, "run_git", fake_run_git)
+
+    assert git_mod.dirty_worktree(tmp_path) == (True, None)
+
+
+def test_baseline_refuses_normalized_os_error_126(monkeypatch, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(baseline, "_run_git", lambda repo, args: _cp(args, git_mod.GIT_RETURNCODE_OS_ERROR, stderr="permission denied"))
+
+    with pytest.raises(RuntimeError, match="git_error"):
+        baseline.build_current_baseline(repo, quiet=True, force=True)
+
+    assert not (repo / ".sourcepack").exists()
+
+
+def test_canonical_baseline_allows_only_exact_sourcepack_gitignore_addition_without_force(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=tmp_path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "commit", "-m", "app"], cwd=tmp_path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    (tmp_path / ".gitignore").write_text(".sourcepack/\n", encoding="utf-8")
+
+    paths, created = baseline.build_current_baseline(tmp_path, quiet=True, force=False)
+
+    assert created is True
+    assert paths["active_pointer"].exists()
+
+
+def test_canonical_baseline_blocks_unrelated_dirty_state_even_after_gitignore_addition(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=tmp_path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "commit", "-m", "app"], cwd=tmp_path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    (tmp_path / ".gitignore").write_text(".sourcepack/\n", encoding="utf-8")
+    (tmp_path / "scratch.txt").write_text("unrelated\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="dirty working tree"):
+        baseline.build_current_baseline(tmp_path, quiet=True, force=False)
+
+    assert not (tmp_path / ".sourcepack").exists()
+
+
+def test_cli_baseline_blocks_file_added_after_precheck(monkeypatch, tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=tmp_path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "commit", "-m", "app"], cwd=tmp_path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    original_ensure = cli.ensure_gitignore_entry
+
+    def dirty_after_precheck(repo):
+        result = original_ensure(repo)
+        (Path(repo) / "late.txt").write_text("late dirty\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(cli, "ensure_gitignore_entry", dirty_after_precheck)
+
+    class Args:
+        repo = str(tmp_path)
+        json = True
+        verbose = False
+        force = False
+        quiet = True
+        refresh = False
+
+    assert cli.cli_baseline(Args()) == 1
+    assert not (tmp_path / ".sourcepack" / "baseline" / "active.json").exists()
+
+
+def test_cli_baseline_passes_user_force_value(monkeypatch, tmp_path: Path) -> None:
+    seen: list[bool] = []
+    monkeypatch.setattr(cli, "git_worktree_dirty", lambda repo: (False, None))
+    monkeypatch.setattr(cli, "ensure_sourcepack_dirs", lambda repo: {"active_pointer": tmp_path / "active.json"})
+    monkeypatch.setattr(cli, "ensure_gitignore_entry", lambda repo: (False, None))
+    monkeypatch.setattr(cli, "validate_baseline", lambda repo: {"state": "missing"})
+    monkeypatch.setattr(cli, "write_user_report", lambda repo, rep, stem: None)
+
+    def fake_build(repo, quiet=False, fail_stage=None, force=False):
+        seen.append(force)
+        return {"active_pointer": tmp_path / "active.json"}, True
+
+    monkeypatch.setattr(cli, "build_current_baseline", fake_build)
+
+    class Args:
+        repo = str(tmp_path)
+        json = True
+        verbose = False
+        force = False
+        quiet = True
+        refresh = False
+
+    assert cli.cli_baseline(Args()) == 0
+    Args.force = True
+    assert cli.cli_baseline(Args()) == 0
+    assert seen == [False, True]
+
+def test_auto_no_diff_baseline_creation_passes_false_force(monkeypatch, tmp_path: Path) -> None:
+    seen: list[bool] = []
+    monkeypatch.setattr(cli, "run_git", lambda repo, args: _cp(args, 0, stdout=str(tmp_path) if args == ["rev-parse", "--show-toplevel"] else ""))
+    monkeypatch.setattr(cli, "validate_baseline", lambda repo: {"state": "missing"})
+    monkeypatch.setattr(cli, "git_worktree_dirty", lambda repo: (False, None))
+    monkeypatch.setattr(cli, "ensure_sourcepack_dirs", lambda repo: {})
+    monkeypatch.setattr(cli, "ensure_gitignore_entry", lambda repo: (False, None))
+    monkeypatch.setattr(cli, "untracked_files_as_diff", lambda repo: "")
+    monkeypatch.setattr(cli, "baseline_report_fields", lambda status: {})
+
+    def fake_build(repo, quiet=False, fail_stage=None, force=False):
+        seen.append(force)
+        return {}, True
+
+    monkeypatch.setattr(cli, "build_current_baseline", fake_build)
+
+    report = cli.build_repo_change_report(tmp_path)
+
+    assert report["verdict"] == "PASS"
+    assert seen == [False]
+
+
+def test_init_auto_passes_user_force_value_to_baseline(monkeypatch, tmp_path: Path) -> None:
+    seen: list[bool] = []
+    monkeypatch.setattr(cli, "init_workspace", lambda repo: None)
+    monkeypatch.setattr(cli, "git_worktree_dirty", lambda repo: (False, None))
+    monkeypatch.setattr(cli, "validate_baseline", lambda repo: {"state": "missing"})
+    monkeypatch.setattr(cli, "ensure_sourcepack_dirs", lambda repo: {})
+    monkeypatch.setattr(cli, "ensure_gitignore_entry", lambda repo: (False, None))
+    monkeypatch.setattr(cli, "install_post_commit_hook", lambda repo, strict=False: None)
+    monkeypatch.setattr(cli, "write_auto_report", lambda repo, report, details=None: None)
+
+    def fake_build(repo, quiet=False, fail_stage=None, force=False):
+        seen.append(force)
+        return {}, True
+
+    monkeypatch.setattr(cli, "build_current_baseline", fake_build)
+
+    class Args:
+        path = str(tmp_path)
+        auto = True
+        force = False
+        refresh_baseline = False
+        no_hook = True
+        install_hygiene_hooks = False
+        strict = False
+        json = True
+
+    assert cli.cli_init(Args()) == 0
+    Args.force = True
+    assert cli.cli_init(Args()) == 0
+    assert seen == [False, True]

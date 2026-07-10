@@ -86,10 +86,6 @@ def matches_any(name: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
 
-def _decode_git_path(raw: bytes) -> str:
-    return raw.decode("utf-8", "surrogateescape").replace("\\", "/")
-
-
 def _git_tracked_paths(root: Path) -> set[str] | None:
     return git_tracked_paths(root)
 def redact_secrets(text: str):

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Final, Iterable
 from xml.sax.saxutils import escape as xml_escape
-from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_TIMEOUT, dirty_worktree as canonical_dirty_worktree, run_git as canonical_run_git
+from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
 from .baseline import BaselineLockError, acquire_baseline_lock, baseline_corrupt_result, baseline_report_fields, build_current_baseline, protected_baseline_path, release_baseline_lock, resolve_active_baseline, validate_baseline
 from .ecosystems.python import PY_IMPORT_ALIASES
@@ -58,6 +58,7 @@ COMMON_DEPENDENCIES = ["fastapi", "flask", "django", "react", "vue", "svelte", "
 FEATURE_NAMES = ("pdf", "ocr", "web server", "react", "docker", "authentication", "database")
 GIT_TIMEOUT_SECONDS: Final[int] = 10
 GIT_RETURNCODE_TIMEOUT: Final[int] = 124
+GIT_RETURNCODE_OS_ERROR: Final[int] = 126
 GIT_RETURNCODE_NOT_FOUND: Final[int] = 127
 NATURAL_LANGUAGE_COMMAND_TARGETS: Final[frozenset[str]] = frozenset({"a", "an", "the", "this", "that", "these", "those"})
 
@@ -1572,6 +1573,8 @@ def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
             return False, "git_unavailable"
         if cp.returncode == GIT_RETURNCODE_TIMEOUT:
             return False, "git_timeout"
+        if cp.returncode == GIT_RETURNCODE_OS_ERROR:
+            return False, "git_error"
         return False, "not_git"
     root = Path(cp.stdout.strip())
     for args in (["diff", "--quiet"], ["diff", "--staged", "--quiet"]):
@@ -1582,6 +1585,8 @@ def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
             return False, "git_unavailable"
         if diff_cp.returncode == GIT_RETURNCODE_TIMEOUT:
             return False, "git_timeout"
+        if diff_cp.returncode == GIT_RETURNCODE_OS_ERROR:
+            return False, "git_error"
         if diff_cp.returncode != 0:
             return False, "git_error"
     untracked = run_git(root, ["ls-files", "--others", "--exclude-standard"])
@@ -1591,6 +1596,8 @@ def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
         return False, "git_unavailable"
     if untracked.returncode == GIT_RETURNCODE_TIMEOUT:
         return False, "git_timeout"
+    if untracked.returncode == GIT_RETURNCODE_OS_ERROR:
+        return False, "git_error"
     if untracked.returncode != 0:
         return False, "git_error"
     return False, None
@@ -1651,7 +1658,7 @@ def untracked_files_as_diff(repo: str | Path) -> str:
 
 def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, ci: bool = False, base_ref: str | None = None, head_ref: str | None = None) -> dict:
     if (base_ref is None) != (head_ref is None):
-        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", "--base-ref and --head-ref must be provided together.")])
+        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("baseline_failed", "error", "git", "--base-ref and --head-ref must be provided together.")])
     repo_arg = Path(repo_path).resolve(); cp = run_git(repo_arg, ["rev-parse", "--show-toplevel"])
     if cp.returncode != 0:
         if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
@@ -1685,7 +1692,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_timeout", "error", "git", f"Git command timed out after {GIT_TIMEOUT_SECONDS} seconds.")])
         if cp.returncode != 0:
             message = cp.stderr.strip() or "Git diff failed."
-            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", message)])
+            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("baseline_failed", "error", "git", message)])
         if base_ref is None and head_ref is None and not staged:
             extra = untracked_files_as_diff(repo)
             if extra and not (added and _only_sourcepack_gitignore_change(repo)):
@@ -1705,7 +1712,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             rep = traffic_report("FAIL", "baseline missing while changes are present.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
             rep.update(baseline_report_fields(baseline_status)); return rep
         try:
-            build_current_baseline(repo, quiet=True, force=True); baseline_status = validate_baseline(repo)
+            build_current_baseline(repo, quiet=True, force=False); baseline_status = validate_baseline(repo)
             rep_note = "Created SourcePack baseline because none existed and no diff was present."
         except BaselineLockError as exc:
             return traffic_report("WARN", "baseline writer is locked.", [normalized_finding("baseline_locked", "warn", "tooling", str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")

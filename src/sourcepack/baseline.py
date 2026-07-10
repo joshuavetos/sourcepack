@@ -7,7 +7,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_TIMEOUT, metadata as canonical_git_metadata, run_git
+from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, metadata as canonical_git_metadata, run_git
 from .paths import ensure_sourcepack_dirs, sourcepack_paths
 
 try:
@@ -210,6 +210,8 @@ def _git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
         return False, "git_unavailable"
     if cp.returncode == GIT_RETURNCODE_TIMEOUT:
         return False, "git_timeout"
+    if cp.returncode == GIT_RETURNCODE_OS_ERROR:
+        return False, "git_error"
     if cp.returncode != 0:
         stderr = str(cp.stderr or "").lower()
         if "not a git repository" in stderr:
@@ -223,6 +225,25 @@ def _git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
     if protected:
         return False, "baseline_only_dirty"
     return False, None
+
+
+def _only_sourcepack_gitignore_change(repo: str | Path) -> bool:
+    repo = Path(repo)
+    status = _run_git(repo, ["status", "--porcelain", "--", ".gitignore"])
+    others = _run_git(repo, ["status", "--porcelain"])
+    if status.returncode != 0 or others.returncode != 0:
+        return False
+    lines = [line for line in others.stdout.splitlines() if line.strip()]
+    if not lines or any(not line.endswith(".gitignore") for line in lines):
+        return False
+    try:
+        text = (repo / ".gitignore").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    tracked = _run_git(repo, ["show", "HEAD:.gitignore"])
+    before = tracked.stdout if tracked.returncode == 0 else ""
+    added = [line.strip() for line in text.splitlines() if line.strip() and line.strip() not in {line.strip() for line in before.splitlines()}]
+    return bool(added) and set(added) <= {".sourcepack", ".sourcepack/"}
 
 
 def scanner_config_hash() -> str:
@@ -247,7 +268,7 @@ def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: st
     dirty, dirty_state = _git_worktree_dirty(repo)
     if dirty_state in {"git_unavailable", "git_timeout", "git_error"}:
         raise RuntimeError(f"SourcePack refused to create a trusted baseline because git status could not be verified: {dirty_state}")
-    if dirty and not force:
+    if dirty and not force and not _only_sourcepack_gitignore_change(repo):
         raise RuntimeError(DIRTY_BASELINE_REFUSAL)
     paths = ensure_sourcepack_dirs(repo)
     previous = validate_baseline(repo); created = previous.get("state") == "missing"

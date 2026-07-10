@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Final
@@ -8,6 +9,7 @@ from typing import Final
 GIT_TIMEOUT_SECONDS: Final[int] = 10
 
 GIT_RETURNCODE_TIMEOUT: Final[int] = 124
+GIT_RETURNCODE_OS_ERROR: Final[int] = 126
 GIT_RETURNCODE_NOT_FOUND: Final[int] = 127
 
 
@@ -33,6 +35,9 @@ def _git_failure_state(cp: subprocess.CompletedProcess[str]) -> str | None:
     if cp.returncode == GIT_RETURNCODE_TIMEOUT:
         return "git_timeout"
 
+    if cp.returncode == GIT_RETURNCODE_OS_ERROR:
+        return "git_error"
+
     return None
 
 
@@ -47,9 +52,9 @@ def _timeout_output_text(value: str | bytes | None) -> str:
 def _cwd_error(repo: str | Path) -> subprocess.CompletedProcess[str] | None:
     cwd = Path(repo)
     if not cwd.exists():
-        return subprocess.CompletedProcess(["git"], 1, "", f"git working directory does not exist: {cwd}")
+        return subprocess.CompletedProcess(["git"], GIT_RETURNCODE_OS_ERROR, "", f"git working directory does not exist: {cwd}")
     if not cwd.is_dir():
-        return subprocess.CompletedProcess(["git"], 1, "", f"git working directory is not a directory: {cwd}")
+        return subprocess.CompletedProcess(["git"], GIT_RETURNCODE_OS_ERROR, "", f"git working directory is not a directory: {cwd}")
     return None
 
 
@@ -96,7 +101,7 @@ def run_git(repo: str | Path, args: list[str]) -> subprocess.CompletedProcess[st
             stdout=stdout,
         )
     except OSError as exc:
-        return _completed_git_process(args, 1, _os_error_text(exc))
+        return _completed_git_process(args, GIT_RETURNCODE_OS_ERROR, _os_error_text(exc))
 
 
 def _timeout_output_bytes(value: str | bytes | None) -> bytes:
@@ -130,11 +135,11 @@ def run_git_bytes(repo: str | Path, args: list[str]) -> subprocess.CompletedProc
         stderr = stderr.rstrip() + b"\n" + timeout_message if stderr else timeout_message
         return _completed_git_process(args, GIT_RETURNCODE_TIMEOUT, stderr, stdout=stdout)
     except OSError as exc:
-        return _completed_git_process(args, 1, _os_error_text(exc).encode("utf-8", "replace"), stdout=b"")
+        return _completed_git_process(args, GIT_RETURNCODE_OS_ERROR, _os_error_text(exc).encode("utf-8", "replace"), stdout=b"")
 
 
 def decode_git_path(raw: bytes) -> str:
-    return raw.decode("utf-8", "surrogateescape").replace("\\", "/")
+    return os.fsdecode(raw).replace("\\", "/")
 
 
 def split_nul_paths(raw: bytes) -> list[str]:

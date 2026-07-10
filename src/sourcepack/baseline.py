@@ -7,7 +7,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .git import metadata as canonical_git_metadata, run_git
+from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_TIMEOUT, metadata as canonical_git_metadata, run_git
 from .paths import ensure_sourcepack_dirs, sourcepack_paths
 
 try:
@@ -206,8 +206,15 @@ def _run_git(repo: Path, args: list[str]):
 def _git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
     root = Path(repo)
     cp = _run_git(root, ["status", "--porcelain=v1", "--untracked-files=all"])
+    if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
+        return False, "git_unavailable"
+    if cp.returncode == GIT_RETURNCODE_TIMEOUT:
+        return False, "git_timeout"
     if cp.returncode != 0:
-        return False, "git_status_failed"
+        stderr = str(cp.stderr or "").lower()
+        if "not a git repository" in stderr:
+            return False, "not_git"
+        return False, "git_error"
     lines = [line for line in cp.stdout.splitlines() if line.strip()]
     protected = [line for line in lines if protected_baseline_path(line[3:] if len(line) > 3 else line)]
     non_baseline = [line for line in lines if line not in protected]
@@ -232,8 +239,17 @@ def git_metadata(repo: str | Path) -> dict:
     return metadata
 
 
-def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: str | None = None) -> tuple[dict, bool]:
-    repo = Path(repo).resolve(); paths = ensure_sourcepack_dirs(repo)
+DIRTY_BASELINE_REFUSAL = "SourcePack refused to create a trusted baseline from a dirty working tree. Review, commit, or stash current changes first, or rerun with --force only if this state should become trusted."
+
+
+def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: str | None = None, force: bool = False) -> tuple[dict, bool]:
+    repo = Path(repo).resolve()
+    dirty, dirty_state = _git_worktree_dirty(repo)
+    if dirty_state in {"git_unavailable", "git_timeout", "git_error"}:
+        raise RuntimeError(f"SourcePack refused to create a trusted baseline because git status could not be verified: {dirty_state}")
+    if dirty and not force:
+        raise RuntimeError(DIRTY_BASELINE_REFUSAL)
+    paths = ensure_sourcepack_dirs(repo)
     previous = validate_baseline(repo); created = previous.get("state") == "missing"
     lock = fd = None; build_dir = None
     try:

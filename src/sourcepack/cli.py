@@ -22,13 +22,14 @@ from pathlib import Path, PurePosixPath
 from typing import Iterable
 from xml.sax.saxutils import escape as xml_escape
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
+from .baseline import build_current_baseline as canonical_build_current_baseline
 from .ecosystems.python import PY_IMPORT_ALIASES
 from .packet import PacketWriter, SourceScanner
 from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_paths
 from .reports.html import render_report_html
 from .reports.json import normalized_finding, traffic_report, write_user_report
 from .reports.markdown import LIGHT_BY_VERDICT, SEVERITY_ORDER, render_traffic
-from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_TIMEOUT, dirty_worktree as canonical_dirty_worktree, run_git as canonical_run_git
+from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_TIMEOUT, dirty_worktree as canonical_dirty_worktree, run_git as canonical_run_git, tracked_paths as canonical_tracked_paths
 from .execution_ledger import clear_ledger, entry_to_json, execution_findings, iter_entries, run_and_record, find_repo_root
 from .commands import fleet as fleet_command
 from .commands import report as report_command
@@ -138,9 +139,9 @@ def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
     included = {str(rec.get("relative_path", "")).replace("\\", "/") for rec in included_records}
     files: list[dict] = []
     source = "scanner_included_files"
-    cp = run_git(root, ["ls-files", "-z"])
-    if cp.returncode == 0:
-        raw_paths = [p for p in cp.stdout.split("\0") if p]
+    tracked = canonical_tracked_paths(root)
+    if tracked is not None:
+        raw_paths = sorted(tracked)
         source = "git_ls_files" if raw_paths else "scanner_included_files"
         if not raw_paths:
             raw_paths = sorted(included)
@@ -1283,53 +1284,7 @@ DIRTY_BASELINE_REFUSAL = "SourcePack refused to create a trusted baseline from a
 
 
 def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: str | None = None, force: bool = False) -> tuple[dict, bool]:
-    repo = Path(repo).resolve()
-    dirty, dirty_state = git_worktree_dirty(repo)
-    if dirty and not force:
-        raise RuntimeError(DIRTY_BASELINE_REFUSAL)
-    paths = ensure_sourcepack_dirs(repo)
-    previous = validate_baseline(repo); created = previous.get("state") == "missing"
-    lock = fd = None; build_dir = None
-    try:
-        lock, fd = acquire_baseline_lock(repo, "baseline")
-        build_id = _unique_build_id(); build_dir = paths["builds"] / build_id; packet = build_dir / "packet"
-        build_dir.mkdir(parents=True, exist_ok=False)
-        PacketWriter(packet, SourceScanner(repo).scan(), force=True).write_all()
-        if not quiet and not verify_packet(packet):
-            raise RuntimeError("packet verification returned FAIL")
-        candidate = _validate_packet_artifacts(repo, packet)
-        if candidate:
-            raise RuntimeError(candidate["details"].get("reason", "candidate baseline invalid"))
-        meta = {"created_at": utc_now(), "packet_path": _rel_to_repo(repo, packet), "scanner_config_hash": scanner_config_hash(), **git_metadata(repo)}
-        (build_dir / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        meta_check, meta_err = _read_json_file(build_dir / "metadata.json")
-        if meta_err:
-            raise RuntimeError(f"metadata.json {meta_err}")
-        if fail_stage == "before_pointer_replace":
-            raise RuntimeError("injected failure before pointer replacement")
-        pointer = {"schema_version": "baseline_pointer.v1", "active_build_id": build_id, "activated_at": utc_now(), "packet_path": _rel_to_repo(repo, packet), "metadata_path": _rel_to_repo(repo, build_dir / "metadata.json")}
-        _write_json_atomic(paths["active_pointer"], pointer)
-        if fail_stage == "after_pointer_replace":
-            raise RuntimeError("injected failure after pointer replacement")
-        # Enforcement state is active.json -> builds/<id>/packet. Legacy packet copies are intentionally not updated after pointer activation.
-        if paths["stale_marker"].exists():
-            paths["stale_marker"].unlink()
-        return paths, created
-    except Exception:
-        if build_dir is not None:
-            active = None
-            try:
-                if paths["active_pointer"].exists():
-                    active = json.loads(paths["active_pointer"].read_text(encoding="utf-8")).get("active_build_id")
-            except Exception:
-                active = None
-            if active != build_dir.name:
-                shutil.rmtree(build_dir, ignore_errors=True)
-        raise
-    finally:
-        if lock is not None and fd is not None:
-            release_baseline_lock(lock, fd)
-
+    return canonical_build_current_baseline(repo, quiet=quiet, fail_stage=fail_stage, force=force)
 
 def build_prompt_context(repo: str | Path) -> dict:
     paths = ensure_sourcepack_dirs(repo)
@@ -1952,6 +1907,10 @@ def cli_prompt(args) -> int:
 
 def cli_baseline(args) -> int:
     repo = Path(args.repo).resolve(); dirty, dirty_state = git_worktree_dirty(repo)
+    if dirty_state in {"git_unavailable", "git_timeout", "git_error"}:
+        rep = traffic_report("FAIL", "trusted baseline refused unverifiable git state.", [normalized_finding("git_unavailable" if dirty_state == "git_unavailable" else "git_timeout" if dirty_state == "git_timeout" else "baseline_failed", "error", "git", f"Cannot verify git status before creating trusted baseline: {dirty_state}")], ["baseline", "git status"], "Fix Git execution before creating trusted baseline state.")
+        print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end="")
+        return 1
     if dirty and not getattr(args, "force", False):
         rep = traffic_report("FAIL", "trusted baseline refused dirty working tree.", [normalized_finding("dirty_worktree", "error", "baseline", DIRTY_BASELINE_REFUSAL)], ["baseline", "git status"], "Review, commit, or stash current changes first; use --force only for an intentionally trusted state.")
         print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end="")
@@ -2052,7 +2011,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             rep = traffic_report("FAIL", "baseline missing while changes are present.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
             rep.update(baseline_report_fields(baseline_status)); return rep
         try:
-            build_current_baseline(repo, quiet=True); baseline_status = validate_baseline(repo)
+            build_current_baseline(repo, quiet=True, force=True); baseline_status = validate_baseline(repo)
             rep_note = "Created SourcePack baseline because none existed and no diff was present."
         except BaselineLockError as exc:
             return traffic_report("WARN", "baseline writer is locked.", [normalized_finding("baseline_locked", "warn", "tooling", str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")
@@ -2295,6 +2254,13 @@ def cli_init(args) -> int:
         return 0
     initial_dirty, initial_dirty_state = git_worktree_dirty(repo)
     baseline_exists_before_init = validate_baseline(repo).get("state") in {"present", "stale", "corrupt"}
+    if initial_dirty_state in {"git_unavailable", "git_timeout", "git_error"} and (args.refresh_baseline or not baseline_exists_before_init):
+        rep = traffic_report("FAIL", "trusted baseline refused unverifiable git state.", [normalized_finding("git_unavailable" if initial_dirty_state == "git_unavailable" else "git_timeout" if initial_dirty_state == "git_timeout" else "baseline_failed", "error", "git", f"Cannot verify git status before creating trusted baseline: {initial_dirty_state}")], ["init", "baseline", "git status"], "Fix Git execution before creating trusted baseline state.")
+        if args.json:
+            print(json.dumps(rep, indent=2))
+        else:
+            print(render_traffic(rep), end="")
+        return 1
     if initial_dirty and not getattr(args, "force", False) and (args.refresh_baseline or not baseline_exists_before_init):
         rep = traffic_report("FAIL", "trusted baseline refused dirty working tree.", [normalized_finding("dirty_worktree", "error", "baseline", DIRTY_BASELINE_REFUSAL)], ["init", "baseline", "git status"], "Review, commit, or stash current changes first; rerun with --force only if this exact state is intentionally trusted.")
         if args.json:

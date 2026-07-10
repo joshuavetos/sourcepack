@@ -14,7 +14,7 @@ from typing import Iterable
 from xml.sax.saxutils import escape as xml_escape
 
 from .diff_parser import normalize_diff_path
-from .git import repo_root as git_repo_root, run_git
+from .git import tracked_paths as git_tracked_paths
 from .ecosystems.python import PY_IMPORT_ALIASES
 
 try:
@@ -91,31 +91,7 @@ def _decode_git_path(raw: bytes) -> str:
 
 
 def _git_tracked_paths(root: Path) -> set[str] | None:
-    cp = run_git(root, ["ls-files", "-z"])
-
-    if cp.returncode != 0:
-        return None
-
-    tracked_paths = {_decode_git_path(path) for path in cp.stdout.encode("utf-8", "surrogateescape").split(b"\0") if path}
-    if tracked_paths:
-        return tracked_paths
-
-    top_level = git_repo_root(root)
-    if top_level is None:
-        return None
-
-    all_tracked_cp = run_git(top_level, ["ls-files", "-z"])
-    if all_tracked_cp.returncode != 0:
-        return None
-
-    all_tracked_paths = {
-        _decode_git_path(path) for path in all_tracked_cp.stdout.encode("utf-8", "surrogateescape").split(b"\0") if path
-    }
-    if not all_tracked_paths:
-        return None
-
-    return set()
-
+    return git_tracked_paths(root)
 def redact_secrets(text: str):
     redactions = []
     redacted = text

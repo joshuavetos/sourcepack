@@ -6,7 +6,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tomllib
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -15,6 +14,7 @@ from typing import Iterable
 from xml.sax.saxutils import escape as xml_escape
 
 from .diff_parser import normalize_diff_path
+from .git import repo_root as git_repo_root, run_git
 from .ecosystems.python import PY_IMPORT_ALIASES
 
 try:
@@ -91,64 +91,30 @@ def _decode_git_path(raw: bytes) -> str:
 
 
 def _git_tracked_paths(root: Path) -> set[str] | None:
-    try:
-        cp = subprocess.run(
-            ["git", "ls-files", "-z"],
-            cwd=root,
-            text=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except (OSError, ValueError):
-        return None
+    cp = run_git(root, ["ls-files", "-z"])
 
     if cp.returncode != 0:
         return None
 
-    tracked_paths = {_decode_git_path(path) for path in cp.stdout.split(b"\0") if path}
+    tracked_paths = {_decode_git_path(path) for path in cp.stdout.encode("utf-8", "surrogateescape").split(b"\0") if path}
     if tracked_paths:
         return tracked_paths
 
-    try:
-        top_level_cp = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except (OSError, ValueError):
+    top_level = git_repo_root(root)
+    if top_level is None:
         return None
 
-    if top_level_cp.returncode != 0:
-        return None
-
-    top_level = top_level_cp.stdout.strip()
-    if not top_level:
-        return None
-
-    try:
-        all_tracked_cp = subprocess.run(
-            ["git", "ls-files", "-z"],
-            cwd=top_level,
-            text=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except (OSError, ValueError):
-        return None
-
+    all_tracked_cp = run_git(top_level, ["ls-files", "-z"])
     if all_tracked_cp.returncode != 0:
         return None
 
     all_tracked_paths = {
-        _decode_git_path(path) for path in all_tracked_cp.stdout.split(b"\0") if path
+        _decode_git_path(path) for path in all_tracked_cp.stdout.encode("utf-8", "surrogateescape").split(b"\0") if path
     }
     if not all_tracked_paths:
         return None
 
     return set()
-
 
 def redact_secrets(text: str):
     redactions = []

@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Final, Iterable
 from xml.sax.saxutils import escape as xml_escape
+from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_TIMEOUT, dirty_worktree as canonical_dirty_worktree, run_git as canonical_run_git
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
 from .baseline import BaselineLockError, acquire_baseline_lock, baseline_corrupt_result, baseline_report_fields, build_current_baseline, protected_baseline_path, release_baseline_lock, resolve_active_baseline, validate_baseline
 from .ecosystems.python import PY_IMPORT_ALIASES
@@ -1559,25 +1560,8 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
     return traffic_report(report.get("verdict", "PASS"), findings=findings, checked_categories=["file references", "Python imports", "JS/TS imports", "known project commands", "protected SourcePack artifacts"], report_path=report_path)
 
 
-def run_git(repo: Path, args: list[str]) -> subprocess.CompletedProcess:
-    try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=repo,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=GIT_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except FileNotFoundError:
-        return subprocess.CompletedProcess(["git", *args], GIT_RETURNCODE_NOT_FOUND, "", "git executable not found")
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else exc.stderr if isinstance(exc.stderr, str) else ""
-        timeout_message = f"git command timed out after {GIT_TIMEOUT_SECONDS} seconds"
-        stderr = f"{stderr.rstrip()}\n{timeout_message}" if stderr else timeout_message
-        return subprocess.CompletedProcess(["git", *args], GIT_RETURNCODE_TIMEOUT, stdout, stderr)
+def run_git(repo: Path, args: list[str]):
+    return canonical_run_git(repo, args)
 
 
 def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:

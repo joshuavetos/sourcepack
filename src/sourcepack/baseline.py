@@ -4,10 +4,10 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .git import metadata as canonical_git_metadata, run_git
 from .paths import ensure_sourcepack_dirs, sourcepack_paths
 
 try:
@@ -199,8 +199,8 @@ def _verify_baseline_packet(packet: Path) -> bool:
     return verify_packet(packet)
 
 
-def _run_git(repo: Path, args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=repo, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def _run_git(repo: Path, args: list[str]):
+    return run_git(repo, args)
 
 
 def _git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
@@ -225,16 +225,11 @@ def scanner_config_hash() -> str:
 
 
 def git_metadata(repo: str | Path) -> dict:
-    root = Path(repo)
-    head = _run_git(root, ["rev-parse", "HEAD"])
-    branch = _run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
-    dirty, dirty_state = _git_worktree_dirty(root)
-    return {
-        "branch": branch.stdout.strip() if branch.returncode == 0 else None,
-        "head_commit": head.stdout.strip() if head.returncode == 0 else None,
-        "dirty": dirty if dirty_state is None else None,
-        "dirty_state": dirty_state,
-    }
+    metadata = canonical_git_metadata(repo)
+    dirty, dirty_state = _git_worktree_dirty(repo)
+    metadata["dirty"] = dirty if dirty_state is None else None
+    metadata["dirty_state"] = dirty_state
+    return metadata
 
 
 def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: str | None = None) -> tuple[dict, bool]:

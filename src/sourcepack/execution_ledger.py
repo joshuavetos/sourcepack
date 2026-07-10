@@ -7,6 +7,7 @@ import platform
 import re
 import shutil
 import subprocess
+from .git import run_git as canonical_run_git
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -94,39 +95,7 @@ def _timeout_stderr(existing: bytes, message: str) -> bytes:
 
 
 def _run_git(repo: str | Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    command = ["git", *args]
-
-    try:
-        return subprocess.run(
-            command,
-            cwd=Path(repo),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=GIT_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except FileNotFoundError:
-        return subprocess.CompletedProcess(
-            command,
-            RETURNCODE_NOT_FOUND,
-            "",
-            "git executable not found",
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-
-        message = f"git command timed out after {GIT_TIMEOUT_SECONDS} seconds"
-        stderr = f"{stderr.rstrip()}\n{message}" if stderr else message
-
-        return subprocess.CompletedProcess(
-            command,
-            RETURNCODE_TIMEOUT,
-            stdout,
-            stderr,
-        )
-
+    return canonical_run_git(repo, args)
 
 def find_repo_root(start: str | Path = ".") -> Path:
     start_path = Path(start).resolve()

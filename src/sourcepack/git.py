@@ -70,6 +70,12 @@ def run_git(repo: str | Path, args: list[str]) -> subprocess.CompletedProcess[st
             GIT_RETURNCODE_NOT_FOUND,
             "git executable not found",
         )
+    except OSError as exc:
+        return _completed_git_process(
+            args,
+            GIT_RETURNCODE_NOT_FOUND,
+            f"git executable not found: {exc}",
+        )
     except subprocess.TimeoutExpired as exc:
         stdout = _timeout_output_text(exc.stdout)
         stderr = _timeout_output_text(exc.stderr)

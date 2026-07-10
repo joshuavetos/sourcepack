@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Final
@@ -8,16 +9,17 @@ from typing import Final
 GIT_TIMEOUT_SECONDS: Final[int] = 10
 
 GIT_RETURNCODE_TIMEOUT: Final[int] = 124
+GIT_RETURNCODE_OS_ERROR: Final[int] = 126
 GIT_RETURNCODE_NOT_FOUND: Final[int] = 127
 
 
 def _completed_git_process(
     args: list[str],
     returncode: int,
-    stderr: str,
+    stderr: str | bytes,
     *,
-    stdout: str = "",
-) -> subprocess.CompletedProcess[str]:
+    stdout: str | bytes = "",
+) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(
         ["git", *args],
         returncode,
@@ -33,6 +35,9 @@ def _git_failure_state(cp: subprocess.CompletedProcess[str]) -> str | None:
     if cp.returncode == GIT_RETURNCODE_TIMEOUT:
         return "git_timeout"
 
+    if cp.returncode == GIT_RETURNCODE_OS_ERROR:
+        return "git_error"
+
     return None
 
 
@@ -44,16 +49,25 @@ def _timeout_output_text(value: str | bytes | None) -> str:
     return ""
 
 
+def _cwd_error(repo: str | Path) -> subprocess.CompletedProcess[str] | None:
+    cwd = Path(repo)
+    if not cwd.exists():
+        return subprocess.CompletedProcess(["git"], GIT_RETURNCODE_OS_ERROR, "", f"git working directory does not exist: {cwd}")
+    if not cwd.is_dir():
+        return subprocess.CompletedProcess(["git"], GIT_RETURNCODE_OS_ERROR, "", f"git working directory is not a directory: {cwd}")
+    return None
+
+
+def _os_error_text(exc: OSError) -> str:
+    return f"git execution failed: {exc}"
+
+
 def run_git(repo: str | Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run a bounded git command in repo.
-
-    This helper never invokes a shell. Callers must pass git arguments as a
-    list, not as a shell string.
-
-    Timeout and missing-executable failures are normalized into
-    CompletedProcess objects so higher-level helpers can fail closed without
-    hanging or raising.
-    """
+    """Run a bounded text-mode git command in repo without invoking a shell."""
+    cwd_failure = _cwd_error(repo)
+    if cwd_failure is not None:
+        cwd_failure.args = ["git", *args]
+        return cwd_failure
     try:
         return subprocess.run(
             ["git", *args],
@@ -86,6 +100,70 @@ def run_git(repo: str | Path, args: list[str]) -> subprocess.CompletedProcess[st
             stderr,
             stdout=stdout,
         )
+    except OSError as exc:
+        return _completed_git_process(args, GIT_RETURNCODE_OS_ERROR, _os_error_text(exc))
+
+
+def _timeout_output_bytes(value: str | bytes | None) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        return value.encode("utf-8", "surrogateescape")
+    return b""
+
+
+def run_git_bytes(repo: str | Path, args: list[str]) -> subprocess.CompletedProcess[bytes]:
+    """Run a bounded bytes-mode git command in repo without decoding stdout/stderr."""
+    cwd_failure = _cwd_error(repo)
+    if cwd_failure is not None:
+        return subprocess.CompletedProcess(["git", *args], cwd_failure.returncode, b"", str(cwd_failure.stderr).encode("utf-8", "replace"))
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=Path(repo),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError:
+        return _completed_git_process(args, GIT_RETURNCODE_NOT_FOUND, b"git executable not found", stdout=b"")
+    except subprocess.TimeoutExpired as exc:
+        stdout = _timeout_output_bytes(exc.stdout)
+        stderr = _timeout_output_bytes(exc.stderr)
+        timeout_message = f"git command timed out after {GIT_TIMEOUT_SECONDS} seconds".encode("utf-8")
+        stderr = stderr.rstrip() + b"\n" + timeout_message if stderr else timeout_message
+        return _completed_git_process(args, GIT_RETURNCODE_TIMEOUT, stderr, stdout=stdout)
+    except OSError as exc:
+        return _completed_git_process(args, GIT_RETURNCODE_OS_ERROR, _os_error_text(exc).encode("utf-8", "replace"), stdout=b"")
+
+
+def decode_git_path(raw: bytes) -> str:
+    return os.fsdecode(raw).replace("\\", "/")
+
+
+def split_nul_paths(raw: bytes) -> list[str]:
+    return [decode_git_path(part) for part in raw.split(b"\0") if part]
+
+
+def tracked_paths(repo: str | Path) -> set[str] | None:
+    cp = run_git_bytes(repo, ["ls-files", "-z"])
+    if cp.returncode != 0:
+        return None
+    paths = set(split_nul_paths(cp.stdout))
+    if paths:
+        return paths
+
+    top_level = repo_root(repo)
+    if top_level is None:
+        return None
+
+    all_cp = run_git_bytes(top_level, ["ls-files", "-z"])
+    if all_cp.returncode != 0:
+        return None
+    if not split_nul_paths(all_cp.stdout):
+        return None
+    return set()
 
 
 def repo_root(path: str | Path) -> Path | None:

@@ -41,7 +41,10 @@ def normalize_diff_path(path: str) -> tuple[str, bool]:
             continue
 
         if part == "..":
-            unsafe = True
+            if not parts:
+                unsafe = True
+            else:
+                parts.pop()
             continue
 
         parts.append(part)

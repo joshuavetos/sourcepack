@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Final, Iterable
 from xml.sax.saxutils import escape as xml_escape
+from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
 from .baseline import BaselineLockError, acquire_baseline_lock, baseline_corrupt_result, baseline_report_fields, build_current_baseline, protected_baseline_path, release_baseline_lock, resolve_active_baseline, validate_baseline
 from .ecosystems.python import PY_IMPORT_ALIASES
@@ -56,8 +57,6 @@ SECRET_PATTERNS = [
 COMMON_DEPENDENCIES = ["fastapi", "flask", "django", "react", "vue", "svelte", "pytest", "typer", "click", "sqlalchemy", "prisma", "pydantic", "pyyaml", "pillow", "beautifulsoup4", "opencv-python", "scikit-learn", "python-dotenv", "pyjwt", "python-dateutil", "boto3", "requests"]
 FEATURE_NAMES = ("pdf", "ocr", "web server", "react", "docker", "authentication", "database")
 GIT_TIMEOUT_SECONDS: Final[int] = 10
-GIT_RETURNCODE_TIMEOUT: Final[int] = 124
-GIT_RETURNCODE_NOT_FOUND: Final[int] = 127
 NATURAL_LANGUAGE_COMMAND_TARGETS: Final[frozenset[str]] = frozenset({"a", "an", "the", "this", "that", "these", "those"})
 
 
@@ -1559,25 +1558,8 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
     return traffic_report(report.get("verdict", "PASS"), findings=findings, checked_categories=["file references", "Python imports", "JS/TS imports", "known project commands", "protected SourcePack artifacts"], report_path=report_path)
 
 
-def run_git(repo: Path, args: list[str]) -> subprocess.CompletedProcess:
-    try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=repo,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=GIT_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except FileNotFoundError:
-        return subprocess.CompletedProcess(["git", *args], GIT_RETURNCODE_NOT_FOUND, "", "git executable not found")
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else exc.stderr if isinstance(exc.stderr, str) else ""
-        timeout_message = f"git command timed out after {GIT_TIMEOUT_SECONDS} seconds"
-        stderr = f"{stderr.rstrip()}\n{timeout_message}" if stderr else timeout_message
-        return subprocess.CompletedProcess(["git", *args], GIT_RETURNCODE_TIMEOUT, stdout, stderr)
+def run_git(repo: Path, args: list[str]):
+    return canonical_run_git(repo, args)
 
 
 def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
@@ -1588,6 +1570,8 @@ def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
             return False, "git_unavailable"
         if cp.returncode == GIT_RETURNCODE_TIMEOUT:
             return False, "git_timeout"
+        if cp.returncode == GIT_RETURNCODE_OS_ERROR:
+            return False, "git_error"
         return False, "not_git"
     root = Path(cp.stdout.strip())
     for args in (["diff", "--quiet"], ["diff", "--staged", "--quiet"]):
@@ -1598,6 +1582,8 @@ def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
             return False, "git_unavailable"
         if diff_cp.returncode == GIT_RETURNCODE_TIMEOUT:
             return False, "git_timeout"
+        if diff_cp.returncode == GIT_RETURNCODE_OS_ERROR:
+            return False, "git_error"
         if diff_cp.returncode != 0:
             return False, "git_error"
     untracked = run_git(root, ["ls-files", "--others", "--exclude-standard"])
@@ -1607,6 +1593,8 @@ def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
         return False, "git_unavailable"
     if untracked.returncode == GIT_RETURNCODE_TIMEOUT:
         return False, "git_timeout"
+    if untracked.returncode == GIT_RETURNCODE_OS_ERROR:
+        return False, "git_error"
     if untracked.returncode != 0:
         return False, "git_error"
     return False, None
@@ -1676,6 +1664,9 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         elif cp.returncode == GIT_RETURNCODE_TIMEOUT:
             finding_id = "git_timeout"
             message = f"Git command timed out after {GIT_TIMEOUT_SECONDS} seconds."
+        elif cp.returncode == GIT_RETURNCODE_OS_ERROR:
+            finding_id = "git_diff_failed"
+            message = cp.stderr.strip() or "Git execution failed."
         else:
             finding_id = "no_git_repo"
             message = "No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use."
@@ -1721,7 +1712,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             rep = traffic_report("FAIL", "baseline missing while changes are present.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
             rep.update(baseline_report_fields(baseline_status)); return rep
         try:
-            build_current_baseline(repo, quiet=True); baseline_status = validate_baseline(repo)
+            build_current_baseline(repo, quiet=True, force=False); baseline_status = validate_baseline(repo)
             rep_note = "Created SourcePack baseline because none existed and no diff was present."
         except BaselineLockError as exc:
             return traffic_report("WARN", "baseline writer is locked.", [normalized_finding("baseline_locked", "warn", "tooling", str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")

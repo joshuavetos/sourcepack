@@ -6,7 +6,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tomllib
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -15,6 +14,7 @@ from typing import Iterable
 from xml.sax.saxutils import escape as xml_escape
 
 from .diff_parser import normalize_diff_path
+from .git import tracked_paths as git_tracked_paths
 from .ecosystems.python import PY_IMPORT_ALIASES
 
 try:
@@ -86,70 +86,12 @@ def matches_any(name: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
 
-def _decode_git_path(raw: bytes) -> str:
-    return raw.decode("utf-8", "surrogateescape").replace("\\", "/")
+def sourcepack_bootstrap_file(path: str) -> bool:
+    return path.replace("\\", "/") in {".sourcepackignore", "sourcepack.config.json"}
 
 
 def _git_tracked_paths(root: Path) -> set[str] | None:
-    try:
-        cp = subprocess.run(
-            ["git", "ls-files", "-z"],
-            cwd=root,
-            text=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except (OSError, ValueError):
-        return None
-
-    if cp.returncode != 0:
-        return None
-
-    tracked_paths = {_decode_git_path(path) for path in cp.stdout.split(b"\0") if path}
-    if tracked_paths:
-        return tracked_paths
-
-    try:
-        top_level_cp = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except (OSError, ValueError):
-        return None
-
-    if top_level_cp.returncode != 0:
-        return None
-
-    top_level = top_level_cp.stdout.strip()
-    if not top_level:
-        return None
-
-    try:
-        all_tracked_cp = subprocess.run(
-            ["git", "ls-files", "-z"],
-            cwd=top_level,
-            text=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except (OSError, ValueError):
-        return None
-
-    if all_tracked_cp.returncode != 0:
-        return None
-
-    all_tracked_paths = {
-        _decode_git_path(path) for path in all_tracked_cp.stdout.split(b"\0") if path
-    }
-    if not all_tracked_paths:
-        return None
-
-    return set()
-
-
+    return git_tracked_paths(root)
 def redact_secrets(text: str):
     redactions = []
     redacted = text
@@ -290,7 +232,7 @@ class SourceScanner:
                     self.ignored_files.append(IgnoredFile(rel_str, "symlink_skipped"))
                     continue
 
-                if not self.include_hidden and filename.startswith("."):
+                if not self.include_hidden and filename.startswith(".") and not sourcepack_bootstrap_file(rel_str):
                     self.ignored_files.append(IgnoredFile(rel_str, "hidden_file"))
                     continue
 
@@ -298,7 +240,7 @@ class SourceScanner:
                     self.ignored_files.append(IgnoredFile(rel_str, "ignored_pattern"))
                     continue
 
-                if tracked_paths is not None and rel_str not in tracked_paths:
+                if tracked_paths is not None and rel_str not in tracked_paths and not sourcepack_bootstrap_file(rel_str):
                     self.ignored_files.append(IgnoredFile(rel_str, "untracked_file_skipped"))
                     continue
 
@@ -315,13 +257,18 @@ def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
     raw_paths = _git_tracked_paths(root)
     source = "git_ls_files" if raw_paths is not None else "scanner_included_files"
 
+    records: dict[str, str] = {}
     if raw_paths is None:
-        raw_paths = sorted(included)
+        records = {rel: "scanner_included_files" for rel in sorted(included)}
+    else:
+        records = {raw.replace("\\", "/"): "git_ls_files" for raw in sorted(raw_paths)}
+        for rel in sorted(included):
+            if sourcepack_bootstrap_file(rel) and rel not in records:
+                records[rel] = "scanner_included_files"
 
-    for raw in sorted(raw_paths):
-        rel = raw.replace("\\", "/")
+    for rel, record_source in sorted(records.items()):
         path = root / rel
-        rec = {"relative_path": rel, "included_in_prompt_context": rel in included, "source": source}
+        rec = {"relative_path": rel, "included_in_prompt_context": rel in included, "source": record_source}
         try:
             if path.exists() and path.is_file():
                 rec["sha256"] = sha256_file(path)

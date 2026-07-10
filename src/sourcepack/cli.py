@@ -21,12 +21,15 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 from xml.sax.saxutils import escape as xml_escape
+from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
+from .baseline import build_current_baseline as canonical_build_current_baseline
 from .ecosystems.python import PY_IMPORT_ALIASES
-from .packet import PacketWriter, SourceScanner
+from .packet import PacketWriter, SourceScanner, sourcepack_bootstrap_file
 from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_paths
 from .reports.html import render_report_html
 from .reports.json import normalized_finding, traffic_report, write_user_report
 from .reports.markdown import LIGHT_BY_VERDICT, SEVERITY_ORDER, render_traffic
+from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git, tracked_paths as canonical_tracked_paths
 from .execution_ledger import clear_ledger, entry_to_json, execution_findings, iter_entries, run_and_record, find_repo_root
 from .commands import fleet as fleet_command
 from .commands import report as report_command
@@ -136,21 +139,23 @@ def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
     included = {str(rec.get("relative_path", "")).replace("\\", "/") for rec in included_records}
     files: list[dict] = []
     source = "scanner_included_files"
-    try:
-        cp = subprocess.run(["git", "ls-files", "-z"], cwd=root, text=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except (OSError, ValueError):
-        cp = None
-    if cp is not None and cp.returncode == 0:
-        raw_paths = [p.decode("utf-8", "surrogateescape") for p in cp.stdout.split(b"\0") if p]
+    tracked = canonical_tracked_paths(root)
+    records: dict[str, str]
+    if tracked is not None:
+        raw_paths = sorted(tracked)
         source = "git_ls_files" if raw_paths else "scanner_included_files"
+        records = {raw.replace("\\", "/"): "git_ls_files" for raw in raw_paths}
         if not raw_paths:
-            raw_paths = sorted(included)
+            records = {rel: "scanner_included_files" for rel in sorted(included)}
+        else:
+            for rel in sorted(included):
+                if sourcepack_bootstrap_file(rel) and rel not in records:
+                    records[rel] = "scanner_included_files"
     else:
-        raw_paths = sorted(included)
-    for raw in raw_paths:
-        rel = raw.replace("\\", "/")
+        records = {rel: "scanner_included_files" for rel in sorted(included)}
+    for rel, record_source in sorted(records.items()):
         path = root / rel
-        rec = {"relative_path": rel, "included_in_prompt_context": rel in included, "source": source}
+        rec = {"relative_path": rel, "included_in_prompt_context": rel in included, "source": record_source}
         try:
             if path.exists() and path.is_file():
                 rec["sha256"] = sha256_file(path)
@@ -770,124 +775,6 @@ def extract_imports_from_text(text: str, suffix: str = ".py") -> set[str]:
     return {i.lower() for i in imports}
 
 
-@dataclass
-class PatchFileChange:
-    path: str
-    old_path: str | None
-    new_file: bool = False
-    deleted_file: bool = False
-    added_lines: list[str] | None = None
-    diff_lines: list[str] | None = None
-    unsafe_path: bool = False
-    operation: str = "modify"
-
-
-def _normalize_diff_path(path: str) -> tuple[str, bool]:
-    raw = path.strip().replace("\\", "/")
-    if raw.startswith("a/") or raw.startswith("b/"):
-        raw = raw[2:]
-    if not raw or raw in {"a/", "b/"}:
-        return raw, True
-    if raw.startswith("/") or re.match(r"^[A-Za-z]:/", raw):
-        return raw, True
-    parts: list[str] = []
-    unsafe = False
-    for part in PurePosixPath(raw).parts:
-        if part in {"", "."}:
-            continue
-        if part == "..":
-            if not parts:
-                unsafe = True
-            else:
-                parts.pop()
-            continue
-        parts.append(part)
-    return "/".join(parts), unsafe
-
-
-def parse_unified_diff(text: str) -> list[PatchFileChange]:
-    changes: list[PatchFileChange] = []
-    current: PatchFileChange | None = None
-    old_path: str | None = None
-    new_path: str | None = None
-    new_file = False
-    deleted_file = False
-    operation = "modify"
-
-    malformed = False
-
-    def clean(path: str) -> tuple[str, bool]:
-        path = path.strip().split("\t", 1)[0]
-        return _normalize_diff_path(path)
-
-    def flush():
-        nonlocal current
-        if current is not None:
-            changes.append(current)
-            current = None
-
-    for line in text.splitlines():
-        if line.startswith("diff --git "):
-            flush(); old_path = new_path = None; new_file = deleted_file = False; operation = "modify"
-            parts = line.split()
-            if len(parts) >= 4:
-                old_path, old_unsafe = clean(parts[2]); new_path, new_unsafe = clean(parts[3])
-                if old_unsafe or new_unsafe:
-                    malformed = True
-            else:
-                malformed = True
-        elif line.startswith("new file mode"):
-            new_file = True
-        elif line.startswith("deleted file mode"):
-            deleted_file = True
-        elif line.startswith("rename from "):
-            old_path, unsafe = clean(line.removeprefix("rename from "))
-            operation = "rename"
-            malformed = malformed or unsafe
-        elif line.startswith("rename to "):
-            new_path, unsafe = clean(line.removeprefix("rename to "))
-            operation = "rename"
-            malformed = malformed or unsafe
-            current = PatchFileChange(path=new_path or old_path or "", old_path=old_path, new_file=False, deleted_file=False, added_lines=[], diff_lines=[], unsafe_path=unsafe, operation=operation)
-        elif line.startswith("copy from "):
-            old_path, unsafe = clean(line.removeprefix("copy from "))
-            operation = "copy"
-            malformed = malformed or unsafe
-        elif line.startswith("copy to "):
-            new_path, unsafe = clean(line.removeprefix("copy to "))
-            operation = "copy"
-            malformed = malformed or unsafe
-            current = PatchFileChange(path=new_path or old_path or "", old_path=old_path, new_file=True, deleted_file=False, added_lines=[], diff_lines=[], unsafe_path=unsafe, operation=operation)
-        elif line.startswith("--- "):
-            val = line[4:].strip()
-            if val == "/dev/null":
-                old_path = None
-            else:
-                old_path, unsafe = clean(val)
-                malformed = malformed or unsafe
-        elif line.startswith("+++ "):
-            val = line[4:].strip()
-            if val == "/dev/null":
-                new_path = None
-                unsafe = False
-            else:
-                new_path, unsafe = clean(val)
-            malformed = malformed or unsafe
-            path = new_path or old_path or ""
-            current = PatchFileChange(path=path, old_path=old_path, new_file=new_file or old_path is None, deleted_file=deleted_file or new_path is None, added_lines=[], diff_lines=[], unsafe_path=unsafe, operation=operation)
-        elif line.startswith("@@ ") and current is None:
-            malformed = True
-        elif current is not None and line.startswith("+") and not line.startswith("+++"):
-            current.added_lines.append(line[1:])
-            current.diff_lines.append(line)
-        elif current is not None and (line.startswith("-") or line.startswith(" ") or line.startswith("@@")):
-            current.diff_lines.append(line)
-    flush()
-    if malformed:
-        changes.append(PatchFileChange(path="", old_path=None, added_lines=[], diff_lines=[], unsafe_path=True))
-    return changes
-
-
 def _dependency_additions_from_patch(changes: list[PatchFileChange]) -> set[str]:
     return set()
 
@@ -1402,53 +1289,7 @@ DIRTY_BASELINE_REFUSAL = "SourcePack refused to create a trusted baseline from a
 
 
 def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: str | None = None, force: bool = False) -> tuple[dict, bool]:
-    repo = Path(repo).resolve()
-    dirty, dirty_state = git_worktree_dirty(repo)
-    if dirty and not force:
-        raise RuntimeError(DIRTY_BASELINE_REFUSAL)
-    paths = ensure_sourcepack_dirs(repo)
-    previous = validate_baseline(repo); created = previous.get("state") == "missing"
-    lock = fd = None; build_dir = None
-    try:
-        lock, fd = acquire_baseline_lock(repo, "baseline")
-        build_id = _unique_build_id(); build_dir = paths["builds"] / build_id; packet = build_dir / "packet"
-        build_dir.mkdir(parents=True, exist_ok=False)
-        PacketWriter(packet, SourceScanner(repo).scan(), force=True).write_all()
-        if not quiet and not verify_packet(packet):
-            raise RuntimeError("packet verification returned FAIL")
-        candidate = _validate_packet_artifacts(repo, packet)
-        if candidate:
-            raise RuntimeError(candidate["details"].get("reason", "candidate baseline invalid"))
-        meta = {"created_at": utc_now(), "packet_path": _rel_to_repo(repo, packet), "scanner_config_hash": scanner_config_hash(), **git_metadata(repo)}
-        (build_dir / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        meta_check, meta_err = _read_json_file(build_dir / "metadata.json")
-        if meta_err:
-            raise RuntimeError(f"metadata.json {meta_err}")
-        if fail_stage == "before_pointer_replace":
-            raise RuntimeError("injected failure before pointer replacement")
-        pointer = {"schema_version": "baseline_pointer.v1", "active_build_id": build_id, "activated_at": utc_now(), "packet_path": _rel_to_repo(repo, packet), "metadata_path": _rel_to_repo(repo, build_dir / "metadata.json")}
-        _write_json_atomic(paths["active_pointer"], pointer)
-        if fail_stage == "after_pointer_replace":
-            raise RuntimeError("injected failure after pointer replacement")
-        # Enforcement state is active.json -> builds/<id>/packet. Legacy packet copies are intentionally not updated after pointer activation.
-        if paths["stale_marker"].exists():
-            paths["stale_marker"].unlink()
-        return paths, created
-    except Exception:
-        if build_dir is not None:
-            active = None
-            try:
-                if paths["active_pointer"].exists():
-                    active = json.loads(paths["active_pointer"].read_text(encoding="utf-8")).get("active_build_id")
-            except Exception:
-                active = None
-            if active != build_dir.name:
-                shutil.rmtree(build_dir, ignore_errors=True)
-        raise
-    finally:
-        if lock is not None and fd is not None:
-            release_baseline_lock(lock, fd)
-
+    return canonical_build_current_baseline(repo, quiet=quiet, fail_stage=fail_stage, force=force)
 
 def build_prompt_context(repo: str | Path) -> dict:
     paths = ensure_sourcepack_dirs(repo)
@@ -1994,32 +1835,15 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
     return traffic_report(report.get("verdict", "PASS"), findings=findings, checked_categories=["file references", "Python imports", "JS/TS imports", "known project commands", "protected SourcePack artifacts"], report_path=report_path)
 
 
-def run_git(repo: Path, args: list[str]) -> subprocess.CompletedProcess:
-    try:
-        return subprocess.run(["git", *args], cwd=repo, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except FileNotFoundError:
-        return subprocess.CompletedProcess(["git", *args], 127, "", "git executable not found")
+def run_git(repo: Path, args: list[str]):
+    return canonical_run_git(repo, args)
 
 
 
 def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
-    repo = Path(repo)
-    cp = run_git(repo, ["rev-parse", "--show-toplevel"])
-    if cp.returncode != 0:
-        return False, "git_unavailable" if cp.returncode == 127 else "not_git"
-    root = Path(cp.stdout.strip())
-    for args in (["diff", "--quiet"], ["diff", "--staged", "--quiet"]):
-        diff_cp = run_git(root, list(args))
-        if diff_cp.returncode == 1:
-            return True, None
-        if diff_cp.returncode == 127:
-            return False, "git_unavailable"
-    untracked = run_git(root, ["ls-files", "--others", "--exclude-standard"])
-    if untracked.returncode == 0 and untracked.stdout.strip():
-        return True, None
-    if untracked.returncode == 127:
-        return False, "git_unavailable"
-    return False, None
+    from .git import dirty_worktree
+
+    return dirty_worktree(repo)
 
 
 
@@ -2090,6 +1914,10 @@ def cli_prompt(args) -> int:
 
 def cli_baseline(args) -> int:
     repo = Path(args.repo).resolve(); dirty, dirty_state = git_worktree_dirty(repo)
+    if dirty_state in {"git_unavailable", "git_timeout", "git_error"}:
+        rep = traffic_report("FAIL", "trusted baseline refused unverifiable git state.", [normalized_finding("git_unavailable" if dirty_state == "git_unavailable" else "git_timeout" if dirty_state == "git_timeout" else "baseline_failed", "error", "git", f"Cannot verify git status before creating trusted baseline: {dirty_state}")], ["baseline", "git status"], "Fix Git execution before creating trusted baseline state.")
+        print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end="")
+        return 1
     if dirty and not getattr(args, "force", False):
         rep = traffic_report("FAIL", "trusted baseline refused dirty working tree.", [normalized_finding("dirty_worktree", "error", "baseline", DIRTY_BASELINE_REFUSAL)], ["baseline", "git status"], "Review, commit, or stash current changes first; use --force only for an intentionally trusted state.")
         print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end="")
@@ -2099,7 +1927,7 @@ def cli_baseline(args) -> int:
         rep=traffic_report("FAIL","could not create baseline.",[normalized_finding("gitignore_unwritable","error","git",f"Cannot write .gitignore: {err}")]); print(json.dumps(rep, indent=2) if args.json else render_traffic(rep,args.verbose), end=""); return 1
     existed = validate_baseline(repo).get("state") in {"present", "stale", "corrupt"}
     try:
-        build_current_baseline(repo, quiet=getattr(args, "quiet", False), force=True); refreshed = existed or args.refresh
+        build_current_baseline(repo, quiet=getattr(args, "quiet", False), force=getattr(args, "force", False)); refreshed = existed or args.refresh
         if dirty:
             headline = "baseline refreshed while uncommitted changes are present." if refreshed else "baseline created while uncommitted changes are present."
             rep=traffic_report("WARN", headline, [normalized_finding("dirty_worktree", "warn", "baseline", "baseline now includes current uncommitted changes.")], ["baseline","verify"], "Commit or discard unintended changes before relying on this baseline.")
@@ -2155,8 +1983,15 @@ def untracked_files_as_diff(repo: str | Path) -> str:
 def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, ci: bool = False) -> dict:
     repo_arg = Path(repo_path).resolve(); cp = run_git(repo_arg, ["rev-parse", "--show-toplevel"])
     if cp.returncode != 0:
-        message = "Git executable not found." if cp.returncode == 127 else "No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use."
-        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable" if cp.returncode == 127 else "no_git_repo", "error", "git", message)])
+        if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
+            finding_id = "git_unavailable"; message = "Git executable not found."
+        elif cp.returncode == GIT_RETURNCODE_TIMEOUT:
+            finding_id = "git_timeout"; message = "Git command timed out."
+        elif cp.returncode == GIT_RETURNCODE_OS_ERROR:
+            finding_id = "git_diff_failed"; message = cp.stderr.strip() or "Git execution failed."
+        else:
+            finding_id = "no_git_repo"; message = "No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use."
+        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding(finding_id, "error", "git", message)])
     git_root = Path(cp.stdout.strip()).resolve()
     repo = repo_arg if validate_baseline(repo_arg).get("state") in {"present", "stale", "corrupt"} else git_root
     paths = ensure_sourcepack_dirs(repo); added, err = ensure_gitignore_entry(repo)
@@ -2169,8 +2004,14 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         if repo != git_root:
             diff_args.append("--relative")
         cp = run_git(repo, diff_args); diff_text = cp.stdout
-        if cp.returncode == 127:
+        if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
             return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable", "error", "git", "Git executable not found.")])
+        if cp.returncode == GIT_RETURNCODE_TIMEOUT:
+            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_timeout", "error", "git", "Git command timed out.")])
+        if cp.returncode == GIT_RETURNCODE_OS_ERROR:
+            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", cp.stderr.strip() or "Git execution failed.")])
+        if cp.returncode != 0:
+            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", cp.stderr.strip() or "Git diff failed.")])
         if not staged:
             extra = untracked_files_as_diff(repo)
             if extra and not (added and _only_sourcepack_gitignore_change(repo)):
@@ -2190,7 +2031,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             rep = traffic_report("FAIL", "baseline missing while changes are present.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
             rep.update(baseline_report_fields(baseline_status)); return rep
         try:
-            build_current_baseline(repo, quiet=True); baseline_status = validate_baseline(repo)
+            build_current_baseline(repo, quiet=True, force=False); baseline_status = validate_baseline(repo)
             rep_note = "Created SourcePack baseline because none existed and no diff was present."
         except BaselineLockError as exc:
             return traffic_report("WARN", "baseline writer is locked.", [normalized_finding("baseline_locked", "warn", "tooling", str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")
@@ -2433,6 +2274,13 @@ def cli_init(args) -> int:
         return 0
     initial_dirty, initial_dirty_state = git_worktree_dirty(repo)
     baseline_exists_before_init = validate_baseline(repo).get("state") in {"present", "stale", "corrupt"}
+    if initial_dirty_state in {"git_unavailable", "git_timeout", "git_error"} and (args.refresh_baseline or not baseline_exists_before_init):
+        rep = traffic_report("FAIL", "trusted baseline refused unverifiable git state.", [normalized_finding("git_unavailable" if initial_dirty_state == "git_unavailable" else "git_timeout" if initial_dirty_state == "git_timeout" else "baseline_failed", "error", "git", f"Cannot verify git status before creating trusted baseline: {initial_dirty_state}")], ["init", "baseline", "git status"], "Fix Git execution before creating trusted baseline state.")
+        if args.json:
+            print(json.dumps(rep, indent=2))
+        else:
+            print(render_traffic(rep), end="")
+        return 1
     if initial_dirty and not getattr(args, "force", False) and (args.refresh_baseline or not baseline_exists_before_init):
         rep = traffic_report("FAIL", "trusted baseline refused dirty working tree.", [normalized_finding("dirty_worktree", "error", "baseline", DIRTY_BASELINE_REFUSAL)], ["init", "baseline", "git status"], "Review, commit, or stash current changes first; rerun with --force only if this exact state is intentionally trusted.")
         if args.json:
@@ -2455,7 +2303,7 @@ def cli_init(args) -> int:
     baseline_exists = baseline_exists_before_init
     if args.refresh_baseline or (not baseline_exists and (not dirty or getattr(args, "force", False))):
         try:
-            _, created = build_current_baseline(repo, force=True)
+            _, created = build_current_baseline(repo, force=getattr(args, "force", False))
             details["baseline_created"] = created
             details["baseline_refreshed"] = not created or args.refresh_baseline
             if dirty:

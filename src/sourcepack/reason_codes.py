@@ -28,6 +28,7 @@ class ReasonCode(StrEnum):
     BASELINE_FAILED = "baseline_failed"
     GIT_UNAVAILABLE = "git_unavailable"
     GIT_TIMEOUT = "git_timeout"
+    GIT_DIFF_FAILED = "git_diff_failed"
     NO_GIT_REPO = "no_git_repo"
     NO_DIFF = "no_diff"
     REPO_NOT_DIRECTORY = "repo_not_directory"

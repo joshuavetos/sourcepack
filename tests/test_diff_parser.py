@@ -210,3 +210,11 @@ def test_tab_suffixed_diff_path_keeps_only_real_path():
 
 def test_normalize_diff_path_marks_windows_style_traversal_unsafe():
     assert normalize_diff_path(r"..\outside.txt") == ("outside.txt", True)
+
+
+def test_cli_diff_parser_symbols_are_canonical():
+    from sourcepack import cli
+
+    assert cli.PatchFileChange is PatchFileChange
+    assert cli.parse_unified_diff is parse_unified_diff
+    assert cli._normalize_diff_path is normalize_diff_path

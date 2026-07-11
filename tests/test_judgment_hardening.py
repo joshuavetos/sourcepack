@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -134,11 +135,11 @@ def test_build_repo_change_report_later_git_diff_timeout_fails(monkeypatch, tmp_
 
 
 def test_tracked_file_inventory_marks_unsafe_git_paths(monkeypatch, tmp_path):
-    def fake_run_git(repo, args):
+    def fake_run_git_bytes(repo, args):
         assert args == ["ls-files", "-z"]
-        return subprocess.CompletedProcess(["git", "ls-files", "-z"], 0, "../evil.py\0safe.py\0", "")
+        return subprocess.CompletedProcess(["git", "ls-files", "-z"], 0, b"../evil.py\0safe.py\0", b"")
 
-    monkeypatch.setattr(judgment, "run_git", fake_run_git)
+    monkeypatch.setattr(judgment, "run_git_bytes", fake_run_git_bytes)
     (tmp_path / "safe.py").write_text("print('safe')\n", encoding="utf-8")
 
     inventory = judgment._tracked_file_inventory(tmp_path, [{"relative_path": "safe.py"}])
@@ -148,6 +149,27 @@ def test_tracked_file_inventory_marks_unsafe_git_paths(monkeypatch, tmp_path):
     assert by_path["../evil.py"]["included_in_prompt_context"] is False
     assert by_path["safe.py"]["included_in_prompt_context"] is True
     assert by_path["safe.py"]["file_type"] == "text"
+
+
+def test_tracked_file_inventory_preserves_non_utf8_git_paths(monkeypatch, tmp_path):
+    if os.name != "posix":
+        return
+
+    raw_name = b"bad_\xff.py"
+    rel_name = os.fsdecode(raw_name)
+
+    def fake_run_git_bytes(repo, args):
+        assert args == ["ls-files", "-z"]
+        return subprocess.CompletedProcess(["git", "ls-files", "-z"], 0, raw_name + b"\0", b"")
+
+    monkeypatch.setattr(judgment, "run_git_bytes", fake_run_git_bytes)
+    (tmp_path / rel_name).write_text("print('bad bytes')\n", encoding="utf-8")
+
+    inventory = judgment._tracked_file_inventory(tmp_path, [{"relative_path": rel_name}])
+
+    assert inventory["source"] == "git_ls_files"
+    assert inventory["files"][0]["relative_path"] == rel_name
+    assert inventory["files"][0]["included_in_prompt_context"] is True
 
 
 def test_git_binary_patch_high_risk_path_with_spaces_blocks(tmp_path):

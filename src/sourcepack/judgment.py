@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Final, Iterable
 from xml.sax.saxutils import escape as xml_escape
-from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git
+from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git, run_git_bytes as canonical_run_git_bytes
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
 from .baseline import BaselineLockError, acquire_baseline_lock, baseline_corrupt_result, baseline_report_fields, build_current_baseline, protected_baseline_path, release_baseline_lock, resolve_active_baseline, validate_baseline
 from .ecosystems.python import PY_IMPORT_ALIASES
@@ -142,9 +142,9 @@ def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
     included = {str(rec.get("relative_path", "")).replace("\\", "/") for rec in included_records}
     files: list[dict] = []
     source = "scanner_included_files"
-    cp = run_git(root, ["ls-files", "-z"])
+    cp = run_git_bytes(root, ["ls-files", "-z"])
     if cp.returncode == 0:
-        raw_paths = [p for p in cp.stdout.split("\0") if p]
+        raw_paths = [os.fsdecode(p).replace("\\", "/") for p in cp.stdout.split(b"\0") if p]
         source = "git_ls_files" if raw_paths else "scanner_included_files"
         if not raw_paths:
             raw_paths = sorted(included)
@@ -1560,6 +1560,10 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
 
 def run_git(repo: Path, args: list[str]):
     return canonical_run_git(repo, args)
+
+
+def run_git_bytes(repo: Path, args: list[str]):
+    return canonical_run_git_bytes(repo, args)
 
 
 def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:

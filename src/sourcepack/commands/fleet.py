@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from sourcepack.fleet import render_human_summary, summarize_reports
+from sourcepack.fleet import render_human_summary, summarize_ledgers, summarize_reports
 
 
 def register(subparsers) -> None:
@@ -16,12 +16,18 @@ def register(subparsers) -> None:
         help="summarize a directory or file of SourcePack JSON reports",
     )
     fleet_summarize.add_argument("path")
+    fleet_summarize.add_argument(
+        "--input-type",
+        choices=("reports", "ledgers"),
+        default="reports",
+        help="summarize static JSON reports or decision-ledger JSONL files",
+    )
     fleet_summarize.add_argument("--json", action="store_true")
 
 
 def cli_fleet(args) -> int:
     if args.fleet_command == "summarize":
-        summary = summarize_reports(args.path)
+        summary = summarize_ledgers(args.path) if args.input_type == "ledgers" else summarize_reports(args.path)
         if args.json:
             print(json.dumps(summary, indent=2))
         else:

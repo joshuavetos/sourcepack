@@ -221,6 +221,8 @@ sourcepack evidence clear
 sourcepack evidence export --json
 sourcepack policy validate .
 sourcepack policy validate . --json
+sourcepack fleet summarize .sourcepack/reports --json
+sourcepack fleet summarize <decision-ledger.jsonl> --input-type ledgers --json
 ```
 
 ## Git hooks

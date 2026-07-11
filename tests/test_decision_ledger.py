@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from sourcepack.decision_ledger import append_event, append_report_events, filter_events, follow_parent_chain, missing_parent_event_ids, new_event, read_events, verify_artifact_hash
+from sourcepack.fleet import render_human_summary, summarize_ledgers
 from sourcepack.reports.json import normalized_finding, traffic_report
 
 
@@ -85,3 +86,36 @@ def test_relative_report_artifact_hash_verifies_from_outside_repo(tmp_path: Path
     assert events[0]["artifact"]["path"] == relative_report_path.as_posix()
     assert events[0]["artifact"]["sha256"]
     assert verify_artifact_hash(events[0])["verified"] is True
+
+
+def test_fleet_summarizes_decision_ledger_history(tmp_path: Path):
+    report = traffic_report("FAIL", findings=[
+        normalized_finding("unsupported_dependency", "error", "dependency", "missing", evidence="requests"),
+        normalized_finding("missing_file", "error", "file", "missing", path="src/missing.py"),
+    ])
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    ledger = tmp_path / "decisions.jsonl"
+    append_report_events(ledger, report=report, report_path=report_path, command="test", repo=tmp_path)
+    append_event(ledger, new_event("override_recorded", command="test", repo=tmp_path, parent_event_id="missing-parent", data={"finding_id": "unsupported_dependency"}))
+    with ledger.open("a", encoding="utf-8") as fh:
+        fh.write("{not json}\n")
+
+    summary = summarize_ledgers(tmp_path)
+
+    assert summary["input_model"] == "decision_ledgers"
+    assert summary["coverage"]["jsonl_files_seen"] == 1
+    assert summary["coverage"]["accepted_events"] == 4
+    assert summary["coverage"]["malformed_lines"] == 1
+    assert summary["coverage"]["broken_parent_events"] == 1
+    assert summary["event_type_counts"] == [
+        {"event_type": "fail_detected", "count": 2},
+        {"event_type": "override_recorded", "count": 1},
+        {"event_type": "report_created", "count": 1},
+    ]
+    assert summary["finding_hotspots"] == [
+        {"finding_id": report["findings"][0]["finding_id"], "count": 1},
+        {"finding_id": report["findings"][1]["finding_id"], "count": 1},
+    ]
+    assert summary["broken_parent_event_ids"] == ["missing-parent"]
+    assert "Input model: decision ledgers" in render_human_summary(summary)

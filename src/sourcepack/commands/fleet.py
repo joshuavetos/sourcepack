@@ -13,7 +13,7 @@ def register(subparsers) -> None:
     fleet_subs = fleet_cmd.add_subparsers(dest="fleet_command")
     fleet_summarize = fleet_subs.add_parser(
         "summarize",
-        help="summarize a directory or file of SourcePack JSON reports",
+        help="summarize SourcePack JSON reports or decision-ledger JSONL files",
     )
     fleet_summarize.add_argument("path")
     fleet_summarize.add_argument(
@@ -27,7 +27,10 @@ def register(subparsers) -> None:
 
 def cli_fleet(args) -> int:
     if args.fleet_command == "summarize":
-        summary = summarize_ledgers(args.path) if args.input_type == "ledgers" else summarize_reports(args.path)
+        if args.input_type == "ledgers":
+            summary = summarize_ledgers(args.path)
+        else:
+            summary = summarize_reports(args.path)
         if args.json:
             print(json.dumps(summary, indent=2))
         else:

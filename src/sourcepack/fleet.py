@@ -211,6 +211,7 @@ def summarize_reports(input_path: str | Path) -> dict[str, Any]:
         "schema_version": FLEET_SUMMARY_SCHEMA_VERSION,
         "generated_at": utc_now(),
         "input_path": str(root),
+        "input_model": "reports",
         "supported_report_schemas": sorted(SUPPORTED_REPORT_SCHEMAS),
         "coverage": {
             "json_files_seen": len(candidates),
@@ -238,14 +239,14 @@ def summarize_ledgers(input_path: str | Path) -> dict[str, Any]:
     candidates = _jsonl_ledger_candidates(root)
 
     event_type_counter: Counter[str] = Counter()
-    finding_hotspots: Counter[str] = Counter()
-    broken_parent_ids: set[str] = set()
+    fail_finding_frequency: Counter[str] = Counter()
     artifact_status_counter: Counter[str] = Counter()
     malformed_lines = 0
     unsupported_schema_versions = 0
     invalid_events = 0
     accepted_events = 0
     ledger_paths: list[str] = []
+    events: list[dict[str, Any]] = []
 
     for candidate in candidates:
         ledger_paths.append(_display_path(candidate, display_root))
@@ -254,24 +255,28 @@ def summarize_ledgers(input_path: str | Path) -> dict[str, Any]:
         unsupported_schema_versions += len(result.unsupported_schema_versions)
         invalid_events += len(result.invalid_events)
         accepted_events += len(result.events)
+        events.extend(result.events)
 
-        ids = {event.get("event_id") for event in result.events}
-        for event in result.events:
-            event_type = _string_value(event.get("event_type")) or "unknown"
-            event_type_counter[event_type] += 1
-            parent = event.get("parent_event_id")
-            if isinstance(parent, str) and parent and parent not in ids:
-                broken_parent_ids.add(parent)
-            artifact = event.get("artifact") if isinstance(event.get("artifact"), dict) else {}
-            if artifact.get("path") and artifact.get("sha256"):
-                verification = verify_artifact_hash(event)
-                artifact_status_counter["verified" if verification.get("verified") else str(verification.get("reason") or "mismatch")] += 1
-            else:
-                artifact_status_counter["not_provided"] += 1
-            data = event.get("data") if isinstance(event.get("data"), dict) else {}
-            finding_id = _string_value(data.get("finding_id"))
-            if finding_id and event_type == "fail_detected":
-                finding_hotspots[finding_id] += 1
+    event_ids = {event.get("event_id") for event in events}
+    missing_parent_ids: set[str] = set()
+    broken_parent_references = 0
+    for event in events:
+        event_type = _string_value(event.get("event_type")) or "unknown"
+        event_type_counter[event_type] += 1
+        parent = event.get("parent_event_id")
+        if isinstance(parent, str) and parent and parent not in event_ids:
+            missing_parent_ids.add(parent)
+            broken_parent_references += 1
+        artifact = event.get("artifact") if isinstance(event.get("artifact"), dict) else {}
+        if artifact.get("path") and artifact.get("sha256"):
+            verification = verify_artifact_hash(event)
+            artifact_status_counter["verified" if verification.get("verified") else str(verification.get("reason") or "mismatch")] += 1
+        else:
+            artifact_status_counter["not_provided"] += 1
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        finding_id = _string_value(data.get("finding_id"))
+        if finding_id and event_type == "fail_detected":
+            fail_finding_frequency[finding_id] += 1
 
     return {
         "schema_version": FLEET_SUMMARY_SCHEMA_VERSION,
@@ -284,18 +289,19 @@ def summarize_ledgers(input_path: str | Path) -> dict[str, Any]:
             "malformed_lines": malformed_lines,
             "unsupported_schema_versions": unsupported_schema_versions,
             "invalid_events": invalid_events,
-            "broken_parent_events": len(broken_parent_ids),
+            "broken_parent_references": broken_parent_references,
+            "unique_missing_parent_ids": len(missing_parent_ids),
         },
         "accepted_ledger_paths": ledger_paths,
         "event_type_counts": [
             {"event_type": event_type, "count": count}
             for event_type, count in sorted(event_type_counter.items())
         ],
-        "finding_hotspots": [
+        "fail_finding_frequencies": [
             {"finding_id": finding_id, "count": count}
-            for finding_id, count in sorted(finding_hotspots.items(), key=lambda item: (-item[1], item[0]))
+            for finding_id, count in sorted(fail_finding_frequency.items(), key=lambda item: (-item[1], item[0]))
         ],
-        "broken_parent_event_ids": sorted(broken_parent_ids),
+        "missing_parent_event_ids": sorted(missing_parent_ids),
         "artifact_verification_counts": [
             {"status": status, "count": count}
             for status, count in sorted(artifact_status_counter.items())
@@ -316,7 +322,8 @@ def render_human_summary(summary: dict[str, Any]) -> str:
             f"Malformed lines: {coverage.get('malformed_lines', 0)}",
             f"Unsupported-schema events: {coverage.get('unsupported_schema_versions', 0)}",
             f"Invalid events: {coverage.get('invalid_events', 0)}",
-            f"Broken parent references: {coverage.get('broken_parent_events', 0)}",
+            f"Broken parent references: {coverage.get('broken_parent_references', 0)}",
+            f"Unique missing parent IDs: {coverage.get('unique_missing_parent_ids', 0)}",
             "",
             "Event types:",
         ]
@@ -325,14 +332,18 @@ def render_human_summary(summary: dict[str, Any]) -> str:
         if not summary.get("event_type_counts"):
             lines.append("- none")
         lines.append("")
-        lines.append("Repeated finding hotspots:")
-        for item in summary.get("finding_hotspots", []):
+        lines.append("FAIL finding frequencies:")
+        for item in summary.get("fail_finding_frequencies", []):
             lines.append(f"- {item['finding_id']}: {item['count']}")
-        if not summary.get("finding_hotspots"):
+        if not summary.get("fail_finding_frequencies"):
             lines.append("- none")
-        if summary.get("broken_parent_event_ids"):
-            lines.extend(["", "Broken parent event IDs:"])
-            lines.extend(f"- {event_id}" for event_id in summary["broken_parent_event_ids"])
+        if summary.get("artifact_verification_counts"):
+            lines.extend(["", "Artifact verification:"])
+            for item in summary["artifact_verification_counts"]:
+                lines.append(f"- {item['status']}: {item['count']}")
+        if summary.get("missing_parent_event_ids"):
+            lines.extend(["", "Missing parent event IDs:"])
+            lines.extend(f"- {event_id}" for event_id in summary["missing_parent_event_ids"])
         return "\n".join(lines) + "\n"
 
     coverage = summary.get("coverage", {})

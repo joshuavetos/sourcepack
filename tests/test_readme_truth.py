@@ -102,6 +102,7 @@ def test_demo_output_matches_quick_demo_claim() -> None:
     text = cp.stdout
     assert "RED LIGHT: commit blocked" in text
     assert "unsupported_dependency: sourcepack/server.py imports fastapi, but fastapi is not declared." in text
+    assert "Verdict: FAIL" in text
     assert "PASS manifest.json" not in text
 
 
@@ -117,6 +118,7 @@ def test_readme_first_five_minutes_and_public_alpha_limits() -> None:
         "python -m pip install sourcepack",
         "sourcepack demo",
         "RED LIGHT: commit blocked",
+        "Verdict: FAIL",
         "unsupported_dependency",
         "sourcepack init . --auto",
         "sourcepack diff .",

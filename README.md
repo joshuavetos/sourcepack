@@ -28,14 +28,15 @@ You should see a concrete failure like this:
 
 ```text
 RED LIGHT: commit blocked
-FAIL
 unsupported_dependency: sourcepack/server.py imports fastapi, but fastapi is not declared.
+
+Verdict: FAIL
 ```
 
 Read that output as three separate layers:
 
 - Human-facing verdict: `RED LIGHT`
-- Formal result: `FAIL`
+- Formal result: `Verdict: FAIL`
 - Machine reason code: `unsupported_dependency`
 
 In this demo, the proposed code imports `fastapi`, but the repository evidence does not declare FastAPI as a dependency. SourcePack blocks the commit because the AI change relies on an unsupported repo assumption.
@@ -80,7 +81,7 @@ It says a narrower, testable thing:
 
    `RED LIGHT` is the human stop signal.
 
-   `FAIL` is the formal result.
+   `Verdict: FAIL` is the formal result.
 
    `unsupported_dependency` is the machine-readable reason code.
 

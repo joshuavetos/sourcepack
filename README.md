@@ -1,4 +1,11 @@
 # SourcePack
+<p align="center">
+  <img
+    src="docs/assets/sourcepack-hero.png"
+    alt="SourcePack checking an AI-generated code change against repository evidence"
+    width="100%"
+  >
+</p>
 
 ![PyPI](https://img.shields.io/pypi/v/sourcepack)
 ![Python](https://img.shields.io/pypi/pyversions/sourcepack)

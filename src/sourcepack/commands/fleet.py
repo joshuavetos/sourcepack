@@ -8,7 +8,7 @@ from sourcepack.fleet import render_human_summary, summarize_ledgers, summarize_
 def register(subparsers) -> None:
     fleet_cmd = subparsers.add_parser(
         "fleet",
-        help="summarize SourcePack reports across repos or report archives",
+        help="summarize SourcePack reports or decision ledgers across repos",
     )
     fleet_subs = fleet_cmd.add_subparsers(dest="fleet_command")
     fleet_summarize = fleet_subs.add_parser(

@@ -54,9 +54,18 @@ def _jsonl_ledger_candidates(path: Path) -> list[Path]:
     if not path.exists():
         return []
     return sorted(
-        (candidate for candidate in path.rglob("*.jsonl") if candidate.is_file()),
+        (
+            candidate
+            for candidate in path.rglob("*.jsonl")
+            if candidate.is_file()
+            and not _is_execution_evidence_ledger(candidate)
+        ),
         key=lambda candidate: candidate.as_posix(),
     )
+
+
+def _is_execution_evidence_ledger(path: Path) -> bool:
+    return path.parts[-3:] == (".sourcepack", "evidence", "ledger.jsonl")
 
 
 def _string_value(value: Any) -> str | None:

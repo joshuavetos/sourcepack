@@ -167,3 +167,40 @@ def test_fleet_ledgers_cli_routes_to_ledger_mode(tmp_path: Path):
     assert data["input_model"] == "decision_ledgers"
     assert data["coverage"]["jsonl_files_seen"] == 1
     assert data["event_type_counts"] == [{"event_type": "report_created", "count": 1}]
+
+
+def test_fleet_directory_discovery_skips_execution_evidence_ledger(tmp_path: Path):
+    decision_ledger = tmp_path / ".sourcepack" / "decisions.jsonl"
+    append_event(decision_ledger, new_event("report_created", command="test", repo=tmp_path))
+    evidence_ledger = tmp_path / ".sourcepack" / "evidence" / "ledger.jsonl"
+    evidence_ledger.parent.mkdir(parents=True)
+    evidence_ledger.write_text(
+        json.dumps(
+            {
+                "schema_version": "sourcepack.exec.evidence.v1",
+                "entry_id": "exec-1",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = summarize_ledgers(tmp_path)
+
+    assert summary["coverage"]["jsonl_files_seen"] == 1
+    assert summary["coverage"]["unsupported_schema_versions"] == 0
+    assert summary["accepted_ledger_paths"] == [".sourcepack/decisions.jsonl"]
+
+
+def test_fleet_explicit_jsonl_input_is_not_filtered_by_location(tmp_path: Path):
+    evidence_ledger = tmp_path / ".sourcepack" / "evidence" / "ledger.jsonl"
+    evidence_ledger.parent.mkdir(parents=True)
+    evidence_ledger.write_text(
+        '{"schema_version":"sourcepack.exec.evidence.v1"}\n',
+        encoding="utf-8",
+    )
+
+    summary = summarize_ledgers(evidence_ledger)
+
+    assert summary["coverage"]["jsonl_files_seen"] == 1
+    assert summary["accepted_ledger_paths"] == ["ledger.jsonl"]

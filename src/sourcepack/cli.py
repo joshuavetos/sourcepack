@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import contextlib
 import io
 import importlib.resources as resources
@@ -35,6 +36,8 @@ from .commands import fleet as fleet_command
 from .commands import report as report_command
 from .policy import validate_policy_config
 from .replay import reconstruct_replay, render_replay_human
+from .decision_ledger import read_events, validate_event
+from .overrides import OVERRIDE_SCHEMA_VERSION
 
 try:
     from . import __version__
@@ -2558,6 +2561,289 @@ def cli_baseline_lifecycle(args) -> int | None:
         return 0 if status.get("state") in {"present", "stale"} else 1
     return None
 
+BUNDLE_SUPPORTED_REPORT_SCHEMAS = {"patch_judgment_report.v1", "traffic_report.v1"}
+
+
+# Evidence Bundles v1
+BUNDLE_SCHEMA_VERSION = "sourcepack.evidence_bundle.v1"
+VERIFY_SCHEMA_VERSION = "sourcepack.evidence_bundle.verify.v1"
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def canonical_json(data: Any) -> str:
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def sha256_text(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("JSON root is not an object")
+    return data
+
+
+def _display_path(path: Path, root: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except Exception:
+        return str(path).replace("\\", "/")
+
+
+def _event_artifact_path(event: dict[str, Any]) -> str | None:
+    artifact = event.get("artifact") if isinstance(event.get("artifact"), dict) else {}
+    path = artifact.get("path")
+    return path if isinstance(path, str) and path else None
+
+
+def _same_artifact(event: dict[str, Any], report_path: Path, report_sha: str) -> bool:
+    artifact = event.get("artifact") if isinstance(event.get("artifact"), dict) else {}
+    if artifact.get("sha256") != report_sha:
+        return False
+    path = _event_artifact_path(event)
+    if not path:
+        return False
+    repo = Path(str(event.get("repo") or "."))
+    disk = Path(path) if Path(path).is_absolute() else repo / path
+    try:
+        return disk.resolve() == report_path.resolve()
+    except Exception:
+        return str(disk) == str(report_path)
+
+
+def _finding_ids(report: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    for finding in report.get("findings", []):
+        if isinstance(finding, dict) and isinstance(finding.get("finding_id"), str):
+            ids.add(finding["finding_id"])
+    return ids
+
+
+def _parent_chain(all_events: dict[str, dict[str, Any]], start: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    chain: list[dict[str, Any]] = []
+    missing: list[str] = []
+    seen: set[str] = set()
+    current: dict[str, Any] | None = start
+    while current is not None:
+        event_id = current.get("event_id")
+        if isinstance(event_id, str):
+            if event_id in seen:
+                missing.append(event_id)
+                break
+            seen.add(event_id)
+        chain.append(current)
+        parent = current.get("parent_event_id")
+        if not parent:
+            break
+        if not isinstance(parent, str):
+            missing.append(str(parent))
+            break
+        current = all_events.get(parent)
+        if current is None:
+            missing.append(parent)
+            break
+    return chain, missing
+
+
+def _find_scanner_manifest(repo: Path) -> dict[str, Any] | None:
+    active = repo / ".sourcepack" / "baseline" / "active.json"
+    if active.is_file():
+        try:
+            active_data = _load_json(active)
+        except Exception:
+            return None
+        packet = active_data.get("packet_path")
+        if isinstance(packet, str) and packet:
+            manifest = repo / packet / "manifest.json"
+            if manifest.is_file():
+                return {"path": _display_path(manifest, repo), "sha256": sha256_file(manifest), "schema_version": "sourcepack.scanner_manifest.v1"}
+    return None
+
+
+def _artifact_refs(events: Iterable[dict[str, Any]], repo: Path) -> list[dict[str, Any]]:
+    refs: dict[tuple[str, str | None], dict[str, Any]] = {}
+    for event in events:
+        artifact = event.get("artifact") if isinstance(event.get("artifact"), dict) else {}
+        path = artifact.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        refs[(path, artifact.get("sha256"))] = {"path": path, "schema_version": artifact.get("schema_version"), "sha256": artifact.get("sha256")}
+    return [refs[key] for key in sorted(refs)]
+
+
+def create_bundle(report_path: str | Path, ledger_path: str | Path, *, output_path: str | Path | None = None, created_at: str | None = None) -> dict[str, Any]:
+    report_file = Path(report_path)
+    if not report_file.is_file():
+        raise ValueError("target report is missing or unreadable")
+    report = _load_json(report_file)
+    schema = report.get("schema_version") or report.get("patch_judgment_schema_version")
+    if schema not in BUNDLE_SUPPORTED_REPORT_SCHEMAS:
+        raise ValueError("unsupported report schema")
+    report_sha = sha256_file(report_file)
+    ledger_file = Path(ledger_path)
+    result = read_events(ledger_file)
+    if result.malformed_lines or result.unsupported_schema_versions or result.invalid_events:
+        raise ValueError("decision ledger is malformed or unsupported")
+    events = result.events
+    ids = [e.get("event_id") for e in events]
+    duplicates = sorted(k for k, v in Counter(ids).items() if isinstance(k, str) and v > 1)
+    if duplicates:
+        raise ValueError("duplicate event IDs create ambiguity")
+    report_events = [e for e in events if e.get("event_type") == "report_created" and _same_artifact(e, report_file, report_sha)]
+    if len(report_events) > 1:
+        raise ValueError("corresponding report_created event is ambiguous")
+    report_event = report_events[0] if report_events else None
+    by_id = {e["event_id"]: e for e in events if isinstance(e.get("event_id"), str)}
+    chain: list[dict[str, Any]] = []
+    missing: list[str] = []
+    if report_event:
+        chain, missing = _parent_chain(by_id, report_event)
+        if missing:
+            raise ValueError("required parent events are missing")
+    fail_events = [e for e in events if e.get("event_type") == "fail_detected" and _same_artifact(e, report_file, report_sha)]
+    included_finding_ids = {e.get("data", {}).get("finding_id") for e in fail_events if isinstance(e.get("data"), dict)}
+    report_finding_ids = _finding_ids(report)
+    override_events = []
+    for event in events:
+        if event.get("event_type") != "override_recorded":
+            continue
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        override = data.get("override") if isinstance(data.get("override"), dict) else None
+        fid = data.get("finding_id") or (override or {}).get("target_finding_id")
+        target = (override or {}).get("target_fail_event_id") or event.get("parent_event_id")
+        if fid in included_finding_ids and target in {e.get("event_id") for e in fail_events}:
+            override_events.append(event)
+        elif fid and fid not in report_finding_ids:
+            raise ValueError("override targets a finding not present in the bundle")
+    repo = Path(str((report_event or {}).get("repo") or report_file.parent)).resolve()
+    scanner_manifest = _find_scanner_manifest(repo)
+    included_events = sorted({e["event_id"]: e for e in (chain + fail_events + override_events) if isinstance(e.get("event_id"), str)}.values(), key=lambda e: e["event_id"])
+    manifest_core = {
+        "schema_version": BUNDLE_SCHEMA_VERSION,
+        "sourcepack_version": __version__,
+        "repository": {"path": str(repo)},
+        "target_report": {"path": str(report_file), "schema_version": schema, "sha256": report_sha},
+        "decision_ledger": {"path": str(ledger_file), "sha256": sha256_file(ledger_file) if ledger_file.is_file() else None},
+        "events": {"report_created": report_event, "parent_chain": chain, "fail_detected": sorted(fail_events, key=lambda e: e["event_id"]), "overrides": sorted(override_events, key=lambda e: e["event_id"]), "missing_parent_event_ids": missing},
+        "scanner_manifest": scanner_manifest,
+        "artifacts": _artifact_refs(included_events, repo),
+    }
+    bundle_id = "spkb_" + sha256_text(canonical_json(manifest_core))[:32]
+    manifest = {**manifest_core, "bundle_id": bundle_id, "created_at": created_at or utc_now(), "verification": verify_bundle_dict({**manifest_core, "bundle_id": bundle_id, "created_at": created_at or utc_now()})}
+    out = Path(output_path) if output_path else report_file.with_suffix(".bundle.json")
+    out.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    return manifest
+
+
+def verify_bundle(path: str | Path) -> dict[str, Any]:
+    try:
+        bundle = _load_json(Path(path))
+    except Exception as exc:
+        return _verify_result("FAIL", ["malformed_bundle"], [str(exc)])
+    return verify_bundle_dict(bundle)
+
+
+def _verify_result(status: str, reasons: list[str], failures: list[str], **extra: Any) -> dict[str, Any]:
+    return {"schema_version": VERIFY_SCHEMA_VERSION, "status": status, "reasons": reasons, "failures": failures, **extra}
+
+
+def verify_bundle_dict(bundle: dict[str, Any]) -> dict[str, Any]:
+    reasons: list[str] = []
+    failures: list[str] = []
+    if bundle.get("schema_version") != BUNDLE_SCHEMA_VERSION:
+        reasons.append("unsupported_bundle_schema")
+    for field in ("bundle_id", "created_at", "repository", "target_report", "decision_ledger", "events", "artifacts"):
+        if field not in bundle:
+            reasons.append("missing_required_field")
+            failures.append(field)
+    target = bundle.get("target_report") if isinstance(bundle.get("target_report"), dict) else {}
+    report_path = target.get("path")
+    if not report_path or not Path(report_path).is_file():
+        reasons.append("target_report_missing")
+    elif target.get("sha256") != sha256_file(Path(report_path)):
+        reasons.append("target_report_hash_mismatch")
+    if target.get("schema_version") not in BUNDLE_SUPPORTED_REPORT_SCHEMAS:
+        reasons.append("unsupported_report_schema")
+    events_obj = bundle.get("events") if isinstance(bundle.get("events"), dict) else {}
+    event_lists = []
+    for key in ("parent_chain", "fail_detected", "overrides"):
+        value = events_obj.get(key)
+        if not isinstance(value, list):
+            reasons.append("missing_required_field")
+            failures.append(f"events.{key}")
+            value = []
+        event_lists.extend([e for e in value if isinstance(e, dict)])
+    ids = [e.get("event_id") for e in event_lists]
+    duplicate_ids = sorted(k for k, v in Counter(ids).items() if isinstance(k, str) and v > 1)
+    if duplicate_ids:
+        reasons.append("duplicate_event_id")
+    by_id = {e.get("event_id"): e for e in event_lists if isinstance(e.get("event_id"), str)}
+    for event in event_lists:
+        if validate_event(event):
+            reasons.append("invalid_event")
+            break
+        parent = event.get("parent_event_id")
+        if parent and parent not in by_id:
+            reasons.append("missing_parent_event")
+            break
+    fail_ids = {e.get("event_id") for e in event_lists if e.get("event_type") == "fail_detected"}
+    finding_ids = {e.get("data", {}).get("finding_id") for e in event_lists if e.get("event_type") == "fail_detected" and isinstance(e.get("data"), dict)}
+    for event in [e for e in event_lists if e.get("event_type") == "override_recorded"]:
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        ov = data.get("override") if isinstance(data.get("override"), dict) else {}
+        if ov and ov.get("schema_version") != OVERRIDE_SCHEMA_VERSION:
+            reasons.append("invalid_override")
+        if (data.get("finding_id") or ov.get("target_finding_id")) not in finding_ids:
+            reasons.append("override_target_missing")
+        if (ov.get("target_fail_event_id") or event.get("parent_event_id")) not in fail_ids:
+            reasons.append("override_fail_event_missing")
+    scanner = bundle.get("scanner_manifest")
+    if isinstance(scanner, dict):
+        spath = scanner.get("path")
+        repo = Path(str(bundle.get("repository", {}).get("path") or ".")) if isinstance(bundle.get("repository"), dict) else Path(".")
+        sdisk = Path(spath) if spath and Path(spath).is_absolute() else repo / str(spath or "")
+        if not spath or not sdisk.is_file():
+            reasons.append("scanner_manifest_missing")
+        elif scanner.get("sha256") != sha256_file(Path(sdisk)):
+            reasons.append("scanner_manifest_hash_mismatch")
+    artifacts = bundle.get("artifacts")
+    if isinstance(artifacts, list):
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                reasons.append("invalid_artifact")
+                continue
+            apath = artifact.get("path")
+            expected = artifact.get("sha256")
+            if expected and apath:
+                repo = Path(str(bundle.get("repository", {}).get("path") or ".")) if isinstance(bundle.get("repository"), dict) else Path(".")
+                disk = Path(apath) if Path(apath).is_absolute() else repo / apath
+                if not disk.is_file() or sha256_file(Path(disk)) != expected:
+                    reasons.append("artifact_hash_mismatch")
+                    break
+    else:
+        reasons.append("missing_required_field")
+        failures.append("artifacts")
+    status = "PASS" if not reasons else "FAIL"
+    return _verify_result(status, sorted(set(reasons)), failures, event_counts={"parent_chain": len(events_obj.get("parent_chain", []) or []), "fail_detected": len(events_obj.get("fail_detected", []) or []), "overrides": len(events_obj.get("overrides", []) or [])}, artifact_count=len(artifacts) if isinstance(artifacts, list) else 0, chain_integrity="PASS" if "missing_parent_event" not in reasons and "duplicate_event_id" not in reasons else "FAIL", artifact_verification="PASS" if not any(r in reasons for r in ("target_report_hash_mismatch", "scanner_manifest_hash_mismatch", "artifact_hash_mismatch")) else "FAIL")
+
+
+def render_bundle_verify_human(bundle_or_result: dict[str, Any]) -> str:
+    result = bundle_or_result.get("verification", bundle_or_result)
+    lines = ["SourcePack evidence bundle verification", f"Status: {result.get('status')}", f"Bundle: {bundle_or_result.get('bundle_id', 'unknown')}", f"Chain integrity: {result.get('chain_integrity')}", f"Artifact verification: {result.get('artifact_verification')}", f"Artifacts: {result.get('artifact_count', 0)}"]
+    counts = result.get("event_counts", {}) if isinstance(result.get("event_counts"), dict) else {}
+    lines.append(f"Events: parent_chain={counts.get('parent_chain', 0)} fail_detected={counts.get('fail_detected', 0)} overrides={counts.get('overrides', 0)}")
+    if result.get("reasons"):
+        lines.append("Failures:")
+        lines.extend(f"- {r}" for r in result.get("reasons", []))
+    return "\n".join(lines) + "\n"
+
 def run_cli(args_list=None):
     parser = argparse.ArgumentParser(prog="sourcepack", description="Local guardrail for AI-assisted repo changes. PASS exits 0, WARN exits 0 locally unless --strict or --ci is used, and FAIL exits nonzero.")
     parser.add_argument("--version", action="store_true")
@@ -2641,6 +2927,16 @@ def run_cli(args_list=None):
     replay_cmd = subs.add_parser("replay", help="reconstruct a saved SourcePack report or replay bundle")
     replay_cmd.add_argument("input_path")
     replay_cmd.add_argument("--json", action="store_true")
+    bundle_cmd = subs.add_parser("bundle", help="create and verify local evidence bundles")
+    bundle_subs = bundle_cmd.add_subparsers(dest="bundle_command")
+    bundle_create = bundle_subs.add_parser("create")
+    bundle_create.add_argument("report_path")
+    bundle_create.add_argument("--ledger", required=True)
+    bundle_create.add_argument("--out")
+    bundle_create.add_argument("--json", action="store_true")
+    bundle_verify = bundle_subs.add_parser("verify")
+    bundle_verify.add_argument("bundle_path")
+    bundle_verify.add_argument("--json", action="store_true")
     ui_cmd = subs.add_parser("ui", help="serve the local SourcePack Workbench", description="serve the local SourcePack Workbench")
     ui_cmd.add_argument("repo", nargs="?", default=".")
     ui_cmd.add_argument("--host", default="127.0.0.1")
@@ -2710,6 +3006,26 @@ def run_cli(args_list=None):
             return fleet_command.cli_fleet(args)
         if args.command == "reset":
             return cli_reset(args)
+        if args.command == "bundle":
+            if args.bundle_command == "create":
+                manifest = create_bundle(args.report_path, args.ledger, output_path=args.out)
+                if args.json:
+                    print(json.dumps(manifest, indent=2, sort_keys=True))
+                else:
+                    print(f"Bundle written: {args.out or str(Path(args.report_path).with_suffix('.bundle.json'))}")
+                    print(f"Bundle ID: {manifest.get('bundle_id')}")
+                    print(f"Artifacts: {len(manifest.get('artifacts', []))}")
+                    ev = manifest.get('events', {})
+                    print(f"Events: parent_chain={len(ev.get('parent_chain', []))} fail_detected={len(ev.get('fail_detected', []))} overrides={len(ev.get('overrides', []))}")
+                return 0 if manifest.get("verification", {}).get("status") == "PASS" else 1
+            if args.bundle_command == "verify":
+                result = verify_bundle(args.bundle_path)
+                if args.json:
+                    print(json.dumps(result, indent=2, sort_keys=True))
+                else:
+                    print(render_bundle_verify_human({"bundle_id": args.bundle_path, "verification": result}), end="")
+                return 0 if result.get("status") == "PASS" else 1
+            parser.parse_args(["bundle", "--help"]); return 1
         if args.command == "replay":
             result, code = reconstruct_replay(args.input_path)
             if args.json:

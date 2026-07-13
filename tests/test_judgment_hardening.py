@@ -288,3 +288,93 @@ def test_build_repo_change_report_initial_missing_git_remains_git_unavailable(mo
     assert report["verdict"] == "FAIL"
     assert "git_unavailable" in finding_ids
     assert "no_git_repo" not in finding_ids
+
+# Evidence bundle tests
+import contextlib as _sp_contextlib
+import io as _sp_io
+import json as _sp_json
+from pathlib import Path as _SpPath
+
+from sourcepack.decision_ledger import append_report_events as _sp_append_report_events, filter_events as _sp_filter_events
+from sourcepack.overrides import create_override as _sp_create_override
+from sourcepack.reports.json import normalized_finding as _sp_normalized_finding, traffic_report as _sp_traffic_report
+from sourcepack.cli import BUNDLE_SCHEMA_VERSION as _SP_BUNDLE_SCHEMA_VERSION, create_bundle as _sp_create_bundle, verify_bundle as _sp_verify_bundle, run_cli as _sp_run_cli
+
+
+def _sp_bundle_report_and_ledger(tmp_path: _SpPath):
+    report = _sp_traffic_report("FAIL", findings=[
+        _sp_normalized_finding("unsupported_dependency", "error", "dependency", "missing", evidence="requests"),
+        _sp_normalized_finding("missing_file", "error", "file", "missing", path="src/missing.py"),
+    ])
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    report_path = tmp_path / "report.json"
+    report_path.write_text(_sp_json.dumps(report, sort_keys=True), encoding="utf-8")
+    ledger = tmp_path / "ledger.jsonl"
+    events = _sp_append_report_events(ledger, report=report, report_path=report_path, command="test", repo=tmp_path)
+    return report, report_path, ledger, events
+
+
+def test_evidence_bundle_creation_deterministic_id_events_and_override(tmp_path: _SpPath):
+    report, report_path, ledger, events = _sp_bundle_report_and_ledger(tmp_path)
+    fail = _sp_filter_events(events, "fail_detected")[0]
+    _sp_create_override(report=report, report_path=report_path, target_finding_id=fail["data"]["finding_id"], target_fail_event_id=fail["event_id"], actor="me", reason="reviewed", scope="local", ledger_path=ledger, repo=tmp_path)
+    a = _sp_create_bundle(report_path, ledger, created_at="2026-01-01T00:00:00+00:00")
+    b = _sp_create_bundle(report_path, ledger, output_path=tmp_path / "other.json", created_at="2027-01-01T00:00:00+00:00")
+    assert a["schema_version"] == _SP_BUNDLE_SCHEMA_VERSION
+    assert a["bundle_id"] == b["bundle_id"]
+    assert a["events"]["report_created"]["event_type"] == "report_created"
+    assert len(a["events"]["fail_detected"]) == 2
+    assert len(a["events"]["parent_chain"]) == 1
+    assert len(a["events"]["overrides"]) == 1
+    assert a["events"]["fail_detected"][0]["data"]["finding"]["severity"] == "error"
+    assert a["verification"]["status"] == "PASS"
+
+
+def test_evidence_bundle_verifies_hash_malformed_unsupported_and_duplicate(tmp_path: _SpPath):
+    _, report_path, ledger, events = _sp_bundle_report_and_ledger(tmp_path)
+    _sp_create_bundle(report_path, ledger)
+    path = report_path.with_suffix(".bundle.json")
+    assert _sp_verify_bundle(path)["status"] == "PASS"
+    report_path.write_text("{}", encoding="utf-8")
+    assert "target_report_hash_mismatch" in _sp_verify_bundle(path)["reasons"]
+    bad = tmp_path / "bad.json"
+    bad.write_text("[]", encoding="utf-8")
+    assert "malformed_bundle" in _sp_verify_bundle(bad)["reasons"]
+    bad.write_text(_sp_json.dumps({"schema_version": "future"}), encoding="utf-8")
+    assert "unsupported_bundle_schema" in _sp_verify_bundle(bad)["reasons"]
+    report, report_path, ledger, events = _sp_bundle_report_and_ledger(tmp_path / "dup")
+    report_path.parent.mkdir(exist_ok=True)
+    with ledger.open("a", encoding="utf-8") as fh:
+        fh.write(_sp_json.dumps(events[0], sort_keys=True) + "\n")
+    try:
+        _sp_create_bundle(report_path, ledger)
+        raise AssertionError("expected failure")
+    except ValueError as exc:
+        assert "duplicate" in str(exc)
+
+
+def test_evidence_bundle_scanner_manifest_and_cli_routing(tmp_path: _SpPath):
+    _, report_path, ledger, _ = _sp_bundle_report_and_ledger(tmp_path)
+    packet = tmp_path / ".sourcepack" / "baseline" / "builds" / "b1" / "packet"
+    packet.mkdir(parents=True)
+    (packet / "manifest.json").write_text('{"ok": true}\n', encoding="utf-8")
+    (tmp_path / ".sourcepack" / "baseline" / "active.json").write_text(_sp_json.dumps({"active_build_id": "b1", "packet_path": ".sourcepack/baseline/builds/b1/packet"}), encoding="utf-8")
+    out = tmp_path / "bundle.json"
+    buf = _sp_io.StringIO()
+    with _sp_contextlib.redirect_stdout(buf):
+        code = _sp_run_cli(["bundle", "create", str(report_path), "--ledger", str(ledger), "--out", str(out), "--json"])
+    assert code == 0
+    assert _sp_json.loads(buf.getvalue())["scanner_manifest"]["sha256"]
+    assert _sp_verify_bundle(out)["status"] == "PASS"
+    (packet / "manifest.json").write_text("changed", encoding="utf-8")
+    assert "scanner_manifest_hash_mismatch" in _sp_verify_bundle(out)["reasons"]
+    buf = _sp_io.StringIO()
+    with _sp_contextlib.redirect_stdout(buf):
+        code = _sp_run_cli(["bundle", "verify", str(out)])
+    assert code == 1
+    assert "Artifact verification: FAIL" in buf.getvalue()
+    buf = _sp_io.StringIO()
+    with _sp_contextlib.redirect_stdout(buf):
+        code = _sp_run_cli(["bundle", "verify", str(out), "--json"])
+    assert code == 1
+    assert "scanner_manifest_hash_mismatch" in _sp_json.loads(buf.getvalue())["reasons"]

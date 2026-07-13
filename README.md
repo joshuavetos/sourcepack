@@ -102,6 +102,21 @@ It says a narrower, testable thing:
 
 `sourcepack init . --auto` creates or refreshes local SourcePack state after you decide the current repo state should be trusted. Do not use initialization to bless an AI patch just because SourcePack reported a failure.
 
+
+## Evidence bundles
+
+SourcePack can write a local Evidence Bundle v1 manifest for one saved judgment report and its decision-ledger evidence chain:
+
+```bash
+sourcepack bundle create .sourcepack/reports/latest.json --ledger .sourcepack/decisions.jsonl
+sourcepack bundle verify .sourcepack/reports/latest.bundle.json
+sourcepack bundle verify .sourcepack/reports/latest.bundle.json --json
+```
+
+An evidence bundle is a plain JSON manifest. It records the target report schema and SHA-256, related report-created and fail-detected decision-ledger events, parent-chain information, verifiably linked override records, scanner-manifest references when available, and referenced artifact hashes. Verification checks local bytes and local relationships only.
+
+An evidence bundle does not prove semantic correctness, runtime safety, or that every historical event was recorded. It is not cryptographically signed or tamper-proof. It verifies hashes and relationships among the local artifacts it includes or references.
+
 ## What SourcePack catches
 
 | Case | Formal result | Reason code |

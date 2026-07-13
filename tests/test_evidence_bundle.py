@@ -7,8 +7,8 @@ from pathlib import Path
 
 
 from sourcepack.cli import run_cli
-from sourcepack.decision_ledger import append_event, append_report_events, filter_events, new_event, read_events
-from sourcepack.evidence_bundle import BUNDLE_SCHEMA_VERSION, create_bundle, verify_bundle
+from sourcepack.decision_ledger import append_event, append_report_events, filter_events, new_event, read_events, artifact_for
+from sourcepack.evidence_bundle import BUNDLE_SCHEMA_VERSION, compute_bundle_id, create_bundle, verify_bundle
 from sourcepack.overrides import create_override
 from sourcepack.reports.json import normalized_finding, traffic_report
 
@@ -57,7 +57,7 @@ def test_successful_bundle_creation_deterministic_id_and_chain(tmp_path: Path):
     assert first["decision_ledger"]["path"] == "ledger.jsonl"
     assert first["events"]["report_created"]["event_type"] == "report_created"
     assert len(first["events"]["fail_detected"]) == 2
-    assert len(first["events"]["parent_chain"]) == 1
+    assert len(first["events"]["parent_chain"]) == 0
     assert len(first["events"]["overrides"]) == 1
     assert first["events"]["fail_detected"][0]["data"]["finding"]["severity"] == "error"
     assert first["creation_verification"]["status"] == "PASS"
@@ -201,3 +201,113 @@ def test_cli_create_and_verify_json_and_human(tmp_path: Path):
         code = run_cli(["bundle", "verify", str(out), "--json"])
     assert code == 0
     assert json.loads(buf.getvalue())["status"] == "PASS"
+
+
+
+def _rewrite_bundle(path: Path, data: dict) -> None:
+    data["bundle_id"] = compute_bundle_id(data)
+    path.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+
+
+def test_bundle_id_ignores_absolute_repository_root(tmp_path: Path):
+    ids = []
+    for repo in (tmp_path / "repo-a", tmp_path / "repo-b"):
+        repo.mkdir()
+        report = _report()
+        report_path = repo / "report.json"
+        report_path.write_text(json.dumps(report, sort_keys=True), encoding="utf-8")
+        ledger = repo / "ledger.jsonl"
+        report_event = new_event(
+            "report_created",
+            command="test",
+            repo=repo,
+            artifact={"path": str(report_path), "sha256": artifact_for(report_path)["sha256"], "schema_version": report["schema_version"]},
+            created_at="2026-01-01T00:00:00+00:00",
+            data={"verdict": "FAIL"},
+        )
+        report_event["event_id"] = "spke_report_same"
+        append_event(ledger, report_event)
+        for index, finding in enumerate(report["findings"], start=1):
+            fail = new_event(
+                "fail_detected",
+                command="test",
+                repo=repo,
+                artifact={"path": str(report_path), "sha256": artifact_for(report_path)["sha256"], "schema_version": report["schema_version"]},
+                parent_event_id=report_event["event_id"],
+                created_at="2026-01-01T00:00:00+00:00",
+                data={"finding_id": finding["finding_id"], "reason_code": finding["id"], "finding": finding},
+            )
+            fail["event_id"] = f"spke_fail_same_{index}"
+            append_event(ledger, fail)
+        ids.append(create_bundle(report_path, ledger)["bundle_id"])
+    assert ids[0] == ids[1]
+
+
+def test_unrelated_override_for_other_report_does_not_block_creation(tmp_path: Path):
+    report_a, report_a_path, ledger, _ = _write_report_and_ledger(tmp_path)
+    report_b = traffic_report(
+        "FAIL",
+        findings=[normalized_finding("unsupported_command", "error", "command", "missing", evidence="bundle-verify")],
+    )
+    report_b_path = tmp_path / "report-b.json"
+    report_b_path.write_text(json.dumps(report_b, sort_keys=True), encoding="utf-8")
+    events_b = append_report_events(ledger, report=report_b, report_path=report_b_path, command="test", repo=tmp_path)
+    fail_b = filter_events(events_b, "fail_detected")[0]
+    create_override(
+        report=report_b,
+        report_path=report_b_path,
+        target_finding_id=fail_b["data"]["finding_id"],
+        target_fail_event_id=fail_b["event_id"],
+        actor="me",
+        reason="reviewed other report",
+        scope="local",
+        ledger_path=ledger,
+        repo=tmp_path,
+    )
+    bundle = create_bundle(report_a_path, ledger)
+    assert bundle["events"]["overrides"] == []
+    assert verify_bundle(report_a_path.with_suffix(".bundle.json"))["status"] == "PASS"
+
+
+def test_verifier_requires_embedded_events_to_match_referenced_ledger(tmp_path: Path):
+    _, report_path, ledger, _ = _write_report_and_ledger(tmp_path)
+    bundle_path = report_path.with_suffix(".bundle.json")
+    create_bundle(report_path, ledger)
+    data = json.loads(bundle_path.read_text(encoding="utf-8"))
+    data["events"]["fail_detected"][0]["event_id"] = "spke_missing_from_ledger"
+    _rewrite_bundle(bundle_path, data)
+    assert "ledger_event_missing" in verify_bundle(bundle_path)["reasons"]
+
+    create_bundle(report_path, ledger)
+    data = json.loads(bundle_path.read_text(encoding="utf-8"))
+    data["events"]["fail_detected"][0]["data"]["reason_code"] = "tampered"
+    _rewrite_bundle(bundle_path, data)
+    assert "ledger_event_mismatch" in verify_bundle(bundle_path)["reasons"]
+
+    create_bundle(report_path, ledger)
+    data = json.loads(bundle_path.read_text(encoding="utf-8"))
+    with ledger.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(data["events"]["report_created"], sort_keys=True) + "\n")
+    data["decision_ledger"]["sha256"] = artifact_for(ledger)["sha256"]
+    _rewrite_bundle(bundle_path, data)
+    assert "ledger_event_duplicate" in verify_bundle(bundle_path)["reasons"]
+
+
+def test_verification_summaries_fail_for_missing_artifacts_and_invalid_chain(tmp_path: Path):
+    _, report_path, ledger, _ = _write_report_and_ledger(tmp_path)
+    bundle_path = report_path.with_suffix(".bundle.json")
+    create_bundle(report_path, ledger)
+    report_path.unlink()
+    result = verify_bundle(bundle_path)
+    assert "target_report_missing" in result["reasons"]
+    assert result["artifact_verification"] == "FAIL"
+
+    report, report_path, ledger, _ = _write_report_and_ledger(tmp_path / "chain")
+    create_bundle(report_path, ledger)
+    bundle_path = report_path.with_suffix(".bundle.json")
+    data = json.loads(bundle_path.read_text(encoding="utf-8"))
+    data["events"]["report_created"]["event_type"] = "fail_detected"
+    _rewrite_bundle(bundle_path, data)
+    result = verify_bundle(bundle_path)
+    assert "report_created_invalid" in result["reasons"]
+    assert result["chain_integrity"] == "FAIL"

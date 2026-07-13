@@ -36,7 +36,7 @@ def cli_bundle(args) -> int:
                 f"fail_detected={len(events.get('fail_detected', []))} "
                 f"overrides={len(events.get('overrides', []))}"
             )
-        return 0
+        return 0 if manifest.get("creation_verification", {}).get("status") == "PASS" else 1
     if args.bundle_command == "verify":
         result = verify_bundle(args.bundle_path)
         if args.json:

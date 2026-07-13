@@ -209,38 +209,22 @@ def _rewrite_bundle(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
 
 
-def test_bundle_id_ignores_absolute_repository_root(tmp_path: Path):
-    ids = []
-    for repo in (tmp_path / "repo-a", tmp_path / "repo-b"):
-        repo.mkdir()
-        report = _report()
-        report_path = repo / "report.json"
-        report_path.write_text(json.dumps(report, sort_keys=True), encoding="utf-8")
-        ledger = repo / "ledger.jsonl"
-        report_event = new_event(
-            "report_created",
-            command="test",
-            repo=repo,
-            artifact={"path": str(report_path), "sha256": artifact_for(report_path)["sha256"], "schema_version": report["schema_version"]},
-            created_at="2026-01-01T00:00:00+00:00",
-            data={"verdict": "FAIL"},
-        )
-        report_event["event_id"] = "spke_report_same"
-        append_event(ledger, report_event)
-        for index, finding in enumerate(report["findings"], start=1):
-            fail = new_event(
-                "fail_detected",
-                command="test",
-                repo=repo,
-                artifact={"path": str(report_path), "sha256": artifact_for(report_path)["sha256"], "schema_version": report["schema_version"]},
-                parent_event_id=report_event["event_id"],
-                created_at="2026-01-01T00:00:00+00:00",
-                data={"finding_id": finding["finding_id"], "reason_code": finding["id"], "finding": finding},
-            )
-            fail["event_id"] = f"spke_fail_same_{index}"
-            append_event(ledger, fail)
-        ids.append(create_bundle(report_path, ledger)["bundle_id"])
-    assert ids[0] == ids[1]
+def test_bundle_id_ignores_ledger_and_repository_paths_but_binds_ledger_sha(tmp_path: Path):
+    _, report_path, ledger, _ = _write_report_and_ledger(tmp_path)
+    bundle_path = report_path.with_suffix(".bundle.json")
+    bundle = create_bundle(report_path, ledger)
+    original_id = bundle["bundle_id"]
+
+    moved = tmp_path / "nested" / "renamed-ledger.jsonl"
+    moved.parent.mkdir()
+    moved.write_bytes(ledger.read_bytes())
+    data = json.loads(bundle_path.read_text(encoding="utf-8"))
+    data["decision_ledger"]["path"] = "nested/renamed-ledger.jsonl"
+    assert compute_bundle_id(data) == original_id
+
+    moved.write_text(moved.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    data["decision_ledger"]["sha256"] = artifact_for(moved)["sha256"]
+    assert compute_bundle_id(data) != original_id
 
 
 def test_unrelated_override_for_other_report_does_not_block_creation(tmp_path: Path):
@@ -310,4 +294,40 @@ def test_verification_summaries_fail_for_missing_artifacts_and_invalid_chain(tmp
     _rewrite_bundle(bundle_path, data)
     result = verify_bundle(bundle_path)
     assert "report_created_invalid" in result["reasons"]
+    assert result["chain_integrity"] == "FAIL"
+
+
+def test_verifier_rejects_omitted_fail_event_after_bundle_id_recompute(tmp_path: Path):
+    _, report_path, ledger, _ = _write_report_and_ledger(tmp_path)
+    bundle_path = report_path.with_suffix(".bundle.json")
+    create_bundle(report_path, ledger)
+    data = json.loads(bundle_path.read_text(encoding="utf-8"))
+    data["events"]["fail_detected"] = data["events"]["fail_detected"][:1]
+    _rewrite_bundle(bundle_path, data)
+    result = verify_bundle(bundle_path)
+    assert "fail_event_missing_from_bundle" in result["reasons"]
+    assert result["chain_integrity"] == "FAIL"
+
+
+def test_verifier_rejects_omitted_relevant_override_after_bundle_id_recompute(tmp_path: Path):
+    report, report_path, ledger, events = _write_report_and_ledger(tmp_path)
+    fail = filter_events(events, "fail_detected")[0]
+    create_override(
+        report=report,
+        report_path=report_path,
+        target_finding_id=fail["data"]["finding_id"],
+        target_fail_event_id=fail["event_id"],
+        actor="me",
+        reason="reviewed",
+        scope="local",
+        ledger_path=ledger,
+        repo=tmp_path,
+    )
+    bundle_path = report_path.with_suffix(".bundle.json")
+    create_bundle(report_path, ledger)
+    data = json.loads(bundle_path.read_text(encoding="utf-8"))
+    data["events"]["overrides"] = []
+    _rewrite_bundle(bundle_path, data)
+    result = verify_bundle(bundle_path)
+    assert "override_event_missing_from_bundle" in result["reasons"]
     assert result["chain_integrity"] == "FAIL"

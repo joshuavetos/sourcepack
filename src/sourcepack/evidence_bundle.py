@@ -155,16 +155,17 @@ def _find_scanner_manifest(repo: Path) -> dict[str, Any] | None:
     return None
 
 
-def _artifact_refs(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+def _artifact_refs(events: Iterable[dict[str, Any]], repo: Path) -> list[dict[str, Any]]:
     refs: dict[tuple[str, str | None], dict[str, Any]] = {}
     for event in events:
         artifact = event.get("artifact") if isinstance(event.get("artifact"), dict) else {}
         path = artifact.get("path")
         if not isinstance(path, str) or not path:
             continue
-        refs[(path, artifact.get("sha256"))] = {
-            "path": path,
-            "path_base": "event_repo" if not Path(path).is_absolute() else "absolute",
+        normalized_path = _repo_relative_or_absolute(Path(path), repo) if Path(path).is_absolute() else path.replace("\\", "/")
+        refs[(normalized_path, artifact.get("sha256"))] = {
+            "path": normalized_path,
+            "path_base": "repository",
             "schema_version": artifact.get("schema_version"),
             "sha256": artifact.get("sha256"),
         }
@@ -207,6 +208,8 @@ def _bundle_id_material(bundle: dict[str, Any]) -> dict[str, Any]:
     repo_obj = bundle.get("repository") if isinstance(bundle.get("repository"), dict) else {}
     repo = Path(str(repo_obj.get("path") or "."))
     material = {field: bundle.get(field) for field in BUNDLE_ID_MATERIAL_FIELDS}
+    ledger = bundle.get("decision_ledger") if isinstance(bundle.get("decision_ledger"), dict) else {}
+    material["decision_ledger"] = {"sha256": ledger.get("sha256")}
     return _identity_normalized(material, repo)
 
 
@@ -301,7 +304,7 @@ def create_bundle(
             "unresolved_override_events": unresolved_overrides,
         },
         "scanner_manifest": scanner_manifest,
-        "artifacts": _artifact_refs(included_events),
+        "artifacts": _artifact_refs(included_events, repo),
         "created_at": created_at or utc_now(),
     }
     manifest["bundle_id"] = compute_bundle_id(manifest)
@@ -323,6 +326,52 @@ def verify_bundle(path: str | Path) -> dict[str, Any]:
         return _verify_result("FAIL", ["malformed_bundle"], [str(exc)])
     return verify_bundle_dict(bundle)
 
+
+
+def _event_ids(events: Iterable[dict[str, Any]]) -> list[str]:
+    return [event["event_id"] for event in events if isinstance(event.get("event_id"), str)]
+
+
+def _relevant_overrides(
+    events: Iterable[dict[str, Any]],
+    *,
+    target: dict[str, Any],
+    repo: Path,
+    fail_events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    fail_ids = {event.get("event_id") for event in fail_events}
+    finding_ids = {event.get("data", {}).get("finding_id") for event in fail_events if isinstance(event.get("data"), dict)}
+    relevant: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    for event in events:
+        if event.get("event_type") != "override_recorded":
+            continue
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        override = data.get("override") if isinstance(data.get("override"), dict) else None
+        finding_id = data.get("finding_id") or (override or {}).get("target_finding_id")
+        target_fail_event_id = (override or {}).get("target_fail_event_id") or event.get("parent_event_id")
+        claims_target = _artifact_matches_target(event, target, repo) or finding_id in finding_ids or target_fail_event_id in fail_ids
+        if finding_id in finding_ids and target_fail_event_id in fail_ids:
+            relevant.append(event)
+        elif claims_target:
+            unresolved.append(event)
+    return relevant, unresolved
+
+
+def _compare_expected_ids(
+    *,
+    reasons: list[str],
+    expected_ids: list[str],
+    embedded_ids: list[str],
+    missing_reason: str,
+    unexpected_reason: str,
+) -> None:
+    expected = set(expected_ids)
+    embedded = set(embedded_ids)
+    if expected - embedded:
+        reasons.append(missing_reason)
+    if embedded - expected:
+        reasons.append(unexpected_reason)
 
 def verify_bundle_dict(bundle: dict[str, Any]) -> dict[str, Any]:
     reasons: list[str] = []
@@ -456,6 +505,10 @@ def verify_bundle_dict(bundle: dict[str, Any]) -> dict[str, Any]:
                 continue
             artifact_path = artifact.get("path")
             expected = artifact.get("sha256")
+            path_base = artifact.get("path_base")
+            if path_base not in {"repository", "absolute_local_path"}:
+                reasons.append("artifact_path_base_unsupported")
+                continue
             if expected and artifact_path:
                 disk = _resolve_path(str(artifact_path), repo)
                 if not disk.is_file() or sha256_file(disk) != expected:
@@ -464,6 +517,52 @@ def verify_bundle_dict(bundle: dict[str, Any]) -> dict[str, Any]:
     else:
         reasons.append("missing_required_field")
         failures.append("artifacts")
+    if ledger_events_by_id:
+        ledger_events = list(ledger_events_by_id.values())
+        matching_reports = [event for event in ledger_events if event.get("event_type") == "report_created" and _artifact_matches_target(event, target, repo)]
+        if len(matching_reports) > 1:
+            reasons.append("report_created_ambiguous")
+        elif len(matching_reports) == 1:
+            expected_report = matching_reports[0]
+            if isinstance(report_event, dict) and report_event.get("event_id") != expected_report.get("event_id"):
+                reasons.append("report_created_artifact_mismatch")
+            expected_chain, expected_missing = _parent_chain(ledger_events_by_id, expected_report)
+            expected_parent_chain = expected_chain[1:]
+            embedded_chain = [event for event in chain if isinstance(event, dict)]
+            expected_chain_ids = _event_ids(expected_parent_chain)
+            embedded_chain_ids = _event_ids(embedded_chain)
+            if expected_missing or any(event_id not in embedded_chain_ids for event_id in expected_chain_ids):
+                reasons.append("parent_chain_incomplete")
+            if embedded_chain_ids != expected_chain_ids:
+                reasons.append("parent_chain_unexpected_event")
+            expected_fail_events = sorted(
+                [event for event in ledger_events if event.get("event_type") == "fail_detected" and _artifact_matches_target(event, target, repo)],
+                key=lambda event: event.get("event_id") or "",
+            )
+            embedded_fail_events = [event for event in events_obj.get("fail_detected", []) if isinstance(event, dict)]
+            _compare_expected_ids(
+                reasons=reasons,
+                expected_ids=_event_ids(expected_fail_events),
+                embedded_ids=_event_ids(embedded_fail_events),
+                missing_reason="fail_event_missing_from_bundle",
+                unexpected_reason="unexpected_fail_event",
+            )
+            expected_override_events, unresolved_ledger_overrides = _relevant_overrides(
+                ledger_events,
+                target=target,
+                repo=repo,
+                fail_events=expected_fail_events,
+            )
+            embedded_override_events = [event for event in events_obj.get("overrides", []) if isinstance(event, dict)]
+            _compare_expected_ids(
+                reasons=reasons,
+                expected_ids=_event_ids(expected_override_events),
+                embedded_ids=_event_ids(embedded_override_events),
+                missing_reason="override_event_missing_from_bundle",
+                unexpected_reason="unexpected_override_event",
+            )
+            if unresolved_ledger_overrides:
+                reasons.append("unresolved_override_event")
     status = "PASS" if not reasons else "FAIL"
     artifact_failure_reasons = {
         "target_report_missing",
@@ -475,6 +574,7 @@ def verify_bundle_dict(bundle: dict[str, Any]) -> dict[str, Any]:
         "scanner_manifest_hash_mismatch",
         "invalid_artifact",
         "artifact_hash_mismatch",
+        "artifact_path_base_unsupported",
     }
     chain_failure_reasons = {
         "invalid_event",
@@ -492,6 +592,13 @@ def verify_bundle_dict(bundle: dict[str, Any]) -> dict[str, Any]:
         "ledger_event_missing",
         "ledger_event_mismatch",
         "ledger_event_duplicate",
+        "report_created_ambiguous",
+        "parent_chain_incomplete",
+        "parent_chain_unexpected_event",
+        "fail_event_missing_from_bundle",
+        "unexpected_fail_event",
+        "override_event_missing_from_bundle",
+        "unexpected_override_event",
     }
     return _verify_result(
         status,

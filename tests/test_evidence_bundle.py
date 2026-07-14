@@ -193,8 +193,11 @@ def test_cli_create_and_verify_json_and_human(tmp_path: Path):
     with contextlib.redirect_stdout(buf):
         code = run_cli(["bundle", "verify", str(out)])
     assert code == 0
-    assert "Chain integrity: PASS" in buf.getvalue()
-    assert "Artifact verification: PASS" in buf.getvalue()
+    human = buf.getvalue()
+    assert "Bundle path:" in human
+    assert "Bundle:" not in human
+    assert "Chain integrity: PASS" in human
+    assert "Artifact verification: PASS" in human
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -331,3 +334,85 @@ def test_verifier_rejects_omitted_relevant_override_after_bundle_id_recompute(tm
     result = verify_bundle(bundle_path)
     assert "override_event_missing_from_bundle" in result["reasons"]
     assert result["chain_integrity"] == "FAIL"
+
+
+def _write_relative_report_events(ledger: Path, repo: Path, report: dict, report_path: Path, suffix: str) -> list[dict]:
+    report_sha = artifact_for(report_path)["sha256"]
+    artifact = {"path": "report.json", "sha256": report_sha, "schema_version": report["schema_version"]}
+    report_event = new_event("report_created", command="test", repo=repo, artifact=artifact, created_at="2026-01-01T00:00:00+00:00", data={"verdict": report["verdict"]})
+    report_event["event_id"] = f"spke_report_{suffix}"
+    append_event(ledger, report_event)
+    events = [report_event]
+    for index, finding in enumerate(report["findings"], start=1):
+        fail = new_event(
+            "fail_detected",
+            command="test",
+            repo=repo,
+            artifact=artifact,
+            parent_event_id=report_event["event_id"],
+            created_at="2026-01-01T00:00:00+00:00",
+            data={"finding_id": finding["finding_id"], "reason_code": finding["id"], "finding": finding},
+        )
+        fail["event_id"] = f"spke_fail_{suffix}_{index}"
+        append_event(ledger, fail)
+        events.append(fail)
+    return events
+
+
+def test_shared_ledger_uses_each_event_repo_for_artifact_matching(tmp_path: Path):
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    ledger = tmp_path / "shared.jsonl"
+    report = _report()
+    report_a_path = repo_a / "report.json"
+    report_b_path = repo_b / "report.json"
+    report_a_path.write_text(json.dumps(report, sort_keys=True), encoding="utf-8")
+    report_b_path.write_text(json.dumps(report, sort_keys=True), encoding="utf-8")
+    _write_relative_report_events(ledger, repo_a, report, report_a_path, "a")
+    _write_relative_report_events(ledger, repo_b, report, report_b_path, "b")
+
+    bundle = create_bundle(report_a_path, ledger)
+
+    assert bundle["events"]["report_created"]["repo"] == str(repo_a)
+    assert {event["repo"] for event in bundle["events"]["fail_detected"]} == {str(repo_a)}
+    assert verify_bundle(report_a_path.with_suffix(".bundle.json"))["status"] == "PASS"
+
+
+def test_same_stable_finding_id_override_for_other_report_is_ignored(tmp_path: Path):
+    report_a, report_a_path, ledger, events_a = _write_report_and_ledger(tmp_path)
+    report_b = _report()
+    assert report_a["findings"][0]["finding_id"] == report_b["findings"][0]["finding_id"]
+    report_b_path = tmp_path / "report-b.json"
+    report_b_path.write_text(json.dumps(report_b, sort_keys=True), encoding="utf-8")
+    events_b = append_report_events(ledger, report=report_b, report_path=report_b_path, command="test", repo=tmp_path)
+    fail_b = filter_events(events_b, "fail_detected")[0]
+    create_override(
+        report=report_b,
+        report_path=report_b_path,
+        target_finding_id=fail_b["data"]["finding_id"],
+        target_fail_event_id=fail_b["event_id"],
+        actor="me",
+        reason="same finding in a different report",
+        scope="local",
+        ledger_path=ledger,
+        repo=tmp_path,
+    )
+
+    bundle = create_bundle(report_a_path, ledger)
+
+    assert bundle["events"]["overrides"] == []
+    assert verify_bundle(report_a_path.with_suffix(".bundle.json"))["status"] == "PASS"
+
+
+def test_verifier_rejects_omitted_artifact_reference_after_bundle_id_recompute(tmp_path: Path):
+    _, report_path, ledger, _ = _write_report_and_ledger(tmp_path)
+    bundle_path = report_path.with_suffix(".bundle.json")
+    create_bundle(report_path, ledger)
+    data = json.loads(bundle_path.read_text(encoding="utf-8"))
+    data["artifacts"] = []
+    _rewrite_bundle(bundle_path, data)
+    result = verify_bundle(bundle_path)
+    assert "artifact_reference_missing" in result["reasons"]
+    assert result["artifact_verification"] == "FAIL"

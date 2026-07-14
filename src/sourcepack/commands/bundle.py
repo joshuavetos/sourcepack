@@ -42,6 +42,6 @@ def cli_bundle(args) -> int:
         if args.json:
             print(json.dumps(result, indent=2, sort_keys=True))
         else:
-            print(render_bundle_verify_human({"bundle_id": args.bundle_path, "verification": result}), end="")
+            print(render_bundle_verify_human({"bundle_path": args.bundle_path, "verification": result}), end="")
         return 0 if result.get("status") == "PASS" else 1
     return 1

@@ -83,7 +83,7 @@ def _same_artifact(event: dict[str, Any], report_path: Path, report_sha: str) ->
         return str(disk) == str(report_path)
 
 
-def _artifact_matches_target(event: dict[str, Any], target: dict[str, Any], repo: Path) -> bool:
+def _artifact_matches_target(event: dict[str, Any], target: dict[str, Any], bundle_repo: Path) -> bool:
     artifact = event.get("artifact") if isinstance(event.get("artifact"), dict) else {}
     if artifact.get("sha256") != target.get("sha256"):
         return False
@@ -93,8 +93,9 @@ def _artifact_matches_target(event: dict[str, Any], target: dict[str, Any], repo
     target_path = target.get("path")
     if not isinstance(path, str) or not isinstance(target_path, str):
         return False
-    event_disk = _resolve_path(path, repo)
-    target_disk = _resolve_path(target_path, repo)
+    event_repo = Path(str(event.get("repo") or "."))
+    event_disk = _resolve_path(path, event_repo)
+    target_disk = _resolve_path(target_path, bundle_repo)
     try:
         return event_disk.resolve() == target_disk.resolve()
     except Exception:
@@ -274,7 +275,7 @@ def create_bundle(
         override = data.get("override") if isinstance(data.get("override"), dict) else None
         finding_id = data.get("finding_id") or (override or {}).get("target_finding_id")
         target = (override or {}).get("target_fail_event_id") or event.get("parent_event_id")
-        claims_target_report = _same_artifact(event, report_file, report_sha) or finding_id in report_finding_ids or target in fail_event_ids
+        claims_target_report = _same_artifact(event, report_file, report_sha) or target in fail_event_ids or target == report_event.get("event_id")
         if finding_id in included_finding_ids and target in fail_event_ids:
             override_events.append(event)
         elif claims_target_report:
@@ -350,7 +351,7 @@ def _relevant_overrides(
         override = data.get("override") if isinstance(data.get("override"), dict) else None
         finding_id = data.get("finding_id") or (override or {}).get("target_finding_id")
         target_fail_event_id = (override or {}).get("target_fail_event_id") or event.get("parent_event_id")
-        claims_target = _artifact_matches_target(event, target, repo) or finding_id in finding_ids or target_fail_event_id in fail_ids
+        claims_target = _artifact_matches_target(event, target, repo) or target_fail_event_id in fail_ids
         if finding_id in finding_ids and target_fail_event_id in fail_ids:
             relevant.append(event)
         elif claims_target:
@@ -372,6 +373,33 @@ def _compare_expected_ids(
         reasons.append(missing_reason)
     if embedded - expected:
         reasons.append(unexpected_reason)
+
+
+def _artifact_key(artifact: dict[str, Any]) -> str:
+    return canonical_json({
+        "path": artifact.get("path"),
+        "path_base": artifact.get("path_base"),
+        "schema_version": artifact.get("schema_version"),
+        "sha256": artifact.get("sha256"),
+    })
+
+
+def _compare_artifact_references(reasons: list[str], *, expected: list[dict[str, Any]], embedded: Any) -> None:
+    if not isinstance(embedded, list):
+        return
+    embedded_dicts = [artifact for artifact in embedded if isinstance(artifact, dict)]
+    expected_keys = {_artifact_key(artifact) for artifact in expected}
+    embedded_keys = {_artifact_key(artifact) for artifact in embedded_dicts}
+    if expected_keys - embedded_keys:
+        reasons.append("artifact_reference_missing")
+    if embedded_keys - expected_keys:
+        reasons.append("unexpected_artifact_reference")
+    embedded_by_identity = {(artifact.get("path"), artifact.get("schema_version")): artifact for artifact in embedded_dicts}
+    for artifact in expected:
+        other = embedded_by_identity.get((artifact.get("path"), artifact.get("schema_version")))
+        if other is not None and _artifact_key(other) != _artifact_key(artifact):
+            reasons.append("artifact_reference_mismatch")
+            break
 
 def verify_bundle_dict(bundle: dict[str, Any]) -> dict[str, Any]:
     reasons: list[str] = []
@@ -563,6 +591,8 @@ def verify_bundle_dict(bundle: dict[str, Any]) -> dict[str, Any]:
             )
             if unresolved_ledger_overrides:
                 reasons.append("unresolved_override_event")
+            expected_artifacts = _artifact_refs(expected_chain + expected_fail_events + expected_override_events, repo)
+            _compare_artifact_references(reasons, expected=expected_artifacts, embedded=artifacts)
     status = "PASS" if not reasons else "FAIL"
     artifact_failure_reasons = {
         "target_report_missing",
@@ -575,6 +605,9 @@ def verify_bundle_dict(bundle: dict[str, Any]) -> dict[str, Any]:
         "invalid_artifact",
         "artifact_hash_mismatch",
         "artifact_path_base_unsupported",
+        "artifact_reference_missing",
+        "unexpected_artifact_reference",
+        "artifact_reference_mismatch",
     }
     chain_failure_reasons = {
         "invalid_event",
@@ -621,11 +654,16 @@ def render_bundle_verify_human(bundle_or_result: dict[str, Any]) -> str:
     lines = [
         "SourcePack evidence bundle verification",
         f"Status: {result.get('status')}",
-        f"Bundle: {bundle_or_result.get('bundle_id', 'unknown')}",
+    ]
+    if bundle_or_result.get("bundle_id"):
+        lines.append(f"Bundle ID: {bundle_or_result.get('bundle_id')}")
+    if bundle_or_result.get("bundle_path"):
+        lines.append(f"Bundle path: {bundle_or_result.get('bundle_path')}")
+    lines.extend([
         f"Chain integrity: {result.get('chain_integrity')}",
         f"Artifact verification: {result.get('artifact_verification')}",
         f"Artifacts: {result.get('artifact_count', 0)}",
-    ]
+    ])
     counts = result.get("event_counts", {}) if isinstance(result.get("event_counts"), dict) else {}
     lines.append(
         "Events: "

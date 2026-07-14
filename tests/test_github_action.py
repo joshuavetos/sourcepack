@@ -405,14 +405,14 @@ def test_sourcepack_workflow_self_dogfooding_gate_is_bash_backed():
 def test_sourcepack_workflow_runs_gate_before_editable_install_and_validation_gates():
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     install_index = text.index("Install package and test dependencies")
-    gate_index = text.index("python -B -m sourcepack.cli diff . --ci --json --base-ref")
+    gate_index = text.index("python -B -m sourcepack.cli diff . --ci --json --exit-policy fail-only --base-ref")
     tests_index = text.index("Full pytest suite")
     assert gate_index < install_index < tests_index
 
 
 def test_sourcepack_workflow_self_dogfood_judges_base_head_range():
     text = CI_WORKFLOW.read_text(encoding="utf-8")
-    command = 'python -B -m sourcepack.cli diff . --ci --json --base-ref "$BASE_SHA" --head-ref "$HEAD_SHA" > "$report_path"'
+    command = 'python -B -m sourcepack.cli diff . --ci --json --exit-policy fail-only --base-ref "$BASE_SHA" --head-ref "$HEAD_SHA" > "$report_path"'
     assert command in text
     assert 'python -B -m sourcepack.cli diff . --ci --json > "$report_path"' not in text
     assert 'BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}' in text

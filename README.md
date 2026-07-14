@@ -206,8 +206,11 @@ CI should consume committed `.sourcepack/baseline/` state and must not create, r
 
 - PASS exits `0`.
 - WARN exits `0` locally.
-- WARN exits nonzero with `--strict` or `--ci`.
-- FAIL exits nonzero.
+- WARN exits nonzero with `--strict` or `--ci` by default.
+- `sourcepack diff --exit-policy fail-only` keeps WARN visible but exits `0` for WARN.
+- `sourcepack diff --exit-policy warn-or-fail` exits nonzero for WARN and FAIL.
+- FAIL exits nonzero under every diff exit policy.
+- Verdicts are report judgments; process exits are command-boundary policy decisions and do not rewrite JSON or human verdicts.
 
 ## Common commands
 
@@ -219,6 +222,7 @@ sourcepack diff . --json
 sourcepack diff . --strict
 sourcepack diff . --ci
 sourcepack diff . --ci --json
+sourcepack diff . --ci --json --exit-policy fail-only
 sourcepack report path
 sourcepack report open
 sourcepack status .
@@ -355,3 +359,14 @@ See [`docs/assets/README.md`](docs/assets/README.md) for exact capture instructi
 v1.10 alpha series: local-first public alpha.
 
 Core judgment behavior is validated. Packaging, reports, demos, CI behavior, and UX polish are active areas.
+
+
+## Policy resolution status
+
+SourcePack currently has a repository-local policy configuration at `.sourcepack/policy.json` validated by `sourcepack policy validate`. The established repository policy schema is `sourcepack.policy.v1`; supported local rule fields are block_dependency_additions (boolean), protected_paths (normalized path-pattern list), package_manager (currently `pnpm` only), require_tests_for (normalized path-pattern list), max_changed_lines (positive integer), and block_secret_patterns (boolean). SourcePack also has a local allow-list file at `.sourcepack/policy/allow.jsonl` managed by `sourcepack allow`/`sourcepack policy list`.
+
+No organization-policy source mechanism is currently established in this repository. Because SourcePack has no canonical organization-policy path, option, environment variable, schema, or documented owner boundary, Milestone I organization-policy resolution is not implemented here. Strengthening, weakening, compatibility, and conflict semantics for organization-vs-repository rule comparison remain undefined product decisions. Milestone J policy findings are not implemented.
+
+Local policy resolution commands fail closed when existing validation finds malformed repository policy JSON or unsupported repository policy shapes. Absence of optional repository policy remains informational and exits `0` for `sourcepack policy validate`.
+
+SourcePack policy is local-only: it does not fetch hosted policy, authenticate users, claim RBAC enforcement, or distribute organization policy automatically.

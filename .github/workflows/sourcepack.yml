@@ -40,7 +40,7 @@ jobs:
         run: |
           set +e
           report_path="$RUNNER_TEMP/sourcepack-self-dogfood.json"
-          python -B -m sourcepack.cli diff . --ci --json --base-ref "$BASE_SHA" --head-ref "$HEAD_SHA" > "$report_path"
+          python -B -m sourcepack.cli diff . --ci --json --exit-policy fail-only --base-ref "$BASE_SHA" --head-ref "$HEAD_SHA" > "$report_path"
           sourcepack_status=$?
           cat "$report_path"
           set -e

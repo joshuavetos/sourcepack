@@ -16,7 +16,7 @@ Current vocabulary version:
 reason_codes.v1
 ```
 
-Local WARN exits `0` unless `--strict` is used. CI mode, `--ci`, treats WARN as nonzero and emits JSON.
+Local WARN exits `0` unless `--strict` is used. CI mode, `--ci`, treats WARN as nonzero and emits JSON by default. `sourcepack diff --exit-policy fail-only` preserves WARN in reports while exiting `0` for WARN; `--exit-policy warn-or-fail` exits nonzero for WARN and FAIL. FAIL exits nonzero under both explicit diff exit policies.
 
 ## Result behavior
 

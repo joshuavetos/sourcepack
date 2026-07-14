@@ -13,6 +13,11 @@ class PolicyMode(StrEnum):
     CI = "ci"
 
 
+class DiffExitPolicy(StrEnum):
+    WARN_OR_FAIL = "warn-or-fail"
+    FAIL_ONLY = "fail-only"
+
+
 @dataclass(frozen=True)
 class PolicyRules:
     block_dependency_additions: bool = False
@@ -142,7 +147,25 @@ def commit_policy(verdict: str) -> str | None:
     return None
 
 
-def exit_code(verdict: str, mode: PolicyMode | str | None = None) -> int:
+def normalize_diff_exit_policy(value: DiffExitPolicy | str | None) -> DiffExitPolicy | None:
+    if isinstance(value, DiffExitPolicy):
+        return value
+    if value is None:
+        return None
+    text = str(value).lower().strip()
+    if text == DiffExitPolicy.WARN_OR_FAIL.value:
+        return DiffExitPolicy.WARN_OR_FAIL
+    if text == DiffExitPolicy.FAIL_ONLY.value:
+        return DiffExitPolicy.FAIL_ONLY
+    raise ValueError(f"unknown diff exit policy: {value}")
+
+
+def exit_code(verdict: str, mode: PolicyMode | str | None = None, exit_policy: DiffExitPolicy | str | None = None) -> int:
+    policy = normalize_diff_exit_policy(exit_policy)
+    if policy is DiffExitPolicy.FAIL_ONLY:
+        return 1 if verdict == "FAIL" else 0
+    if policy is DiffExitPolicy.WARN_OR_FAIL:
+        return 0 if verdict == "PASS" else 1
     mode = normalize_policy_mode(mode)
     if verdict == "FAIL":
         return 1

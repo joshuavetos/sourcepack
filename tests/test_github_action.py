@@ -357,6 +357,171 @@ def test_sourcepack_workflow_workflow_trust_exception_is_label_gated_and_narrow(
     assert "workflow_change findings after reviewing the workflow diff" in text
 
 
+
+def _workflow_guard_python() -> str:
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    start = text.index("          import json\n")
+    end = text.index("          PY", start)
+    lines = text[start:end].splitlines()
+    return "\n".join(line[10:] if line.startswith("          ") else line for line in lines) + "\n"
+
+
+def _init_guard_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "config", "user.email", "sourcepack@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "SourcePack Test"], cwd=repo, check=True)
+    packet = repo / ".sourcepack" / "baseline" / "packet"
+    packet.mkdir(parents=True)
+    (packet / "tests.txt").write_text("tests/test_judgment_hardening.py\n", encoding="utf-8")
+    (repo / ".sourcepack" / "baseline" / "active.json").write_text(
+        json.dumps({"active_build_id": "test-build", "packet_path": ".sourcepack/baseline/packet"}),
+        encoding="utf-8",
+    )
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
+    return repo, base
+
+
+def _commit_guard_changes(repo: Path, changes: dict[str, str]) -> str:
+    for rel, content in changes.items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "commit", "-m", "head"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
+
+
+def _run_workflow_guard(
+    tmp_path: Path,
+    *,
+    sourcepack_status: int,
+    report: dict,
+    changes: dict[str, str],
+    baseline_label: bool = False,
+    workflow_label: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    repo, base = _init_guard_repo(tmp_path)
+    head = _commit_guard_changes(repo, changes)
+    report_path = repo / "report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    env = os.environ.copy()
+    env.update({
+        "EVENT_NAME": "pull_request",
+        "BASE_SHA": base,
+        "HEAD_SHA": head,
+        "BASELINE_TRUST_LABEL_PRESENT": "true" if baseline_label else "false",
+        "WORKFLOW_TRUST_LABEL_PRESENT": "true" if workflow_label else "false",
+    })
+    return subprocess.run(
+        [sys.executable, "-c", _workflow_guard_python(), str(sourcepack_status), str(report_path)],
+        cwd=repo,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def _report(verdict: str, findings: list[dict] | None = None) -> dict:
+    return {"schema_version": "traffic_report.v1", "verdict": verdict, "findings": findings or []}
+
+
+def test_sourcepack_workflow_guard_parses_warn_report_even_when_sourcepack_exits_zero(tmp_path):
+    cp = _run_workflow_guard(
+        tmp_path,
+        sourcepack_status=0,
+        report=_report("WARN", [{"id": "workflow_change", "severity": "warn", "path": ".github/workflows/sourcepack.yml", "message": "workflow"}]),
+        changes={".github/workflows/sourcepack.yml": "name: changed\n"},
+    )
+    assert cp.returncode == 1
+    assert "workflow-trust-update" in cp.stderr
+
+
+def test_sourcepack_workflow_guard_new_file_warn_can_succeed(tmp_path):
+    cp = _run_workflow_guard(
+        tmp_path,
+        sourcepack_status=0,
+        report=_report("WARN", [{"id": "new_file", "severity": "warn", "path": "docs/new.md", "message": "new file"}]),
+        changes={"docs/new.md": "new\n"},
+    )
+    assert cp.returncode == 0, cp.stderr + cp.stdout
+    assert "Ordinary SourcePack review WARN findings observed" in cp.stdout
+
+
+def test_sourcepack_workflow_guard_workflow_change_warn_requires_workflow_label(tmp_path):
+    report = _report("WARN", [{"id": "workflow_change", "severity": "warn", "path": ".github/workflows/sourcepack.yml", "message": "workflow"}])
+    changes = {".github/workflows/sourcepack.yml": "name: changed\n"}
+    missing = _run_workflow_guard(tmp_path / "missing", sourcepack_status=0, report=report, changes=changes)
+    assert missing.returncode == 1
+    assert "workflow-trust-update" in missing.stderr
+    present = _run_workflow_guard(tmp_path / "present", sourcepack_status=0, report=report, changes=changes, workflow_label=True)
+    assert present.returncode == 0, present.stderr + present.stdout
+
+
+def test_sourcepack_workflow_guard_protected_baseline_warn_requires_baseline_label(tmp_path):
+    report = _report("WARN", [{"id": "protected_artifact", "severity": "warn", "path": ".sourcepack/baseline/metadata.json", "message": "baseline"}])
+    changes = {".sourcepack/baseline/metadata.json": "{}\n"}
+    missing = _run_workflow_guard(tmp_path / "missing", sourcepack_status=0, report=report, changes=changes)
+    assert missing.returncode == 1
+    assert "baseline-trust-update" in missing.stderr
+    present = _run_workflow_guard(tmp_path / "present", sourcepack_status=0, report=report, changes=changes, baseline_label=True)
+    assert present.returncode == 0, present.stderr + present.stdout
+
+
+def test_sourcepack_workflow_guard_mixed_trust_findings_require_both_labels(tmp_path):
+    report = _report("WARN", [
+        {"id": "protected_artifact", "severity": "warn", "path": ".sourcepack/baseline/metadata.json", "message": "baseline"},
+        {"id": "workflow_change", "severity": "warn", "path": ".github/workflows/sourcepack.yml", "message": "workflow"},
+    ])
+    changes = {".sourcepack/baseline/metadata.json": "{}\n", ".github/workflows/sourcepack.yml": "name: changed\n"}
+    missing = _run_workflow_guard(tmp_path / "missing", sourcepack_status=0, report=report, changes=changes)
+    assert missing.returncode == 1
+    assert "baseline-trust-update, workflow-trust-update" in missing.stderr
+    partial = _run_workflow_guard(tmp_path / "partial", sourcepack_status=0, report=report, changes=changes, baseline_label=True)
+    assert partial.returncode == 1
+    assert "workflow-trust-update" in partial.stderr
+    both = _run_workflow_guard(tmp_path / "both", sourcepack_status=0, report=report, changes=changes, baseline_label=True, workflow_label=True)
+    assert both.returncode == 0, both.stderr + both.stdout
+
+
+def test_sourcepack_workflow_guard_unexpected_warn_reason_fails(tmp_path):
+    cp = _run_workflow_guard(
+        tmp_path,
+        sourcepack_status=0,
+        report=_report("WARN", [{"id": "unexpected_warn", "severity": "warn", "path": "README.md", "message": "unexpected"}]),
+        changes={"README.md": "changed\n"},
+    )
+    assert cp.returncode == 1
+    assert "findings beyond labelled trust-review classes" in cp.stderr
+
+
+def test_sourcepack_workflow_guard_fail_fails_regardless_of_labels(tmp_path):
+    cp = _run_workflow_guard(
+        tmp_path,
+        sourcepack_status=1,
+        report=_report("FAIL", [{"id": "workflow_change", "severity": "error", "path": ".github/workflows/sourcepack.yml", "message": "workflow"}]),
+        changes={".github/workflows/sourcepack.yml": "name: changed\n"},
+        baseline_label=True,
+        workflow_label=True,
+    )
+    assert cp.returncode == 1
+    assert "reported FAIL" in cp.stderr
+
+
+def test_sourcepack_workflow_guard_pass_succeeds(tmp_path):
+    cp = _run_workflow_guard(
+        tmp_path,
+        sourcepack_status=0,
+        report=_report("PASS"),
+        changes={"README.md": "changed\n"},
+    )
+    assert cp.returncode == 0, cp.stderr + cp.stdout
+
 def test_sourcepack_workflow_gate_treats_warn_and_error_as_ci_blocking():
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "ci_blocking_findings" in text
@@ -391,7 +556,7 @@ def test_sourcepack_workflow_unexpected_warn_or_error_fails_normally():
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "unexpected_findings" in text
     assert "SourcePack gate failed for findings beyond labelled trust-review classes; failing normally." in text
-    assert "sys.exit(sourcepack_status)" in text
+    assert "sys.exit(sourcepack_status if sourcepack_status != 0 else 1)" in text
 
 
 def test_sourcepack_workflow_self_dogfooding_gate_is_bash_backed():
@@ -439,9 +604,9 @@ def test_sourcepack_workflow_inline_guard_reads_report_path_from_argv():
     assert 'with open("sourcepack-self-dogfood.json"' not in text
 
 
-def test_sourcepack_workflow_does_not_add_exceptions_for_new_file_or_baseline_corrupt():
+def test_sourcepack_workflow_allows_only_new_file_as_ordinary_review_warn():
     text = CI_WORKFLOW.read_text(encoding="utf-8")
-    assert 'finding_id == "new_file"' not in text
+    assert 'finding_id == "new_file" and finding.get("severity") == "warn"' in text
     assert 'finding_id == "baseline_corrupt"' not in text
 
 

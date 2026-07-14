@@ -397,6 +397,35 @@ def test_committed_range_preserves_missing_file_behavior_for_clean_worktree(tmp_
     assert "no_diff" not in finding_ids(data)
 
 
+def test_committed_range_warn_only_succeeds_with_fail_only_exit_policy(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    create_baseline(repo)
+    base = git_commit(repo, "commit trusted baseline")
+    (repo / "new_notes.md").write_text("notes\n", encoding="utf-8")
+    head = git_commit(repo, "add untrusted file")
+
+    cp, data = json_cli(repo, "diff", ".", "--ci", "--json", "--exit-policy", "fail-only", "--base-ref", base, "--head-ref", head)
+
+    assert cp.returncode == 0, cp.stderr + cp.stdout
+    assert data["verdict"] == "WARN"
+    assert "new_file" in finding_ids(data)
+    assert any(finding.get("path") == "new_notes.md" for finding in data.get("findings", []))
+
+
+def test_committed_range_fail_still_fails_with_fail_only_exit_policy(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    create_baseline(repo)
+    base = git_commit(repo, "commit trusted baseline")
+    (repo / "api.py").write_text("import fastapi\n", encoding="utf-8")
+    head = git_commit(repo, "add unsupported dependency")
+
+    cp, data = json_cli(repo, "diff", ".", "--ci", "--json", "--exit-policy", "fail-only", "--base-ref", base, "--head-ref", head)
+
+    assert cp.returncode != 0
+    assert data["verdict"] == "FAIL"
+    assert "unsupported_dependency" in finding_ids(data)
+
+
 def test_init_auto_includes_workspace_files_in_active_baseline(tmp_path: Path) -> None:
     repo = init_repo(tmp_path)
 

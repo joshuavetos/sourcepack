@@ -40,14 +40,10 @@ jobs:
         run: |
           set +e
           report_path="$RUNNER_TEMP/sourcepack-self-dogfood.json"
-          python -B -m sourcepack.cli diff . --ci --json --base-ref "$BASE_SHA" --head-ref "$HEAD_SHA" > "$report_path"
+          python -B -m sourcepack.cli diff . --ci --json --exit-policy fail-only --base-ref "$BASE_SHA" --head-ref "$HEAD_SHA" > "$report_path"
           sourcepack_status=$?
           cat "$report_path"
           set -e
-
-          if [ "$sourcepack_status" -eq 0 ]; then
-            exit 0
-          fi
 
           python - "$sourcepack_status" "$report_path" <<'PY'
           import json
@@ -72,7 +68,7 @@ jobs:
 
           def fail(message: str) -> None:
               print(message, file=sys.stderr)
-              sys.exit(sourcepack_status)
+              sys.exit(sourcepack_status if sourcepack_status != 0 else 1)
 
           def changed_files() -> list[str]:
               if not base_sha or not head_sha:
@@ -168,7 +164,7 @@ jobs:
                   )
                   for rel in sorted(set(polluted_matches)):
                       print(f"- polluted baseline packet file: {rel}", file=sys.stderr)
-                  sys.exit(sourcepack_status)
+                  sys.exit(sourcepack_status if sourcepack_status != 0 else 1)
 
               if not required_test_seen:
                   fail(
@@ -179,10 +175,20 @@ jobs:
               print(f"Active SourcePack baseline build {build_id} passed baseline packet sanity checks.")
 
           report = load_report()
+          verdict = report.get("verdict")
           findings = ci_findings(report)
 
+          if verdict == "PASS":
+              sys.exit(0)
+
+          if verdict == "FAIL":
+              fail("SourcePack reported FAIL; failing regardless of labels.")
+
+          if verdict != "WARN":
+              fail(f"SourcePack reported unsupported verdict {verdict!r}; failing closed.")
+
           if not findings:
-              fail("SourcePack gate failed without recognized CI-blocking findings; failing normally.")
+              fail("SourcePack gate reported WARN without recognized CI-blocking findings; failing normally.")
 
           paths = changed_files()
           changed_baseline_paths = [path for path in paths if path.startswith(".sourcepack/baseline/")]
@@ -190,6 +196,7 @@ jobs:
 
           protected_baseline_findings = []
           workflow_change_findings = []
+          ordinary_review_findings = []
           unexpected_findings = []
 
           for finding in findings:
@@ -200,6 +207,8 @@ jobs:
                   protected_baseline_findings.append(finding)
               elif finding_id == "workflow_change" and path.startswith(".github/workflows/"):
                   workflow_change_findings.append(finding)
+              elif finding_id == "new_file" and finding.get("severity") == "warn":
+                  ordinary_review_findings.append(finding)
               else:
                   unexpected_findings.append(finding)
 
@@ -214,7 +223,7 @@ jobs:
                       f"{finding.get('path')}: {finding.get('message')}",
                       file=sys.stderr,
                   )
-              sys.exit(sourcepack_status)
+              sys.exit(sourcepack_status if sourcepack_status != 0 else 1)
 
           if protected_baseline_findings and not changed_baseline_paths:
               fail(
@@ -229,6 +238,11 @@ jobs:
               )
 
           ensure_clean_baseline_packet(changed_baseline_paths)
+
+          if ordinary_review_findings:
+              print("Ordinary SourcePack review WARN findings observed:")
+              for finding in ordinary_review_findings:
+                  print(f"- {finding.get('path')}: {finding.get('message')}")
 
           if is_pull_request:
               missing_labels = []
@@ -265,7 +279,7 @@ jobs:
                           file=sys.stderr,
                       )
 
-                  sys.exit(sourcepack_status)
+                  sys.exit(sourcepack_status if sourcepack_status != 0 else 1)
 
               if protected_baseline_findings:
                   print(

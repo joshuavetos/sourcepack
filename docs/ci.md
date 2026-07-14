@@ -18,7 +18,7 @@ python -m pip install -e .
 sourcepack diff . --ci
 ```
 
-`--ci` keeps JSON output machine-readable and treats WARN as nonzero while FAIL remains nonzero and PASS exits `0`.
+`--ci` keeps JSON output machine-readable and, by default, treats WARN as nonzero while FAIL remains nonzero and PASS exits `0`. Add `--exit-policy fail-only` when a CI boundary should preserve WARN verdicts and findings but exit `0` unless the verdict is FAIL. `--exit-policy warn-or-fail` is the explicit spelling of the default WARN-or-FAIL blocking behavior. Verdicts are report judgments; process exits are command-boundary policy decisions and do not rewrite JSON or human verdicts.
 
 ## Trust-state rule
 
@@ -162,7 +162,7 @@ The repository action, whether used as `uses: ./` or as a tagged SourcePack acti
 
 ## Replaying saved reports
 
-CI enforcement should continue to use `sourcepack diff . --ci --json` against committed trusted baseline state.
+CI enforcement should continue to use `sourcepack diff . --ci --json` against committed trusted baseline state. SourcePack self-dogfood committed-range CI uses `sourcepack diff . --ci --json --exit-policy fail-only --base-ref "$BASE_SHA" --head-ref "$HEAD_SHA"` so legitimate new-file WARN findings remain visible without failing the gate; FAIL findings still exit nonzero.
 
 For audit readback of an already-produced report, use:
 

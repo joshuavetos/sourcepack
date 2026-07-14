@@ -34,7 +34,7 @@ from .execution_ledger import clear_ledger, entry_to_json, execution_findings, i
 from .commands import bundle as bundle_command
 from .commands import fleet as fleet_command
 from .commands import report as report_command
-from .policy import validate_policy_config
+from .policy import PolicyMode, exit_code as policy_exit_code, validate_policy_config
 from .replay import reconstruct_replay, render_replay_human
 
 try:
@@ -1102,7 +1102,8 @@ def emit_diff_report(report: dict, args, added: bool = False, note: str | None =
             print(note)
         print(render_traffic(report, getattr(args, "verbose", False)), end="")
     verdict = report.get("verdict")
-    return 0 if (verdict == "PASS" or (verdict == "WARN" and not (getattr(args, "strict", False) or getattr(args, "ci", False)))) else 1
+    mode = PolicyMode.CI if getattr(args, "ci", False) else PolicyMode.STRICT if getattr(args, "strict", False) else PolicyMode.LOCAL
+    return policy_exit_code(verdict, mode=mode, exit_policy=getattr(args, "exit_policy", None))
 
 def git_metadata(repo: str | Path) -> dict:
     root = Path(repo)
@@ -2067,7 +2068,6 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
 
 def cli_diff(args) -> int:
     from .judgment import judge_repo_change
-    from .policy import PolicyMode
     if getattr(args, "ci", False):
         args.json = True
     if bool(getattr(args, "base_ref", None)) != bool(getattr(args, "head_ref", None)):
@@ -2629,6 +2629,7 @@ def run_cli(args_list=None):
     diff_cmd.add_argument("--json", action="store_true")
     diff_cmd.add_argument("--strict", action="store_true", help="exit nonzero on WARN as well as FAIL")
     diff_cmd.add_argument("--ci", action="store_true", help="non-interactive CI mode; implies --strict and prints JSON")
+    diff_cmd.add_argument("--exit-policy", choices=("warn-or-fail", "fail-only"), help="override diff verdict-to-process-exit behavior: warn-or-fail blocks WARN and FAIL; fail-only blocks only FAIL")
     diff_cmd.add_argument("--base-ref", help="base git ref for committed-range diff mode; requires --head-ref")
     diff_cmd.add_argument("--head-ref", help="head git ref for committed-range diff mode; requires --base-ref")
     install_hook = subs.add_parser("install-hook")

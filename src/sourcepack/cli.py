@@ -31,6 +31,7 @@ from .reports.json import normalized_finding, traffic_report, write_user_report
 from .reports.markdown import LIGHT_BY_VERDICT, SEVERITY_ORDER, render_traffic
 from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git, tracked_paths as canonical_tracked_paths
 from .execution_ledger import clear_ledger, entry_to_json, execution_findings, iter_entries, run_and_record, find_repo_root
+from .commands import bundle as bundle_command
 from .commands import fleet as fleet_command
 from .commands import report as report_command
 from .policy import validate_policy_config
@@ -2652,6 +2653,7 @@ def run_cli(args_list=None):
     workbench_cmd.add_argument("--port", type=int, default=0)
     workbench_cmd.add_argument("--no-open", action="store_true")
     report_command.register(subs)
+    bundle_command.register(subs)
     explain_cmd = subs.add_parser("explain")
     explain_cmd.add_argument("reason_code")
     allow_cmd = subs.add_parser("allow")
@@ -2708,6 +2710,8 @@ def run_cli(args_list=None):
             return cli_policy(args)
         if args.command == "fleet":
             return fleet_command.cli_fleet(args)
+        if args.command == "bundle":
+            return bundle_command.cli_bundle(args)
         if args.command == "reset":
             return cli_reset(args)
         if args.command == "replay":

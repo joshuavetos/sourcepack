@@ -2161,7 +2161,7 @@ def _policy_matches(entry: dict, finding: dict) -> bool:
     if finding.get("category") == "policy" and not (finding.get("policy_authority") == "repository" and finding.get("override_eligible") is True):
         return False
     if scope == "dependency":
-        return fid == "unsupported_dependency" and finding.get("evidence") == value
+        return fid in {"unsupported_dependency", "policy_dependency_addition"} and finding.get("evidence") == value
     if scope == "command":
         return fid == "unsupported_command" and finding.get("evidence") == value
     if scope == "path":

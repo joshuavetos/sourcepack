@@ -1032,3 +1032,88 @@ def test_stale_baseline_preserves_single_policy_resolution_failure(tmp_path):
     assert data["policy"]["policy_finding_count"] == 1
     assert [f["id"] for f in data["policy_rule_findings"]] == ["policy_resolution_failed"]
     assert "baseline_stale" in finding_ids(data)
+
+
+def test_repository_policy_dependency_addition_exact_allow_suppresses_and_recomputes_verdict(tmp_path):
+    from sourcepack.judgment import _apply_local_policy
+    from sourcepack.reports.json import normalized_finding, traffic_report
+
+    init_repo(tmp_path)
+    assert run(tmp_path, "allow", "dependency", "requests", "--reason", "reviewed dependency").returncode == 0
+    finding = normalized_finding(
+        "policy_dependency_addition",
+        "error",
+        "policy",
+        "Proposed change added an unapproved dependency to project manifest files.",
+        evidence="requests",
+    )
+    finding["policy_authority"] = "repository"
+    finding["override_eligible"] = True
+    finding["policy"] = {"rule_name": "block_dependency_additions", "rule_fingerprint": "sha256:test", "scope": "requests"}
+    report_data = traffic_report("FAIL", findings=[finding])
+    report_data["policy"] = {"evaluated": True, "resolution_status": "PASS", "policy_finding_count": 1}
+    report_data["policy_rule_findings"] = [report_data["findings"][0]]
+
+    data = _apply_local_policy(tmp_path, report_data)
+
+    assert data["verdict"] == "PASS"
+    assert "policy_dependency_addition" not in finding_ids(data)
+    assert data["policy"]["policy_finding_count"] == 0
+    assert data["policy_rule_findings"] == []
+    assert data["policy_overrides"][0]["suppressed_finding"] == "policy_dependency_addition"
+    assert data["policy_overrides"][0]["value"] == "requests"
+
+
+def test_repository_policy_dependency_addition_exact_allow_suppresses_integration(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = []\n", encoding="utf-8")
+    trust_current_repo(tmp_path)
+    write_rules(tmp_path, {"block_dependency_additions": True})
+    assert run(tmp_path, "allow", "dependency", "requests", "--reason", "reviewed dependency").returncode == 0
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = ['requests']\n", encoding="utf-8")
+
+    code, data = report(tmp_path)
+
+    assert code == 0
+    assert "policy_dependency_addition" not in finding_ids(data)
+    assert data["policy"]["policy_finding_count"] == 0
+    assert data["policy_rule_findings"] == []
+    assert data["policy_overrides"][0]["suppressed_finding"] == "policy_dependency_addition"
+    assert data["policy_overrides"][0]["value"] == "requests"
+
+
+def test_policy_dependency_addition_allow_does_not_suppress_org_mixed_or_wrong_name(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = []\n", encoding="utf-8")
+    trust_current_repo(tmp_path)
+    assert run(tmp_path, "allow", "dependency", "requests", "--reason", "reviewed dependency").returncode == 0
+    org = tmp_path.parent / "org-dependency-unsuppressible.json"
+    write_org_policy_file(org, {"block_dependency_additions": True})
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = ['requests']\n", encoding="utf-8")
+
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    org_data = json.loads(cp.stdout)
+    assert cp.returncode == 1
+    assert policy_finding(org_data, "policy_dependency_addition")["policy_authority"] == "organization"
+    assert not org_data.get("policy_overrides")
+
+    write_rules(tmp_path, {"block_dependency_additions": True})
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    mixed_data = json.loads(cp.stdout)
+    assert cp.returncode == 1
+    assert policy_finding(mixed_data, "policy_dependency_addition")["policy_authority"] == "mixed"
+    assert not mixed_data.get("policy_overrides")
+
+    wrong_name_repo = tmp_path / "wrong-name"
+    wrong_name_repo.mkdir()
+    init_repo(wrong_name_repo)
+    (wrong_name_repo / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = []\n", encoding="utf-8")
+    trust_current_repo(wrong_name_repo)
+    write_rules(wrong_name_repo, {"block_dependency_additions": True})
+    assert run(wrong_name_repo, "allow", "dependency", "flask", "--reason", "different dependency").returncode == 0
+    (wrong_name_repo / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = ['requests']\n", encoding="utf-8")
+
+    wrong_code, wrong_data = report(wrong_name_repo)
+    assert wrong_code == 1
+    assert policy_finding(wrong_data, "policy_dependency_addition")["evidence"] == "requests"
+    assert not wrong_data.get("policy_overrides")

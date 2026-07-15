@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 
+from .git import run_git
+
 
 class PolicyMode(StrEnum):
     LOCAL = "local"
@@ -455,6 +457,14 @@ def _content_identity(data: object | None) -> str | None:
     return "sha256:" + _sha256_bytes(_canonical_json(data).encode("utf-8"))
 
 
+
+def _canonical_repository_root(start: str | Path) -> tuple[Path | None, str | None]:
+    requested = Path(start).resolve()
+    cp = run_git(requested, ["rev-parse", "--show-toplevel"])
+    if cp.returncode != 0 or not cp.stdout.strip():
+        return None, "repository_root_unresolved"
+    return Path(cp.stdout.strip()).resolve(), None
+
 def _is_relative_to_path(child: Path, parent: Path) -> bool:
     try:
         child.relative_to(parent)
@@ -555,10 +565,14 @@ def _repo_rules_from_file(path: Path) -> tuple[dict, list[str], object | None, s
 
 
 def resolve_effective_policy(repo: str | Path, org_policy: str | Path | None = None, org_policy_mode: str = "optional") -> dict:
-    repo_root = Path(repo).resolve()
+    requested_path = Path(repo).resolve()
+    repo_root, repo_root_error = _canonical_repository_root(requested_path)
     errors: list[str] = []
     conflicts: list[dict] = []
     rejected: list[dict] = []
+    if repo_root_error is not None or repo_root is None:
+        repo_root = requested_path
+        errors.append(repo_root_error or "repository_root_unresolved")
     org_status = "not_supplied"
     org_id = None
     org_hash = None
@@ -615,7 +629,14 @@ def resolve_effective_policy(repo: str | Path, org_policy: str | Path | None = N
                             org_status = "invalid"; errors.extend(rule_errors)
                         else:
                             org_status = "loaded"
-    repo_validation = validate_policy_config(repo_root)
+    repo_validation = validate_policy_config(repo_root) if repo_root_error is None else PolicyValidationResult(
+        schema_version="sourcepack.policy.validation.v1",
+        repo=str(requested_path),
+        policy_path=str(requested_path / ".sourcepack" / "policy.json"),
+        policy_present=False,
+        valid=False,
+        errors=(repo_root_error or "repository_root_unresolved",),
+    )
     repo_rules = _repo_rules_from_validation(repo_validation) if repo_validation.valid else {}
     repo_hash = None
     repo_path = Path(repo_validation.policy_path)
@@ -626,7 +647,10 @@ def resolve_effective_policy(repo: str | Path, org_policy: str | Path | None = N
             repo_rules = parsed_repo_rules
         errors.extend(repo_rule_errors)
     if not repo_validation.valid:
-        errors.extend(f"repository_{e}" for e in repo_validation.errors)
+        for e in repo_validation.errors:
+            prefixed = f"repository_{e}"
+            if prefixed not in errors:
+                errors.append(prefixed)
     effective = {}
     rule_results = {}
     strengthen = []

@@ -10,6 +10,13 @@ def run_cli(cwd, *args):
     return subprocess.run([sys.executable, "-m", "sourcepack.cli", *args], cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def ensure_git_repo(repo: Path):
+    if not (repo / ".git").exists():
+        subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+
+
 def write_repo_policy(repo: Path, rules: dict):
     (repo / ".sourcepack").mkdir(exist_ok=True)
     (repo / ".sourcepack" / "policy.json").write_text(json.dumps({"schema_version": "sourcepack.policy.v1", "rules": rules}), encoding="utf-8")
@@ -20,6 +27,7 @@ def write_org(path: Path, rules: dict, *, policy_id="engineering-default", schem
 
 
 def resolve_json(repo: Path, *extra):
+    ensure_git_repo(repo)
     cp = run_cli(repo, "policy", "resolve", str(repo), "--json", *extra)
     return cp, json.loads(cp.stdout)
 
@@ -157,6 +165,7 @@ def test_deterministic_json_identity_and_no_paths_in_identity_material(tmp_path)
 
 
 def test_invalid_mode_argparse_json_uncontaminated_and_read_only(tmp_path):
+    ensure_git_repo(tmp_path)
     before = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*"))
     cp = run_cli(tmp_path, "policy", "resolve", str(tmp_path), "--org-policy-mode", "bogus")
     assert cp.returncode != 0
@@ -164,3 +173,66 @@ def test_invalid_mode_argparse_json_uncontaminated_and_read_only(tmp_path):
     assert cp.stdout.lstrip().startswith("{") and cp.stderr == ""
     after = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*"))
     assert before == after
+
+
+
+def test_subdirectory_invocation_rejects_policy_elsewhere_inside_actual_repo(tmp_path):
+    ensure_git_repo(tmp_path)
+    nested = tmp_path / "packages" / "app"
+    nested.mkdir(parents=True)
+    internal = tmp_path / "org-policy.json"
+    write_org(internal, {"block_dependency_additions": True})
+    cp = run_cli(tmp_path, "policy", "resolve", str(nested), "--json", "--org-policy", str(internal))
+    data = json.loads(cp.stdout)
+    assert cp.returncode != 0
+    assert data["organization_policy_status"] == "trust_boundary_violation"
+    assert "org_policy_trust_boundary_violation:inside_repository" in data["errors"]
+
+
+def test_nested_invocation_loads_root_policy_and_keeps_same_effective_id(tmp_path):
+    ensure_git_repo(tmp_path)
+    write_repo_policy(tmp_path, {"protected_paths": ["src/**"]})
+    nested = tmp_path / "packages" / "app"
+    nested.mkdir(parents=True)
+    external = tmp_path.parent / "nested-valid-org.json"
+    write_org(external, {"require_tests_for": ["src/**"]})
+    root_cp = run_cli(tmp_path, "policy", "resolve", str(tmp_path), "--json", "--org-policy", str(external))
+    nested_cp = run_cli(tmp_path, "policy", "resolve", str(nested), "--json", "--org-policy", str(external))
+    root = json.loads(root_cp.stdout)
+    nested_data = json.loads(nested_cp.stdout)
+    assert root_cp.returncode == nested_cp.returncode == 0
+    assert nested_data["repository_policy_source"]["status"] == "loaded"
+    assert nested_data["effective_policy"]["protected_paths"] == ["src/**"]
+    assert root["effective_policy_id"] == nested_data["effective_policy_id"]
+
+
+def test_external_policy_valid_from_subdirectory_and_symlink_back_inside_rejected(tmp_path):
+    ensure_git_repo(tmp_path)
+    nested = tmp_path / "packages" / "app"
+    nested.mkdir(parents=True)
+    external = tmp_path.parent / "outside-org.json"
+    write_org(external, {"block_secret_patterns": True})
+    cp = run_cli(tmp_path, "policy", "resolve", str(nested), "--json", "--org-policy", str(external))
+    data = json.loads(cp.stdout)
+    assert cp.returncode == 0
+    assert data["organization_policy_status"] == "loaded"
+    internal = tmp_path / "internal-org.json"
+    write_org(internal, {"block_secret_patterns": True})
+    link = tmp_path.parent / "outside-link-to-internal-org.json"
+    if link.exists() or link.is_symlink():
+        link.unlink()
+    link.symlink_to(internal)
+    cp = run_cli(tmp_path, "policy", "resolve", str(nested), "--json", "--org-policy", str(link))
+    data = json.loads(cp.stdout)
+    assert cp.returncode != 0
+    assert data["organization_policy_status"] == "trust_boundary_violation"
+
+
+def test_cannot_determine_canonical_repository_root_fails_closed(tmp_path):
+    external = tmp_path.parent / "nogit-org.json"
+    write_org(external, {"block_dependency_additions": True})
+    cp = run_cli(tmp_path, "policy", "resolve", str(tmp_path), "--json", "--org-policy", str(external))
+    data = json.loads(cp.stdout)
+    assert cp.returncode != 0
+    assert data["resolution_status"] == "FAIL"
+    assert any("repository_root_unresolved" in error for error in data["errors"])

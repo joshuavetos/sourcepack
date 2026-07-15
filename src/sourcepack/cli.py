@@ -34,7 +34,7 @@ from .execution_ledger import clear_ledger, entry_to_json, execution_findings, i
 from .commands import bundle as bundle_command
 from .commands import fleet as fleet_command
 from .commands import report as report_command
-from .policy import PolicyMode, exit_code as policy_exit_code, validate_policy_config
+from .policy import PolicyMode, exit_code as policy_exit_code, validate_policy_config, resolve_effective_policy
 from .replay import reconstruct_replay, render_replay_human
 
 try:
@@ -2474,6 +2474,36 @@ def _display_repo_relative_path(path: Path, repo: Path) -> str:
         return str(path).replace("\\", "/")
 
 
+
+def cli_policy_resolve(args) -> int:
+    repo = Path(getattr(args, "repo", "."))
+    try:
+        result = resolve_effective_policy(repo, org_policy=getattr(args, "org_policy", None), org_policy_mode=getattr(args, "org_policy_mode", "optional"))
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result.get("resolution_status") == "PASS" else 1
+    print(f"Resolution verdict: {result['resolution_status']}")
+    print(f"Organization-policy mode: {result['organization_policy_mode']}")
+    print(f"Organization-policy status: {result['organization_policy_status']}")
+    if result.get("organization_policy_id"):
+        print(f"Organization policy ID: {result['organization_policy_id']}")
+    if result.get("organization_policy_hash"):
+        print(f"Organization policy hash: {result['organization_policy_hash']}")
+    print(f"Repository policy: {result['repository_policy_source']['status']}")
+    print(f"Effective rule count: {len(result['effective_policy'])}")
+    print(f"Strengthening contributions: {len(result['strengthening_contributions'])}")
+    print(f"Weakening attempts: {len(result['rejected_weakening_attempts'])}")
+    print(f"Conflicts: {len(result['conflicts'])}")
+    print(f"Effective-policy ID: {result['effective_policy_id']}")
+    if result.get("errors"):
+        print("Errors:")
+        for error in result["errors"]:
+            print(f"- {error}")
+    return 0 if result.get("resolution_status") == "PASS" else 1
+
 def cli_policy_validate(args) -> int:
     repo = Path(getattr(args, "repo", "."))
     result = validate_policy_config(repo)
@@ -2518,6 +2548,8 @@ def cli_policy(args) -> int:
     repo = Path(".").resolve()
     if args.policy_command == "validate":
         return cli_policy_validate(args)
+    if args.policy_command == "resolve":
+        return cli_policy_resolve(args)
     if args.policy_command == "list":
         print(json.dumps({"schema_version":"sourcepack.policy.list.v1", "policies": _policy_entries(repo)}, indent=2)); return 0
     if args.policy_command == "remove":
@@ -2669,6 +2701,11 @@ def run_cli(args_list=None):
     policy_validate = policy_subs.add_parser("validate", help="validate .sourcepack/policy.json without changing repository state")
     policy_validate.add_argument("repo", nargs="?", default=".")
     policy_validate.add_argument("--json", action="store_true")
+    policy_resolve = policy_subs.add_parser("resolve", help="resolve repository policy with an optional caller-designated local organization policy")
+    policy_resolve.add_argument("repo", nargs="?", default=".")
+    policy_resolve.add_argument("--json", action="store_true")
+    policy_resolve.add_argument("--org-policy")
+    policy_resolve.add_argument("--org-policy-mode", choices=("optional", "required"), default="optional")
     policy_remove = policy_subs.add_parser("remove")
     policy_remove.add_argument("policy_id")
     fleet_command.register(subs)

@@ -22,7 +22,7 @@ from .ecosystems.python import PY_IMPORT_ALIASES
 from .packet import PacketWriter, SourceScanner
 from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_paths
 from .reports.json import normalized_finding, traffic_report, write_user_report
-from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code, load_policy_config, finding_ignored_by_policy, policy_path_matches
+from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code, load_policy_config, finding_ignored_by_policy, policy_path_matches, resolve_effective_policy, EFFECTIVE_POLICY_SCHEMA_VERSION
 from .execution_ledger import execution_findings
 from .commands import resolve_command
 from .dependencies import resolve_js_import, resolve_python_import
@@ -1657,7 +1657,7 @@ def untracked_files_as_diff(repo: str | Path) -> str:
         chunks.extend(f"+{line}" for line in lines)
     return "\n".join(chunks) + ("\n" if chunks else "")
 
-def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, ci: bool = False, base_ref: str | None = None, head_ref: str | None = None) -> dict:
+def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, ci: bool = False, base_ref: str | None = None, head_ref: str | None = None, org_policy: str | Path | None = None, org_policy_mode: str = "optional") -> dict:
     if (base_ref is None) != (head_ref is None):
         return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", "--base-ref and --head-ref must be provided together.")])
     repo_arg = Path(repo_path).resolve(); cp = run_git(repo_arg, ["rev-parse", "--show-toplevel"])
@@ -1677,11 +1677,13 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding(finding_id, "error", "git", message)])
     git_root = Path(cp.stdout.strip()).resolve()
     repo = repo_arg if validate_baseline(repo_arg).get("state") in {"present", "stale", "corrupt"} else git_root
+    policy_result = resolve_effective_policy(repo, org_policy=org_policy, org_policy_mode=org_policy_mode)
     paths = ensure_sourcepack_dirs(repo); added, err = ensure_gitignore_entry(repo)
     if added:
         paths.setdefault("gitignore_added", True)
     if err:
-        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("gitignore_unwritable", "error", "git", f"Cannot write .gitignore: {err}")])
+        rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("gitignore_unwritable", "error", "git", f"Cannot write .gitignore: {err}")])
+        return _finalize_early_core_failure(repo, rep, policy_result)
     if patch_text is None:
         if base_ref is not None and head_ref is not None:
             diff_args = ["diff", "--binary", f"{base_ref}...{head_ref}"]
@@ -1691,12 +1693,15 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             diff_args.append("--relative")
         cp = run_git(repo, diff_args); diff_text = cp.stdout
         if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
-            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable", "error", "git", "Git executable not found.")])
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable", "error", "git", "Git executable not found.")])
+            return _finalize_early_core_failure(repo, rep, policy_result)
         if cp.returncode == GIT_RETURNCODE_TIMEOUT:
-            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_timeout", "error", "git", f"Git command timed out after {GIT_TIMEOUT_SECONDS} seconds.")])
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_timeout", "error", "git", f"Git command timed out after {GIT_TIMEOUT_SECONDS} seconds.")])
+            return _finalize_early_core_failure(repo, rep, policy_result)
         if cp.returncode != 0:
             message = cp.stderr.strip() or "Git diff failed."
-            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", message)])
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", message)])
+            return _finalize_early_core_failure(repo, rep, policy_result)
         if base_ref is None and head_ref is None and not staged:
             extra = untracked_files_as_diff(repo)
             if extra and not (added and _only_sourcepack_gitignore_change(repo)):
@@ -1706,14 +1711,17 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
     baseline_status = validate_baseline(repo)
     if baseline_status["state"] == "corrupt":
         rep = traffic_report("FAIL", "trusted baseline is corrupt.", [normalized_finding("baseline_corrupt", "error", "baseline", baseline_status["message"])], ["baseline", "diff"], "Recreate the baseline only after verifying the current repo state should be trusted.")
+        rep = _apply_policy_rules(repo, None, diff_text, rep, policy_result)
         rep.update(baseline_report_fields(baseline_status)); return rep
     if baseline_status["state"] == "missing":
         dirty_now, dirty_state_now = git_worktree_dirty(repo)
         if ci:
             rep = traffic_report("FAIL", "trusted baseline is missing in CI.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists; CI must not establish trust.")], ["baseline", "diff"], "create the baseline locally only after deciding the current repo state should be trusted.")
+            rep = _apply_policy_rules(repo, None, diff_text, rep, policy_result)
             rep.update(baseline_report_fields(baseline_status)); return rep
         if diff_text.strip() or (dirty_now and not _only_sourcepack_gitignore_change(repo)):
             rep = traffic_report("FAIL", "baseline missing while changes are present.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
+            rep = _apply_policy_rules(repo, None, diff_text, rep, policy_result)
             rep.update(baseline_report_fields(baseline_status)); return rep
         try:
             build_current_baseline(repo, quiet=True, force=False); baseline_status = validate_baseline(repo)
@@ -1735,12 +1743,14 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         raw = judge_patch_text(packet_path, diff_text); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
         rep = _integrate_execution_findings(repo, diff_text, rep)
         rep = _apply_local_policy(repo, rep)
-        rep = _apply_policy_rules(repo, packet_path, diff_text, rep)
+        rep = _apply_policy_rules(repo, packet_path, diff_text, rep, policy_result)
         rep = _apply_policy_config(repo, rep)
         if stale_findings and rep["verdict"] != "FAIL":
             rep = traffic_report("WARN", "SourcePack could not fully evaluate this change.", rep.get("findings", []) + stale_findings, rep.get("checked_categories", []), rep.get("next_action"), reason_type="uncertainty"); rep["raw_patch_judgment"] = raw
         elif stale_findings:
             rep = traffic_report("FAIL", rep.get("headline"), rep.get("findings", []) + stale_findings, rep.get("checked_categories", []), rep.get("next_action")); rep["raw_patch_judgment"] = raw
+    if "policy" not in rep:
+        rep = _apply_policy_rules(repo, None, diff_text, rep, policy_result)
     rep.update(baseline_report_fields(baseline_status))
     if baseline_status.get("metadata_path"):
         try:
@@ -1757,7 +1767,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
 def _rebuild_from_findings(rep: dict, findings: list[dict]) -> dict:
     verdict = "FAIL" if any(f.get("severity") == "error" for f in findings) else "WARN" if any(f.get("severity") == "warn" for f in findings) else "PASS"
     rebuilt = traffic_report(verdict, findings=findings, checked_categories=rep.get("checked_categories") or rep.get("checked") or [], report_path=rep.get("report_path", ".sourcepack/reports/latest.json"))
-    for key in ("raw_patch_judgment", "policy_overrides", "policy_config", "policy_config_ignores", "policy_config_warnings", "policy_rule_findings"):
+    for key in ("raw_patch_judgment", "policy", "policy_overrides", "policy_config", "policy_config_ignores", "policy_config_warnings", "policy_rule_findings"):
         if key in rep:
             rebuilt[key] = rep[key]
     return rebuilt
@@ -1802,10 +1812,102 @@ def _line_has_policy_secret(line: str) -> bool:
     return False
 
 
-def _policy_rule_findings(repo: Path, packet_path: Path, diff_text: str) -> list[dict]:
-    config = load_policy_config(repo)
-    rules = config.rules
-    if not rules.enabled() or not diff_text.strip():
+def _rule_semantic_hash(rule_name: str, value: object) -> str:
+    return "sha256:" + sha256_text(json.dumps({"rule": rule_name, "value": value}, sort_keys=True, separators=(",", ":")))
+
+
+def _authority_from_sources(sources: list[str]) -> str:
+    source_set = set(sources)
+    if {"organization", "repository"}.issubset(source_set):
+        return "mixed"
+    if "organization" in source_set:
+        return "organization"
+    return "repository"
+
+
+def _policy_authority_for_rule(result: dict, rule_name: str, *, value: object | None = None) -> str:
+    rule = result.get("rules", {}).get(rule_name, {}) if isinstance(result.get("rules"), dict) else {}
+    provenance = rule.get("provenance") if isinstance(rule.get("provenance"), dict) else {}
+    org_value = rule.get("organization_constraint")
+    repo_value = rule.get("repository_contribution")
+    effective_value = rule.get("effective_value")
+
+    if rule_name in {"protected_paths", "require_tests_for"}:
+        sources: list[str] = []
+        if value is not None and isinstance(provenance.get(str(value)), list):
+            sources = [str(x) for x in provenance.get(str(value), [])]
+        elif isinstance(provenance.get("sources"), list):
+            sources = [str(x) for x in provenance.get("sources", [])]
+        return _authority_from_sources(sources)
+
+    if rule_name in {"block_dependency_additions", "block_secret_patterns"}:
+        sources = []
+        if org_value is True:
+            sources.append("organization")
+        if repo_value is True:
+            sources.append("repository")
+        return _authority_from_sources(sources)
+
+    if rule_name == "max_changed_lines":
+        sources = []
+        if org_value == effective_value:
+            sources.append("organization")
+        if repo_value == effective_value:
+            sources.append("repository")
+        return _authority_from_sources(sources)
+
+    if rule_name == "package_manager":
+        sources = []
+        if org_value == effective_value:
+            sources.append("organization")
+        if repo_value == effective_value:
+            sources.append("repository")
+        return _authority_from_sources(sources)
+
+    sources = [str(x) for x in provenance.get("sources", [])] if isinstance(provenance.get("sources"), list) else []
+    return _authority_from_sources(sources)
+
+
+def _policy_authority_for_matching_values(result: dict, rule_name: str, values: list[str]) -> str:
+    sources: list[str] = []
+    for value in values:
+        authority = _policy_authority_for_rule(result, rule_name, value=value)
+        if authority == "mixed":
+            sources.extend(["organization", "repository"])
+        else:
+            sources.append(authority)
+    return _authority_from_sources(sources)
+
+
+def _policy_metadata_for_finding(result: dict, rule_name: str, effective_value: object, authority: str, *, scope: str, provenance: object | None = None) -> dict:
+    return {
+        "effective_policy_id": result.get("effective_policy_id"),
+        "rule_name": rule_name,
+        "effective_rule_value": effective_value,
+        "rule_fingerprint": _rule_semantic_hash(rule_name, effective_value),
+        "provenance": provenance if provenance is not None else result.get("rules", {}).get(rule_name, {}).get("provenance"),
+        "authority": authority,
+        "scope": scope,
+    }
+
+
+def _annotate_policy_finding(finding: dict, result: dict, rule_name: str, effective_value: object, authority: str, *, scope: str, provenance: object | None = None, extra: dict | None = None) -> dict:
+    out = dict(finding)
+    out["policy"] = _policy_metadata_for_finding(result, rule_name, effective_value, authority, scope=scope, provenance=provenance)
+    if extra:
+        out["policy"].update(extra)
+    out["policy_authority"] = authority
+    out["override_eligible"] = authority == "repository"
+    return out
+
+
+def _policy_rules_enabled(effective: dict) -> bool:
+    return any(effective.get(k) for k in ("block_dependency_additions", "protected_paths", "package_manager", "require_tests_for", "max_changed_lines", "block_secret_patterns"))
+
+
+def _policy_rule_findings(repo: Path, packet_path: Path | None, diff_text: str, policy_result: dict) -> list[dict]:
+    effective = policy_result.get("effective_policy", {}) if isinstance(policy_result.get("effective_policy"), dict) else {}
+    if not _policy_rules_enabled(effective) or not diff_text.strip():
         return []
     changes = [change for change in parse_unified_diff(diff_text) if not change.unsafe_path]
     if not changes:
@@ -1821,81 +1923,87 @@ def _policy_rule_findings(repo: Path, packet_path: Path, diff_text: str) -> list
     })
 
     for path in protected_check_paths:
-        for pattern in rules.protected_paths:
-            if policy_path_matches(path, pattern):
-                findings.append(normalized_finding(
+        matches = [pattern for pattern in effective.get("protected_paths", []) if policy_path_matches(path, pattern)]
+        if matches:
+            authority = _policy_authority_for_matching_values(policy_result, "protected_paths", matches)
+            findings.append(_annotate_policy_finding(normalized_finding(
                     "policy_protected_path",
                     "error",
                     "policy",
                     "Proposed change modified a path protected by repository policy.",
                     path,
-                    evidence=pattern,
-                    suggestion="Change the protected path only after updating repository policy or obtaining the required review.",
-                ))
-                break
+                    evidence=", ".join(matches),
+                    suggestion="Change the protected path only after updating policy or obtaining the required review.",
+                ), policy_result, "protected_paths", matches, authority, scope=path, provenance={m: policy_result.get("rules", {}).get("protected_paths", {}).get("provenance", {}).get(m, []) for m in matches}, extra={"matching_patterns": matches}))
 
-    if rules.package_manager == "pnpm":
+    if effective.get("package_manager") == "pnpm":
         conflicting = {"package-lock.json", "npm-shrinkwrap.json", "yarn.lock"}
         for change in changes:
             if change.deleted_file:
                 continue
             path = change.path
             if path and PurePosixPath(path).name in conflicting:
-                findings.append(normalized_finding(
-                    "policy_package_manager_drift",
+                findings.append(_annotate_policy_finding(normalized_finding(
+                    "policy_package_manager",
                     "error",
                     "policy",
                     "Proposed change added or modified a package-manager artifact that conflicts with repository policy.",
                     path,
                     evidence="pnpm",
                     suggestion="Use pnpm artifacts for this repository or update policy intentionally.",
-                ))
+                ), policy_result, "package_manager", "pnpm", _policy_authority_for_rule(policy_result, "package_manager"), scope=path, extra={"conflicting_lockfile": path}))
 
-    if rules.max_changed_lines is not None:
+    if effective.get("max_changed_lines") is not None:
         changed_line_count = _policy_changed_line_count(changes)
-        if changed_line_count > rules.max_changed_lines:
-            findings.append(normalized_finding(
-                "policy_large_diff",
-                "warn",
+        max_lines = int(effective.get("max_changed_lines"))
+        added_count = sum(1 for change in changes for line in (change.diff_lines or []) if line.startswith("+") and not line.startswith("+++ "))
+        deleted_count = sum(1 for change in changes for line in (change.diff_lines or []) if line.startswith("-") and not line.startswith("--- "))
+        if changed_line_count > max_lines:
+            findings.append(_annotate_policy_finding(normalized_finding(
+                "policy_change_limit",
+                "error",
                 "policy",
-                f"Proposed change modifies {changed_line_count} lines, exceeding repository policy limit {rules.max_changed_lines}.",
+                f"Proposed change modifies {changed_line_count} lines, exceeding policy limit {max_lines}.",
                 evidence=str(changed_line_count),
                 suggestion="Split the proposed change or raise the configured limit intentionally.",
-            ))
+            ), policy_result, "max_changed_lines", max_lines, _policy_authority_for_rule(policy_result, "max_changed_lines"), scope="repository", extra={"added_lines": added_count, "deleted_lines": deleted_count, "total_changed_lines": changed_line_count, "maximum": max_lines}))
 
-    if rules.require_tests_for:
-        has_test_change = any(_is_test_path(path) for path in changed_paths)
+    if effective.get("require_tests_for"):
+        non_deleted_changed_paths = sorted({change.path for change in changes if change.path and not change.deleted_file})
+        test_change_paths = [path for path in non_deleted_changed_paths if _is_test_path(path)]
+        has_test_change = bool(test_change_paths)
         if not has_test_change:
             for path in changed_paths:
                 if _is_test_path(path):
                     continue
-                if any(policy_path_matches(path, pattern) for pattern in rules.require_tests_for):
-                    findings.append(normalized_finding(
-                        "policy_missing_test",
-                        "warn",
+                matches = [pattern for pattern in effective.get("require_tests_for", []) if policy_path_matches(path, pattern)]
+                if matches:
+                    authority = _policy_authority_for_matching_values(policy_result, "require_tests_for", matches)
+                    findings.append(_annotate_policy_finding(normalized_finding(
+                        "policy_test_required",
+                        "error",
                         "policy",
                         "Proposed change altered a path that repository policy expects to be accompanied by a test change.",
                         path,
-                        evidence=", ".join(rules.require_tests_for),
-                        suggestion="Add or update a corresponding test in the same delta, or adjust repository policy intentionally.",
-                    ))
-                    break
+                        evidence=", ".join(matches),
+                        suggestion="Add or update a corresponding test in the same delta, or adjust policy intentionally.",
+                    ), policy_result, "require_tests_for", matches, authority, scope=path, provenance={m: policy_result.get("rules", {}).get("require_tests_for", {}).get("provenance", {}).get(m, []) for m in matches}, extra={"triggering_path": path, "observed_test_change_paths": test_change_paths, "test_detection_method": "sourcepack._is_test_path"}))
 
-    if rules.block_secret_patterns:
+    if effective.get("block_secret_patterns") is True:
         for change in changes:
             for line in change.added_lines or []:
                 if _line_has_policy_secret(line):
-                    findings.append(normalized_finding(
+                    findings.append(_annotate_policy_finding(normalized_finding(
                         "policy_secret_pattern",
                         "error",
                         "policy",
                         "Proposed change added obvious credential-shaped assignment material blocked by repository policy.",
                         change.path,
                         suggestion="Remove the credential-shaped value or replace it with an obvious placeholder.",
-                    ))
+                    ), policy_result, "block_secret_patterns", True, _policy_authority_for_rule(policy_result, "block_secret_patterns"), scope=change.path or "repository", extra={"secret_pattern_class": "credential_assignment", "match_count": 1}))
                     break
 
-    if rules.block_dependency_additions:
+    if effective.get("block_dependency_additions") is True and packet_path is not None:
         manifest = load_manifest(packet_path)
         contents = _packet_file_contents(packet_path)
         existing = _declared_dependency_names_by_ecosystem(manifest, packet_path)
@@ -1903,26 +2011,88 @@ def _policy_rule_findings(repo: Path, packet_path: Path, diff_text: str) -> list
         if not uncertainties:
             additions = sorted((declared["python"] | declared["js"]) - (existing["python"] | existing["js"]))
             for dependency in additions:
-                findings.append(normalized_finding(
+                findings.append(_annotate_policy_finding(normalized_finding(
                     "policy_dependency_addition",
                     "error",
                     "policy",
                     "Proposed change added an unapproved dependency to project manifest files.",
                     evidence=dependency,
-                    suggestion="Remove the dependency addition or update repository policy/review evidence intentionally.",
-                ))
+                    suggestion="Remove the dependency addition or update policy/review evidence intentionally.",
+                ), policy_result, "block_dependency_additions", True, _policy_authority_for_rule(policy_result, "block_dependency_additions"), scope=dependency, extra={"dependency": dependency}))
 
     return findings
 
 
-def _apply_policy_rules(repo: Path, packet_path: Path, diff_text: str, rep: dict) -> dict:
-    findings = _policy_rule_findings(repo, packet_path, diff_text)
-    if not findings:
-        return rep
-    rebuilt = _rebuild_from_findings(rep, list(rep.get("findings", [])) + findings)
+
+def _canonical_policy_resolution_sequence(items: object) -> list[object]:
+    if not isinstance(items, list):
+        return []
+    unique = {json.dumps(item, sort_keys=True, separators=(",", ":")): item for item in items}
+    return [unique[key] for key in sorted(unique)]
+
+
+def _canonical_policy_resolution_material(policy_result: dict) -> dict:
+    return {
+        "schema_version": policy_result.get("schema_version"),
+        "organization_policy_mode": policy_result.get("organization_policy_mode"),
+        "organization_policy_status": policy_result.get("organization_policy_status"),
+        "organization_policy_id": policy_result.get("organization_policy_id"),
+        "organization_policy_hash": policy_result.get("organization_policy_hash"),
+        "repository_policy_hash": policy_result.get("repository_policy_hash"),
+        "errors": sorted(set(str(e) for e in policy_result.get("errors", []))),
+        "conflicts": _canonical_policy_resolution_sequence(policy_result.get("conflicts", [])),
+        "rejected_weakening_attempts": _canonical_policy_resolution_sequence(policy_result.get("rejected_weakening_attempts", [])),
+    }
+
+
+def _policy_resolution_hash(policy_result: dict) -> str:
+    return "sha256:" + sha256_text(json.dumps(_canonical_policy_resolution_material(policy_result), sort_keys=True, separators=(",", ":")))
+
+def _policy_resolution_failure_finding(policy_result: dict) -> dict:
+    finding = normalized_finding("policy_resolution_failed", "error", "policy", "Effective policy resolution failed; diff fails closed.", evidence=", ".join(policy_result.get("errors", [])), suggestion="Fix policy resolution errors before trusting this diff.")
+    finding["policy"] = {k: policy_result.get(k) for k in ("schema_version", "effective_policy_id", "organization_policy_mode", "organization_policy_status", "organization_policy_id", "organization_policy_hash", "repository_policy_hash", "errors", "conflicts", "rejected_weakening_attempts")}
+    resolution_fingerprint = _policy_resolution_hash(policy_result)
+    finding["policy"]["resolution_fingerprint"] = resolution_fingerprint
+    finding["policy"]["rule_name"] = "policy_resolution_failed"
+    finding["policy"]["rule_fingerprint"] = resolution_fingerprint
+    finding["policy"]["scope"] = "policy_resolution"
+    finding["policy_authority"] = "mixed"
+    finding["override_eligible"] = False
+    return finding
+
+
+def _policy_report_metadata(policy_result: dict, policy_finding_count: int) -> dict:
+    return {
+        "evaluated": True,
+        "resolution_status": policy_result.get("resolution_status"),
+        "effective_policy_id": policy_result.get("effective_policy_id"),
+        "organization_policy_mode": policy_result.get("organization_policy_mode"),
+        "organization_policy_status": policy_result.get("organization_policy_status"),
+        "organization_policy_id": policy_result.get("organization_policy_id"),
+        "organization_policy_hash": policy_result.get("organization_policy_hash"),
+        "repository_policy_hash": policy_result.get("repository_policy_hash"),
+        "effective_rules": policy_result.get("effective_policy", {}),
+        "policy_finding_count": policy_finding_count,
+    }
+
+
+def _apply_policy_rules(repo: Path, packet_path: Path | None, diff_text: str, rep: dict, policy_result: dict) -> dict:
+    findings = []
+    if policy_result.get("resolution_status") != "PASS":
+        findings.append(_policy_resolution_failure_finding(policy_result))
+    else:
+        findings = _policy_rule_findings(repo, packet_path, diff_text, policy_result)
+    rebuilt = _rebuild_from_findings(rep, list(rep.get("findings", [])) + findings) if findings else dict(rep)
+    rebuilt["policy"] = _policy_report_metadata(policy_result, len(findings))
     rebuilt["policy_rule_findings"] = findings
     return rebuilt
 
+
+
+def _finalize_early_core_failure(repo: Path, rep: dict, policy_result: dict) -> dict:
+    finalized = _apply_policy_rules(repo, None, "", rep, policy_result)
+    finalized["repo_path"] = str(repo)
+    return finalized
 
 def _policy_entries_for_judgment(repo: Path) -> list[dict]:
     path = repo / ".sourcepack" / "policy" / "allow.jsonl"
@@ -1947,6 +2117,10 @@ def _policy_matches(entry: dict, finding: dict) -> bool:
     value = str(entry.get("value") or "")
     fid = finding.get("id")
     if fid == "git_path_modification" or str(finding.get("path") or "").startswith(".git/"):
+        return False
+    if fid == "policy_resolution_failed":
+        return False
+    if finding.get("category") == "policy" and not (finding.get("policy_authority") == "repository" and finding.get("override_eligible") is True):
         return False
     if scope == "dependency":
         return fid == "unsupported_dependency" and finding.get("evidence") == value
@@ -2033,10 +2207,10 @@ class Judgment:
         return policy_exit_code(self.verdict, self.policy_mode)
 
 
-def judge_repo_change(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, policy_mode: PolicyMode | str = PolicyMode.LOCAL, base_ref: str | None = None, head_ref: str | None = None) -> Judgment:
+def judge_repo_change(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, policy_mode: PolicyMode | str = PolicyMode.LOCAL, base_ref: str | None = None, head_ref: str | None = None, org_policy: str | Path | None = None, org_policy_mode: str = "optional") -> Judgment:
     """Judge repository changes without CLI parsing, stdout rendering, or cli.py imports."""
     mode = normalize_policy_mode(policy_mode)
-    report = build_repo_change_report(Path(repo_path).resolve(), staged=staged, patch_text=patch_text, ci=(mode is PolicyMode.CI), base_ref=base_ref, head_ref=head_ref)
+    report = build_repo_change_report(Path(repo_path).resolve(), staged=staged, patch_text=patch_text, ci=(mode is PolicyMode.CI), base_ref=base_ref, head_ref=head_ref, org_policy=org_policy, org_policy_mode=org_policy_mode)
     if mode is PolicyMode.CI:
         report["ci"] = True
     return Judgment(str(Path(repo_path).resolve()), mode, report)

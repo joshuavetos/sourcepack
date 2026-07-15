@@ -295,30 +295,6 @@ Policy configuration can add local repository rules, but it must not make prompt
 - **Likely fix:** Avoid the protected path or update/review repository policy intentionally.
 - **Example:** `Proposed change modified a path protected by repository policy.`
 
-## policy_package_manager_drift
-
-- **Meaning:** Proposed change added or modified a package-manager artifact that conflicts with the configured package manager.
-- **Typical severity:** `FAIL`.
-- **Common cause:** `package_manager` is `pnpm`, but the change adds or modifies an npm or Yarn lock artifact.
-- **Likely fix:** Use artifacts for the configured package manager or adjust repository policy intentionally.
-- **Example:** `Proposed change added or modified a package-manager artifact that conflicts with repository policy.`
-
-## policy_missing_test
-
-- **Meaning:** Proposed change altered a file matching `rules.require_tests_for` without a test-path or test-name change in the same delta.
-- **Typical severity:** `WARN` for the MVP.
-- **Common cause:** Repository policy expects certain source paths to be accompanied by test updates.
-- **Likely fix:** Add or update a corresponding test in the same delta, or adjust repository policy intentionally.
-- **Example:** `Proposed change altered a path that repository policy expects to be accompanied by a test change.`
-
-## policy_large_diff
-
-- **Meaning:** Proposed change exceeds `rules.max_changed_lines`.
-- **Typical severity:** `WARN` for the MVP.
-- **Common cause:** The configured repository policy limits large deltas for local review.
-- **Likely fix:** Split the proposed change or raise the configured limit intentionally.
-- **Example:** `Proposed change modifies <count> lines, exceeding repository policy limit <limit>.`
-
 ## policy_secret_pattern
 
 - **Meaning:** Proposed change added an obvious credential-shaped assignment involving a sensitive name such as `password`, `token`, `secret`, `api_key`, `access_key`, or `private_key`.
@@ -458,3 +434,31 @@ Human-readable messages are remediation aids. Canonical reason-code IDs remain t
 - does not prove dependency safety
 - does not prove runtime success
 - does not prove semantic validity
+
+## policy_resolution_failed
+
+- **Meaning:** Effective policy resolution failed during `sourcepack diff`; diff fails closed while preserving core findings.
+- **Typical severity:** `FAIL`.
+- **Common cause:** Required organization policy missing, malformed policy, trust-boundary violation, unsupported rule/value, conflict, or repository weakening attempt.
+- **Likely fix:** Fix repository and organization policy inputs, then rerun diff.
+
+## policy_package_manager
+
+- **Meaning:** The evaluated change violates the effective package-manager policy.
+- **Typical severity:** `FAIL`.
+- **Common cause:** A repository requiring `pnpm` adds or modifies incompatible lockfiles such as `package-lock.json`, `npm-shrinkwrap.json`, or `yarn.lock`.
+- **Likely fix:** Use pnpm artifacts or intentionally update policy.
+
+## policy_test_required
+
+- **Meaning:** A production path matched `require_tests_for` and the same evaluated change did not include a qualifying non-deleted test-path change.
+- **Typical severity:** `FAIL`.
+- **Common cause:** Source code changed without accompanying tests under SourcePack's existing test-path conventions.
+- **Likely fix:** Add or update a recognized test file in the same change.
+
+## policy_change_limit
+
+- **Meaning:** The evaluated change exceeds the effective `max_changed_lines` limit.
+- **Typical severity:** `FAIL`.
+- **Common cause:** Added plus deleted diff lines are greater than the configured positive limit.
+- **Likely fix:** Split the change or intentionally lower/raise policy through the policy resolver.

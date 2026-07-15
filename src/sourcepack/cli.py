@@ -2073,7 +2073,7 @@ def cli_diff(args) -> int:
     if bool(getattr(args, "base_ref", None)) != bool(getattr(args, "head_ref", None)):
         raise SystemExit("--base-ref and --head-ref must be provided together")
     mode = PolicyMode.CI if getattr(args, "ci", False) else PolicyMode.STRICT if getattr(args, "strict", False) else PolicyMode.LOCAL
-    judgment = judge_repo_change(args.repo, staged=args.staged, policy_mode=mode, base_ref=getattr(args, "base_ref", None), head_ref=getattr(args, "head_ref", None))
+    judgment = judge_repo_change(args.repo, staged=args.staged, policy_mode=mode, base_ref=getattr(args, "base_ref", None), head_ref=getattr(args, "head_ref", None), org_policy=getattr(args, "org_policy", None), org_policy_mode=getattr(args, "org_policy_mode", "optional"))
     report = finalize_diff_report(Path(judgment.report.get("repo_path", args.repo)), judgment.report, args)
     return emit_diff_report(report, args, note=report.get("note"))
 
@@ -2664,6 +2664,8 @@ def run_cli(args_list=None):
     diff_cmd.add_argument("--exit-policy", choices=("warn-or-fail", "fail-only"), help="override diff verdict-to-process-exit behavior: warn-or-fail blocks WARN and FAIL; fail-only blocks only FAIL")
     diff_cmd.add_argument("--base-ref", help="base git ref for committed-range diff mode; requires --head-ref")
     diff_cmd.add_argument("--head-ref", help="head git ref for committed-range diff mode; requires --base-ref")
+    diff_cmd.add_argument("--org-policy", help="external caller-designated organization policy file for diff policy evaluation")
+    diff_cmd.add_argument("--org-policy-mode", choices=("optional", "required"), default="optional", help="organization-policy requirement mode for diff policy evaluation")
     install_hook = subs.add_parser("install-hook")
     install_hook.add_argument("repo")
     install_hook.add_argument("--strict", action="store_true")

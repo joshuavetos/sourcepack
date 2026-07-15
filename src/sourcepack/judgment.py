@@ -1682,7 +1682,8 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
     if added:
         paths.setdefault("gitignore_added", True)
     if err:
-        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("gitignore_unwritable", "error", "git", f"Cannot write .gitignore: {err}")])
+        rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("gitignore_unwritable", "error", "git", f"Cannot write .gitignore: {err}")])
+        return _finalize_early_core_failure(repo, rep, policy_result)
     if patch_text is None:
         if base_ref is not None and head_ref is not None:
             diff_args = ["diff", "--binary", f"{base_ref}...{head_ref}"]
@@ -1692,12 +1693,15 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             diff_args.append("--relative")
         cp = run_git(repo, diff_args); diff_text = cp.stdout
         if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
-            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable", "error", "git", "Git executable not found.")])
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable", "error", "git", "Git executable not found.")])
+            return _finalize_early_core_failure(repo, rep, policy_result)
         if cp.returncode == GIT_RETURNCODE_TIMEOUT:
-            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_timeout", "error", "git", f"Git command timed out after {GIT_TIMEOUT_SECONDS} seconds.")])
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_timeout", "error", "git", f"Git command timed out after {GIT_TIMEOUT_SECONDS} seconds.")])
+            return _finalize_early_core_failure(repo, rep, policy_result)
         if cp.returncode != 0:
             message = cp.stderr.strip() or "Git diff failed."
-            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", message)])
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", message)])
+            return _finalize_early_core_failure(repo, rep, policy_result)
         if base_ref is None and head_ref is None and not staged:
             extra = untracked_files_as_diff(repo)
             if extra and not (added and _only_sourcepack_gitignore_change(repo)):
@@ -2008,9 +2012,30 @@ def _policy_rule_findings(repo: Path, packet_path: Path | None, diff_text: str, 
     return findings
 
 
+
+def _canonical_policy_resolution_material(policy_result: dict) -> dict:
+    return {
+        "schema_version": policy_result.get("schema_version"),
+        "effective_policy_id": policy_result.get("effective_policy_id"),
+        "organization_policy_mode": policy_result.get("organization_policy_mode"),
+        "organization_policy_status": policy_result.get("organization_policy_status"),
+        "errors": sorted(str(e) for e in policy_result.get("errors", [])),
+        "conflicts": policy_result.get("conflicts", []),
+        "rejected_weakening_attempts": policy_result.get("rejected_weakening_attempts", []),
+    }
+
+
+def _policy_resolution_hash(policy_result: dict) -> str:
+    return "sha256:" + sha256_text(json.dumps(_canonical_policy_resolution_material(policy_result), sort_keys=True, separators=(",", ":")))
+
 def _policy_resolution_failure_finding(policy_result: dict) -> dict:
     finding = normalized_finding("policy_resolution_failed", "error", "policy", "Effective policy resolution failed; diff fails closed.", evidence=", ".join(policy_result.get("errors", [])), suggestion="Fix policy resolution errors before trusting this diff.")
     finding["policy"] = {k: policy_result.get(k) for k in ("schema_version", "effective_policy_id", "organization_policy_mode", "organization_policy_status", "organization_policy_id", "organization_policy_hash", "repository_policy_hash", "errors", "conflicts", "rejected_weakening_attempts")}
+    resolution_fingerprint = _policy_resolution_hash(policy_result)
+    finding["policy"]["resolution_fingerprint"] = resolution_fingerprint
+    finding["policy"]["rule_name"] = "policy_resolution_failed"
+    finding["policy"]["rule_fingerprint"] = resolution_fingerprint
+    finding["policy"]["scope"] = "policy_resolution"
     finding["policy_authority"] = "mixed"
     finding["override_eligible"] = False
     return finding
@@ -2042,6 +2067,12 @@ def _apply_policy_rules(repo: Path, packet_path: Path | None, diff_text: str, re
     rebuilt["policy_rule_findings"] = findings
     return rebuilt
 
+
+
+def _finalize_early_core_failure(repo: Path, rep: dict, policy_result: dict) -> dict:
+    finalized = _apply_policy_rules(repo, None, "", rep, policy_result)
+    finalized["repo_path"] = str(repo)
+    return finalized
 
 def _policy_entries_for_judgment(repo: Path) -> list[dict]:
     path = repo / ".sourcepack" / "policy" / "allow.jsonl"

@@ -670,3 +670,196 @@ def test_baseline_missing_does_not_guess_dependency_additions(tmp_path):
     assert "baseline_missing" in ids
     assert "policy_dependency_addition" not in ids
     assert data["verdict"] == "FAIL"
+
+
+def resolution_failure_finding_id(repo, *args):
+    cp = run(repo, "diff", ".", "--json", *args)
+    data = json.loads(cp.stdout)
+    finding = policy_finding(data, "policy_resolution_failed")
+    return finding["finding_id"], finding, data
+
+
+def test_resolution_failure_identity_repeats_for_identical_required_missing(tmp_path):
+    init_repo(tmp_path)
+    first, first_finding, _ = resolution_failure_finding_id(tmp_path, "--org-policy-mode", "required")
+    second, second_finding, _ = resolution_failure_finding_id(tmp_path, "--org-policy-mode", "required")
+
+    assert first == second
+    assert first_finding["policy"]["resolution_fingerprint"] == second_finding["policy"]["resolution_fingerprint"]
+
+
+def test_resolution_failure_identity_stable_across_checkout_roots(tmp_path):
+    repo_a = tmp_path / "a"
+    repo_b = tmp_path / "b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    init_repo(repo_a)
+    init_repo(repo_b)
+
+    a_id, _, _ = resolution_failure_finding_id(repo_a, "--org-policy-mode", "required")
+    b_id, _, _ = resolution_failure_finding_id(repo_b, "--org-policy-mode", "required")
+
+    assert a_id == b_id
+
+
+def test_resolution_failure_identity_distinguishes_missing_required_and_malformed(tmp_path):
+    init_repo(tmp_path)
+    missing_id, _, _ = resolution_failure_finding_id(tmp_path, "--org-policy-mode", "required")
+    bad = tmp_path.parent / "bad-org-identity.json"
+    bad.write_text("{", encoding="utf-8")
+    malformed_id, _, _ = resolution_failure_finding_id(tmp_path, "--org-policy", str(bad))
+
+    assert missing_id != malformed_id
+
+
+def test_resolution_failure_identity_distinguishes_weakening_and_conflict_material():
+    from sourcepack.judgment import _policy_resolution_failure_finding
+    from sourcepack.reports.json import traffic_report
+
+    weakening = {
+        "schema_version": "sourcepack.effective_policy.v1",
+        "effective_policy_id": "epol_same",
+        "organization_policy_mode": "optional",
+        "organization_policy_status": "loaded",
+        "errors": ["repository_policy_weakening_attempt"],
+        "conflicts": [],
+        "rejected_weakening_attempts": [{"rule": "max_changed_lines", "organization_value": 200, "repository_value": 500}],
+    }
+    conflict = {
+        "schema_version": "sourcepack.effective_policy.v1",
+        "effective_policy_id": "epol_same",
+        "organization_policy_mode": "optional",
+        "organization_policy_status": "loaded",
+        "errors": ["policy_conflict"],
+        "conflicts": [{"rule": "package_manager", "organization_value": "pnpm", "repository_value": "npm"}],
+        "rejected_weakening_attempts": [],
+    }
+
+    weak_finding = traffic_report("FAIL", findings=[_policy_resolution_failure_finding(weakening)])["findings"][0]
+    conflict_finding = traffic_report("FAIL", findings=[_policy_resolution_failure_finding(conflict)])["findings"][0]
+
+    assert weak_finding["finding_id"] != conflict_finding["finding_id"]
+
+
+def test_resolution_failure_identity_sorts_error_ordering():
+    from sourcepack.judgment import _policy_resolution_failure_finding
+    from sourcepack.reports.json import traffic_report
+
+    first = {
+        "schema_version": "sourcepack.effective_policy.v1",
+        "effective_policy_id": "epol_order",
+        "organization_policy_mode": "optional",
+        "organization_policy_status": "invalid",
+        "errors": ["b_error", "a_error"],
+        "conflicts": [],
+        "rejected_weakening_attempts": [],
+    }
+    second = dict(first, errors=["a_error", "b_error"])
+
+    first_id = traffic_report("FAIL", findings=[_policy_resolution_failure_finding(first)])["findings"][0]["finding_id"]
+    second_id = traffic_report("FAIL", findings=[_policy_resolution_failure_finding(second)])["findings"][0]["finding_id"]
+
+    assert first_id == second_id
+
+
+def test_resolution_failure_identity_ignores_org_policy_path_spelling(tmp_path):
+    init_repo(tmp_path)
+    bad = tmp_path.parent / "bad-org-spelling.json"
+    bad.write_text("{", encoding="utf-8")
+    link = tmp_path.parent / "bad-org-link.json"
+    if link.exists() or link.is_symlink():
+        link.unlink()
+    link.symlink_to(bad)
+
+    real_id, _, _ = resolution_failure_finding_id(tmp_path, "--org-policy", str(bad))
+    link_id, _, _ = resolution_failure_finding_id(tmp_path, "--org-policy", str(link))
+
+    assert real_id == link_id
+
+
+def test_required_org_missing_plus_git_diff_failure_preserves_both_findings(tmp_path, monkeypatch):
+    import sourcepack.judgment as judgment
+
+    init_repo(tmp_path)
+    real_run_git = judgment.run_git
+
+    def fake_run_git(cwd, args, *extra, **kwargs):
+        if args and args[0] == "diff":
+            return subprocess.CompletedProcess(args, 2, stdout="", stderr="synthetic diff failure")
+        return real_run_git(cwd, args, *extra, **kwargs)
+
+    monkeypatch.setattr(judgment, "run_git", fake_run_git)
+    report_data = judgment.build_repo_change_report(tmp_path, org_policy_mode="required")
+    ids = [f["id"] for f in report_data["findings"]]
+
+    assert "git_diff_failed" in ids
+    assert ids.count("policy_resolution_failed") == 1
+    assert report_data["policy"]["resolution_status"] == "FAIL"
+    assert report_data["policy_rule_findings"][0]["id"] == "policy_resolution_failed"
+
+
+def test_malformed_org_policy_plus_git_timeout_preserves_both_findings(tmp_path, monkeypatch):
+    import sourcepack.judgment as judgment
+
+    init_repo(tmp_path)
+    bad = tmp_path.parent / "bad-timeout-org.json"
+    bad.write_text("{", encoding="utf-8")
+    real_run_git = judgment.run_git
+
+    def fake_run_git(cwd, args, *extra, **kwargs):
+        if args and args[0] == "diff":
+            return subprocess.CompletedProcess(args, judgment.GIT_RETURNCODE_TIMEOUT, stdout="", stderr="timeout")
+        return real_run_git(cwd, args, *extra, **kwargs)
+
+    monkeypatch.setattr(judgment, "run_git", fake_run_git)
+    report_data = judgment.build_repo_change_report(tmp_path, org_policy=bad)
+    ids = [f["id"] for f in report_data["findings"]]
+
+    assert "git_timeout" in ids
+    assert ids.count("policy_resolution_failed") == 1
+    assert report_data["policy"]["organization_policy_status"] == "invalid"
+
+
+def test_policy_pass_plus_git_diff_failure_emits_only_git_failure(tmp_path, monkeypatch):
+    import sourcepack.judgment as judgment
+
+    init_repo(tmp_path)
+    real_run_git = judgment.run_git
+
+    def fake_run_git(cwd, args, *extra, **kwargs):
+        if args and args[0] == "diff":
+            return subprocess.CompletedProcess(args, 2, stdout="", stderr="synthetic diff failure")
+        return real_run_git(cwd, args, *extra, **kwargs)
+
+    monkeypatch.setattr(judgment, "run_git", fake_run_git)
+    report_data = judgment.build_repo_change_report(tmp_path)
+    ids = [f["id"] for f in report_data["findings"]]
+
+    assert ids == ["git_diff_failed"]
+    assert report_data["policy"]["resolution_status"] == "PASS"
+    assert report_data["policy_rule_findings"] == []
+
+
+def test_early_failure_does_not_guess_policy_rules_without_diff(tmp_path, monkeypatch):
+    import sourcepack.judgment as judgment
+
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"protected_paths": ["app.py"], "block_dependency_additions": True, "max_changed_lines": 1})
+    bad = tmp_path.parent / "bad-early-org.json"
+    bad.write_text("{", encoding="utf-8")
+    real_run_git = judgment.run_git
+
+    def fake_run_git(cwd, args, *extra, **kwargs):
+        if args and args[0] == "diff":
+            return subprocess.CompletedProcess(args, 2, stdout="", stderr="synthetic diff failure")
+        return real_run_git(cwd, args, *extra, **kwargs)
+
+    monkeypatch.setattr(judgment, "run_git", fake_run_git)
+    report_data = judgment.build_repo_change_report(tmp_path, org_policy=bad)
+    ids = [f["id"] for f in report_data["findings"]]
+
+    assert "git_diff_failed" in ids
+    assert ids.count("policy_resolution_failed") == 1
+    assert "policy_protected_path" not in ids
+    assert "policy_dependency_addition" not in ids
+    assert "policy_change_limit" not in ids

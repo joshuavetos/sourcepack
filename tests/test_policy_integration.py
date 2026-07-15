@@ -244,7 +244,7 @@ def test_policy_rule_package_manager_drift_fails_for_pnpm(tmp_path):
     code, data = report(tmp_path)
 
     assert code == 1
-    assert "policy_package_manager_drift" in finding_ids(data)
+    assert "policy_package_manager" in finding_ids(data)
 
 
 def test_policy_rule_package_manager_drift_allows_lockfile_deletion_for_pnpm(tmp_path):
@@ -256,7 +256,7 @@ def test_policy_rule_package_manager_drift_allows_lockfile_deletion_for_pnpm(tmp
     (tmp_path / "package-lock.json").unlink()
     _, data = report(tmp_path)
 
-    assert "policy_package_manager_drift" not in finding_ids(data)
+    assert "policy_package_manager" not in finding_ids(data)
 
 
 def test_policy_rule_missing_test_warns_and_test_change_satisfies(tmp_path):
@@ -272,12 +272,12 @@ def test_policy_rule_missing_test_warns_and_test_change_satisfies(tmp_path):
 
     (api_dir / "handler.py").write_text("VALUE = 2\n", encoding="utf-8")
     code, data = report(tmp_path)
-    assert code == 0
-    assert "policy_missing_test" in finding_ids(data)
+    assert code == 1
+    assert "policy_test_required" in finding_ids(data)
 
     (tests_dir / "test_handler.py").write_text("def test_value():\n    assert 2 == 2\n", encoding="utf-8")
     _, data = report(tmp_path)
-    assert "policy_missing_test" not in finding_ids(data)
+    assert "policy_test_required" not in finding_ids(data)
 
 
 def test_policy_rule_missing_test_blocks_in_ci(tmp_path):
@@ -292,7 +292,7 @@ def test_policy_rule_missing_test_blocks_in_ci(tmp_path):
     code, data = report_ci(tmp_path)
 
     assert code != 0
-    assert "policy_missing_test" in finding_ids(data)
+    assert "policy_test_required" in finding_ids(data)
 
 
 def test_policy_rule_large_diff_warns(tmp_path):
@@ -302,11 +302,11 @@ def test_policy_rule_large_diff_warns(tmp_path):
 
     code, data = report(tmp_path)
 
-    assert code == 0
-    assert "policy_large_diff" in finding_ids(data)
+    assert code == 1
+    assert "policy_change_limit" in finding_ids(data)
 
 
-def test_policy_large_diff_line_count_excludes_diff_file_headers():
+def test_policy_change_limit_line_count_excludes_diff_file_headers():
     from sourcepack.diff_parser import PatchFileChange
     from sourcepack.judgment import _policy_changed_line_count
 
@@ -334,7 +334,7 @@ def test_policy_rule_large_diff_blocks_in_ci(tmp_path):
     code, data = report_ci(tmp_path)
 
     assert code != 0
-    assert "policy_large_diff" in finding_ids(data)
+    assert "policy_change_limit" in finding_ids(data)
 
 
 def test_policy_rule_secret_pattern_ignores_placeholders(tmp_path):
@@ -399,3 +399,61 @@ def test_policy_rule_dependency_addition_uncertain_manifest_emits_existing_uncer
 
     assert "dependency_manifest_uncertain" in finding_ids(judgment.report)
     assert "policy_dependency_addition" not in finding_ids(judgment.report)
+
+
+def test_diff_required_org_policy_missing_is_structured_policy_fail(tmp_path):
+    init_repo(tmp_path)
+    cp = run(tmp_path, "diff", ".", "--json", "--exit-policy", "fail-only", "--org-policy-mode", "required")
+    data = json.loads(cp.stdout)
+    assert cp.returncode == 1
+    assert data["verdict"] == "FAIL"
+    findings = [f for f in data["findings"] if f["id"] == "policy_resolution_failed"]
+    assert len(findings) == 1
+    assert findings[0]["override_eligible"] is False
+    assert findings[0]["policy"]["organization_policy_status"] == "required_but_missing"
+    assert "org_policy_required_but_missing" in findings[0]["policy"]["errors"]
+    assert data["policy"]["resolution_status"] == "FAIL"
+
+
+def test_diff_external_org_policy_protected_path_authority(tmp_path):
+    init_repo(tmp_path)
+    org = tmp_path.parent / "org-diff-policy.json"
+    org.write_text(json.dumps({"schema_version": "sourcepack.org_policy.v1", "policy_id": "eng", "rules": {"protected_paths": ["app.py"]}}), encoding="utf-8")
+    (tmp_path / "app.py").write_text("print(2)\n", encoding="utf-8")
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    data = json.loads(cp.stdout)
+    finding = next(f for f in data["findings"] if f["id"] == "policy_protected_path")
+    assert cp.returncode == 1
+    assert finding["policy_authority"] == "organization"
+    assert finding["override_eligible"] is False
+    assert finding["policy"]["effective_policy_id"].startswith("epol_")
+    assert data["policy"]["organization_policy_status"] == "loaded"
+    assert data["policy"]["policy_finding_count"] == 1
+
+
+def test_repository_policy_finding_is_override_eligible_and_identity_binds_rule(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"protected_paths": ["app.py"]})
+    (tmp_path / "app.py").write_text("print(2)\n", encoding="utf-8")
+    _, data1 = report(tmp_path)
+    finding1 = next(f for f in data1["findings"] if f["id"] == "policy_protected_path")
+    assert finding1["policy_authority"] == "repository"
+    assert finding1["override_eligible"] is True
+    fid1 = finding1["finding_id"]
+    write_rules(tmp_path, {"protected_paths": ["*.py"]})
+    _, data2 = report(tmp_path)
+    finding2 = next(f for f in data2["findings"] if f["id"] == "policy_protected_path")
+    assert finding2["finding_id"] != fid1
+
+
+def test_policy_resolution_failure_preserves_core_findings(tmp_path):
+    init_repo(tmp_path)
+    org = tmp_path.parent / "bad-org-policy.json"
+    org.write_text("{", encoding="utf-8")
+    (tmp_path / "app.py").write_text("import fastapi\n", encoding="utf-8")
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    data = json.loads(cp.stdout)
+    ids = {f["id"] for f in data["findings"]}
+    assert cp.returncode == 1
+    assert "policy_resolution_failed" in ids
+    assert "unsupported_dependency" in ids

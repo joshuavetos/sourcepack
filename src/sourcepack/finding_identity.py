@@ -34,11 +34,12 @@ def finding_identity_payload(finding: dict[str, Any], *, report_schema_version: 
     evidence = _text(finding.get("evidence")) or _text(finding.get("missing_evidence"))
     command = None
     dependency = None
+    policy = finding.get("policy") if isinstance(finding.get("policy"), dict) else {}
     if category == "command" or reason_code.endswith("command"):
         command = evidence.lower() if evidence else None
     if category == "dependency" or "dependency" in reason_code:
         dependency = evidence.lower() if evidence else None
-    return {
+    payload = {
         "schema_version": FINDING_IDENTITY_SCHEMA_VERSION,
         "report_schema_version": report_schema_version,
         "category": category,
@@ -47,6 +48,13 @@ def finding_identity_payload(finding: dict[str, Any], *, report_schema_version: 
         "dependency": dependency,
         "command": command,
     }
+    if policy:
+        payload.update({
+            "policy_rule": policy.get("rule_name"),
+            "policy_rule_fingerprint": policy.get("rule_fingerprint"),
+            "policy_scope": policy.get("scope"),
+        })
+    return payload
 
 
 def finding_id_for(finding: dict[str, Any], *, report_schema_version: str = "traffic_report.v1") -> str:

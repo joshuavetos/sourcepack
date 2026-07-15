@@ -22,9 +22,17 @@ def _parse_time(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def finding_override_eligible(finding: dict[str, Any]) -> bool:
+    if finding.get("id") == "policy_resolution_failed":
+        return False
+    if finding.get("category") == "policy":
+        return finding.get("policy_authority") == "repository" and finding.get("override_eligible") is True
+    return True
+
+
 def find_target_finding(report: dict[str, Any], finding_id: str) -> dict[str, Any] | None:
     for finding in report.get("findings", []):
-        if isinstance(finding, dict) and finding.get("finding_id") == finding_id and finding.get("severity") == "error":
+        if isinstance(finding, dict) and finding.get("finding_id") == finding_id and finding.get("severity") == "error" and finding_override_eligible(finding):
             return finding
     return None
 

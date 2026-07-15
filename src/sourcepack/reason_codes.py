@@ -53,9 +53,10 @@ class ReasonCode(StrEnum):
     POLICY_CONFIG_WARNING = "policy_config_warning"
     POLICY_DEPENDENCY_ADDITION = "policy_dependency_addition"
     POLICY_PROTECTED_PATH = "policy_protected_path"
-    POLICY_PACKAGE_MANAGER_DRIFT = "policy_package_manager_drift"
-    POLICY_MISSING_TEST = "policy_missing_test"
-    POLICY_LARGE_DIFF = "policy_large_diff"
+    POLICY_RESOLUTION_FAILED = "policy_resolution_failed"
+    POLICY_PACKAGE_MANAGER = "policy_package_manager"
+    POLICY_TEST_REQUIRED = "policy_test_required"
+    POLICY_CHANGE_LIMIT = "policy_change_limit"
     POLICY_SECRET_PATTERN = "policy_secret_pattern"
 
 
@@ -64,6 +65,9 @@ _ALIASES = {
     "baseline-corrupt": ReasonCode.BASELINE_CORRUPT.value,
     "baseline-missing": ReasonCode.BASELINE_MISSING.value,
     "baseline-stale": ReasonCode.BASELINE_STALE.value,
+    "policy_package_manager_drift": ReasonCode.POLICY_PACKAGE_MANAGER.value,
+    "policy_missing_test": ReasonCode.POLICY_TEST_REQUIRED.value,
+    "policy_large_diff": ReasonCode.POLICY_CHANGE_LIMIT.value,
 }
 
 

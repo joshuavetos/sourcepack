@@ -937,3 +937,98 @@ def test_require_tests_matching_org_and_repo_patterns_is_mixed_authority(tmp_pat
     assert finding["policy_authority"] == "mixed"
     assert finding["override_eligible"] is False
     assert finding["policy"]["triggering_path"] == "src/api/handler.py"
+
+
+def test_repository_policy_protected_path_exact_allow_suppresses_and_recomputes_verdict(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"protected_paths": ["app.py"]})
+    assert run(tmp_path, "allow", "path", "app.py", "--reason", "repository policy reviewed").returncode == 0
+    (tmp_path / "app.py").write_text("print(2)\n", encoding="utf-8")
+
+    code, data = report(tmp_path)
+
+    assert code == 0
+    assert data["verdict"] == "PASS"
+    assert "policy_protected_path" not in finding_ids(data)
+    assert data["policy"]["policy_finding_count"] == 0
+    assert data["policy_rule_findings"] == []
+    assert data["policy_overrides"][0]["suppressed_finding"] == "policy_protected_path"
+    assert data["policy_overrides"][0]["value"] == "app.py"
+
+
+def test_local_allow_does_not_suppress_org_mixed_or_resolution_policy_findings(tmp_path):
+    init_repo(tmp_path)
+    assert run(tmp_path, "allow", "path", "app.py", "--reason", "local review").returncode == 0
+    org = tmp_path.parent / "org-allow-unsuppressible.json"
+    write_org_policy_file(org, {"protected_paths": ["app.py"]})
+    (tmp_path / "app.py").write_text("print(2)\n", encoding="utf-8")
+
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    org_data = json.loads(cp.stdout)
+    assert cp.returncode == 1
+    assert policy_finding(org_data, "policy_protected_path")["policy_authority"] == "organization"
+    assert not org_data.get("policy_overrides")
+
+    write_rules(tmp_path, {"protected_paths": ["*.py"]})
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    mixed_data = json.loads(cp.stdout)
+    assert cp.returncode == 1
+    assert policy_finding(mixed_data, "policy_protected_path")["policy_authority"] == "mixed"
+    assert not mixed_data.get("policy_overrides")
+
+    bad = tmp_path.parent / "bad-allow-unsuppressible.json"
+    bad.write_text("{", encoding="utf-8")
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(bad))
+    failed_data = json.loads(cp.stdout)
+    assert cp.returncode == 1
+    assert [f["id"] for f in failed_data["findings"]].count("policy_resolution_failed") == 1
+    assert not failed_data.get("policy_overrides")
+
+
+def test_local_allow_non_policy_behavior_still_suppresses_dependency(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "app.py").write_text("import fastapi\n", encoding="utf-8")
+    assert run(tmp_path, "allow", "dependency", "fastapi", "--reason", "reviewed").returncode == 0
+
+    code, data = report(tmp_path)
+
+    assert code == 0
+    assert data["verdict"] == "PASS"
+    assert "unsupported_dependency" not in finding_ids(data)
+    assert data["policy_overrides"][0]["suppressed_finding"] == "unsupported_dependency"
+
+
+def test_stale_baseline_preserves_single_policy_finding_and_metadata(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"protected_paths": ["app.py"]})
+    (tmp_path / ".sourcepack" / "state" / "baseline_stale.json").write_text('{"reason":"test"}', encoding="utf-8")
+    (tmp_path / "app.py").write_text("print(2)\n", encoding="utf-8")
+
+    code, data = report(tmp_path)
+
+    policy_findings = [f for f in data["findings"] if f["id"] == "policy_protected_path"]
+    assert code == 1
+    assert data["verdict"] == "FAIL"
+    assert len(policy_findings) == 1
+    assert data["policy"]["policy_finding_count"] == 1
+    assert [f["id"] for f in data["policy_rule_findings"]] == ["policy_protected_path"]
+    assert "baseline_stale" in finding_ids(data)
+
+
+def test_stale_baseline_preserves_single_policy_resolution_failure(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / ".sourcepack" / "state" / "baseline_stale.json").write_text('{"reason":"test"}', encoding="utf-8")
+    (tmp_path / "app.py").write_text("print(2)\n", encoding="utf-8")
+    bad = tmp_path.parent / "bad-stale-org.json"
+    bad.write_text("{", encoding="utf-8")
+
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(bad))
+    data = json.loads(cp.stdout)
+
+    resolution_findings = [f for f in data["findings"] if f["id"] == "policy_resolution_failed"]
+    assert cp.returncode == 1
+    assert data["verdict"] == "FAIL"
+    assert len(resolution_findings) == 1
+    assert data["policy"]["policy_finding_count"] == 1
+    assert [f["id"] for f in data["policy_rule_findings"]] == ["policy_resolution_failed"]
+    assert "baseline_stale" in finding_ids(data)

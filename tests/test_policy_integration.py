@@ -3,6 +3,7 @@ import subprocess
 import sys
 
 
+
 def run(repo, *args):
     return subprocess.run([sys.executable, "-m", "sourcepack.cli", *args], cwd=repo, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -457,3 +458,215 @@ def test_policy_resolution_failure_preserves_core_findings(tmp_path):
     assert cp.returncode == 1
     assert "policy_resolution_failed" in ids
     assert "unsupported_dependency" in ids
+
+
+
+def write_org_policy_file(path, rules):
+    path.write_text(json.dumps({"schema_version": "sourcepack.org_policy.v1", "policy_id": "eng", "rules": rules}), encoding="utf-8")
+
+
+def policy_finding(data, reason):
+    return next(f for f in data["findings"] if f["id"] == reason)
+
+
+def remove_active_baseline(repo):
+    active = repo / ".sourcepack" / "baseline" / "active.json"
+    if active.exists():
+        active.unlink()
+
+
+def corrupt_active_baseline(repo):
+    active = repo / ".sourcepack" / "baseline" / "active.json"
+    active.parent.mkdir(parents=True, exist_ok=True)
+    active.write_text("{", encoding="utf-8")
+
+
+def test_scalar_boolean_org_false_repo_true_dependency_is_repository_authority(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = []\n", encoding="utf-8")
+    trust_current_repo(tmp_path)
+    write_rules(tmp_path, {"block_dependency_additions": True})
+    org = tmp_path.parent / "org-false-deps.json"
+    write_org_policy_file(org, {"block_dependency_additions": False})
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = ['requests']\n", encoding="utf-8")
+
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    data = json.loads(cp.stdout)
+    finding = policy_finding(data, "policy_dependency_addition")
+
+    assert cp.returncode == 1
+    assert finding["policy_authority"] == "repository"
+    assert finding["override_eligible"] is True
+
+
+def test_scalar_boolean_org_false_repo_true_secret_is_repository_authority(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"block_secret_patterns": True})
+    org = tmp_path.parent / "org-false-secrets.json"
+    write_org_policy_file(org, {"block_secret_patterns": False})
+    (tmp_path / "app.py").write_text("token = 'abcdefghijklmnopqrstuvwxyz'\n", encoding="utf-8")
+
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    data = json.loads(cp.stdout)
+    finding = policy_finding(data, "policy_secret_pattern")
+
+    assert finding["policy_authority"] == "repository"
+    assert finding["override_eligible"] is True
+
+
+def test_scalar_boolean_org_true_repo_true_dependency_is_mixed_authority(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = []\n", encoding="utf-8")
+    trust_current_repo(tmp_path)
+    write_rules(tmp_path, {"block_dependency_additions": True})
+    org = tmp_path.parent / "org-true-deps.json"
+    write_org_policy_file(org, {"block_dependency_additions": True})
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = ['requests']\n", encoding="utf-8")
+
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    data = json.loads(cp.stdout)
+    finding = policy_finding(data, "policy_dependency_addition")
+
+    assert finding["policy_authority"] == "mixed"
+    assert finding["override_eligible"] is False
+
+
+def test_scalar_boolean_org_only_true_dependency_is_organization_authority(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = []\n", encoding="utf-8")
+    trust_current_repo(tmp_path)
+    org = tmp_path.parent / "org-only-true-deps.json"
+    write_org_policy_file(org, {"block_dependency_additions": True})
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = ['requests']\n", encoding="utf-8")
+
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    data = json.loads(cp.stdout)
+    finding = policy_finding(data, "policy_dependency_addition")
+
+    assert finding["policy_authority"] == "organization"
+    assert finding["override_eligible"] is False
+
+
+def test_max_changed_lines_repo_strengthening_is_repository_authority(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"max_changed_lines": 1})
+    org = tmp_path.parent / "org-max-500.json"
+    write_org_policy_file(org, {"max_changed_lines": 500})
+    (tmp_path / "README.md").write_text("demo\nline 2\nline 3\n", encoding="utf-8")
+
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    data = json.loads(cp.stdout)
+    finding = policy_finding(data, "policy_change_limit")
+
+    assert finding["policy_authority"] == "repository"
+    assert finding["override_eligible"] is True
+
+
+def test_max_changed_lines_equal_values_are_mixed_authority(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"max_changed_lines": 1})
+    org = tmp_path.parent / "org-max-1.json"
+    write_org_policy_file(org, {"max_changed_lines": 1})
+    (tmp_path / "README.md").write_text("demo\nline 2\nline 3\n", encoding="utf-8")
+
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    data = json.loads(cp.stdout)
+    finding = policy_finding(data, "policy_change_limit")
+
+    assert finding["policy_authority"] == "mixed"
+    assert finding["override_eligible"] is False
+
+
+def test_max_changed_lines_repo_only_and_org_only_authority(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"max_changed_lines": 1})
+    (tmp_path / "README.md").write_text("demo\nline 2\nline 3\n", encoding="utf-8")
+    _, repo_data = report(tmp_path)
+    assert policy_finding(repo_data, "policy_change_limit")["policy_authority"] == "repository"
+
+    repo = tmp_path / "orgonly"
+    repo.mkdir()
+    init_repo(repo)
+    org = tmp_path / "org-only-max.json"
+    write_org_policy_file(org, {"max_changed_lines": 1})
+    (repo / "README.md").write_text("demo\nline 2\nline 3\n", encoding="utf-8")
+    cp = run(repo, "diff", ".", "--json", "--org-policy", str(org))
+    org_data = json.loads(cp.stdout)
+    assert policy_finding(org_data, "policy_change_limit")["policy_authority"] == "organization"
+
+
+def test_actor_text_cannot_forge_organization_policy_override(tmp_path):
+    from sourcepack.overrides import create_override
+
+    init_repo(tmp_path)
+    org = tmp_path.parent / "org-protected-app.json"
+    write_org_policy_file(org, {"protected_paths": ["app.py"]})
+    (tmp_path / "app.py").write_text("print(2)\n", encoding="utf-8")
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    data = json.loads(cp.stdout)
+    finding = policy_finding(data, "policy_protected_path")
+
+    assert finding["policy_authority"] == "organization"
+    try:
+        create_override(report=data, report_path=tmp_path / ".sourcepack" / "reports" / "latest.json", target_finding_id=finding["finding_id"], actor="repository-admin", reason="actor text must not change policy authority", scope="path")
+    except ValueError as exc:
+        assert "override target" in str(exc)
+    else:
+        raise AssertionError("actor text must not make organization policy findings overrideable")
+
+
+def test_baseline_missing_plus_protected_path_preserves_both_findings(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"protected_paths": ["app.py"]})
+    remove_active_baseline(tmp_path)
+    (tmp_path / "app.py").write_text("print(2)\n", encoding="utf-8")
+
+    code, data = report(tmp_path)
+    ids = [f["id"] for f in data["findings"]]
+
+    assert code == 1
+    assert ids.count("policy_protected_path") == 1
+    assert "baseline_missing" in ids
+
+
+def test_baseline_corrupt_plus_secret_pattern_preserves_both_findings(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"block_secret_patterns": True})
+    corrupt_active_baseline(tmp_path)
+    (tmp_path / "app.py").write_text("token = 'abcdefghijklmnopqrstuvwxyz'\n", encoding="utf-8")
+
+    code, data = report(tmp_path)
+    ids = [f["id"] for f in data["findings"]]
+
+    assert code == 1
+    assert ids.count("policy_secret_pattern") == 1
+    assert "baseline_corrupt" in ids
+
+
+def test_baseline_missing_plus_change_limit_preserves_both_findings(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"max_changed_lines": 1})
+    remove_active_baseline(tmp_path)
+    (tmp_path / "README.md").write_text("demo\nline 2\nline 3\n", encoding="utf-8")
+
+    code, data = report(tmp_path)
+    ids = [f["id"] for f in data["findings"]]
+
+    assert code == 1
+    assert ids.count("policy_change_limit") == 1
+    assert "baseline_missing" in ids
+
+
+def test_baseline_missing_does_not_guess_dependency_additions(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"block_dependency_additions": True})
+    remove_active_baseline(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = ['requests']\n", encoding="utf-8")
+
+    code, data = report(tmp_path)
+    ids = [f["id"] for f in data["findings"]]
+
+    assert code == 1
+    assert "baseline_missing" in ids
+    assert "policy_dependency_addition" not in ids
+    assert data["verdict"] == "FAIL"

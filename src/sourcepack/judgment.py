@@ -1812,15 +1812,56 @@ def _rule_semantic_hash(rule_name: str, value: object) -> str:
     return "sha256:" + sha256_text(json.dumps({"rule": rule_name, "value": value}, sort_keys=True, separators=(",", ":")))
 
 
+def _authority_from_sources(sources: list[str]) -> str:
+    source_set = set(sources)
+    if {"organization", "repository"}.issubset(source_set):
+        return "mixed"
+    if "organization" in source_set:
+        return "organization"
+    return "repository"
+
+
 def _policy_authority_for_rule(result: dict, rule_name: str, *, value: object | None = None) -> str:
     rule = result.get("rules", {}).get(rule_name, {}) if isinstance(result.get("rules"), dict) else {}
     provenance = rule.get("provenance") if isinstance(rule.get("provenance"), dict) else {}
-    sources: list[str] = []
-    if value is not None and isinstance(provenance.get(str(value)), list):
-        sources = [str(x) for x in provenance.get(str(value), [])]
-    elif isinstance(provenance.get("sources"), list):
-        sources = [str(x) for x in provenance.get("sources", [])]
-    return "mixed" if {"organization", "repository"}.issubset(set(sources)) else "organization" if "organization" in sources else "repository"
+    org_value = rule.get("organization_constraint")
+    repo_value = rule.get("repository_contribution")
+    effective_value = rule.get("effective_value")
+
+    if rule_name in {"protected_paths", "require_tests_for"}:
+        sources: list[str] = []
+        if value is not None and isinstance(provenance.get(str(value)), list):
+            sources = [str(x) for x in provenance.get(str(value), [])]
+        elif isinstance(provenance.get("sources"), list):
+            sources = [str(x) for x in provenance.get("sources", [])]
+        return _authority_from_sources(sources)
+
+    if rule_name in {"block_dependency_additions", "block_secret_patterns"}:
+        sources = []
+        if org_value is True:
+            sources.append("organization")
+        if repo_value is True:
+            sources.append("repository")
+        return _authority_from_sources(sources)
+
+    if rule_name == "max_changed_lines":
+        sources = []
+        if org_value == effective_value:
+            sources.append("organization")
+        if repo_value == effective_value:
+            sources.append("repository")
+        return _authority_from_sources(sources)
+
+    if rule_name == "package_manager":
+        sources = []
+        if org_value == effective_value:
+            sources.append("organization")
+        if repo_value == effective_value:
+            sources.append("repository")
+        return _authority_from_sources(sources)
+
+    sources = [str(x) for x in provenance.get("sources", [])] if isinstance(provenance.get("sources"), list) else []
+    return _authority_from_sources(sources)
 
 
 def _policy_metadata_for_finding(result: dict, rule_name: str, effective_value: object, authority: str, *, scope: str, provenance: object | None = None) -> dict:
@@ -1849,7 +1890,7 @@ def _policy_rules_enabled(effective: dict) -> bool:
     return any(effective.get(k) for k in ("block_dependency_additions", "protected_paths", "package_manager", "require_tests_for", "max_changed_lines", "block_secret_patterns"))
 
 
-def _policy_rule_findings(repo: Path, packet_path: Path, diff_text: str, policy_result: dict) -> list[dict]:
+def _policy_rule_findings(repo: Path, packet_path: Path | None, diff_text: str, policy_result: dict) -> list[dict]:
     effective = policy_result.get("effective_policy", {}) if isinstance(policy_result.get("effective_policy"), dict) else {}
     if not _policy_rules_enabled(effective) or not diff_text.strip():
         return []
@@ -1947,7 +1988,7 @@ def _policy_rule_findings(repo: Path, packet_path: Path, diff_text: str, policy_
                     ), policy_result, "block_secret_patterns", True, _policy_authority_for_rule(policy_result, "block_secret_patterns"), scope=change.path or "repository", extra={"secret_pattern_class": "credential_assignment", "match_count": 1}))
                     break
 
-    if effective.get("block_dependency_additions") is True:
+    if effective.get("block_dependency_additions") is True and packet_path is not None:
         manifest = load_manifest(packet_path)
         contents = _packet_file_contents(packet_path)
         existing = _declared_dependency_names_by_ecosystem(manifest, packet_path)
@@ -1994,7 +2035,7 @@ def _apply_policy_rules(repo: Path, packet_path: Path | None, diff_text: str, re
     findings = []
     if policy_result.get("resolution_status") != "PASS":
         findings.append(_policy_resolution_failure_finding(policy_result))
-    elif packet_path is not None:
+    else:
         findings = _policy_rule_findings(repo, packet_path, diff_text, policy_result)
     rebuilt = _rebuild_from_findings(rep, list(rep.get("findings", [])) + findings) if findings else dict(rep)
     rebuilt["policy"] = _policy_report_metadata(policy_result, len(findings))

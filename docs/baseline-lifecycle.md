@@ -143,10 +143,10 @@ Rule authority is explicit rather than a generic merge:
 | --- | --- | --- | --- |
 | `block_dependency_additions` | `false < true` boolean OR | organization OR repository | repository `false` against organization `true` is a rejected weakening |
 | `block_secret_patterns` | `false < true` boolean OR | organization OR repository | repository `false` against organization `true` is a rejected weakening |
-| `protected_paths` | normalized set union | deterministic union | unsafe organization patterns fail; repository omissions cannot remove organization patterns |
-| `require_tests_for` | normalized set union | deterministic union | unsafe organization patterns fail; repository omissions cannot remove organization patterns |
+| `protected_paths` | normalized set union | deterministic union | invalid non-normalizable organization patterns fail; repository omissions cannot remove organization patterns |
+| `require_tests_for` | normalized set union | deterministic union | invalid non-normalizable organization patterns fail; repository omissions cannot remove organization patterns |
 | `max_changed_lines` | lower positive integer is stricter; absent means no limit | strictest supplied value | higher repository maximum than organization maximum is a rejected weakening |
-| `package_manager` | string equality, no ordering | equal or only supplied value | differing non-null values are a conflict |
+| `package_manager` | supported string equality, no ordering; currently `pnpm` only | equal or only supplied supported value | unsupported values fail as invalid policy; differing supported non-null values are a conflict |
 
 Any rejected weakening attempt is preserved in the result with the rule name, organization value, attempted repository value, comparison method, and reason; resolution returns `FAIL` and exits nonzero. Package-manager conflicts also return `FAIL` and exit nonzero. Unknown organization-policy rules fail closed.
 

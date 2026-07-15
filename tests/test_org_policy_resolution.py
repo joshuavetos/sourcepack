@@ -144,9 +144,10 @@ def test_numeric_and_package_manager_semantics(tmp_path):
     write_org(org, {"package_manager": "pnpm"}); write_repo_policy(tmp_path, {"package_manager": "pnpm"})
     cp, data = resolve_json(tmp_path, "--org-policy", str(org))
     assert cp.returncode == 0
-    write_repo_policy(tmp_path, {"package_manager": "npm"})
+    write_org(org, {"package_manager": "npm"})
     cp, data = resolve_json(tmp_path, "--org-policy", str(org))
-    assert cp.returncode != 0 and data["conflicts"][0]["comparison_method"] == "string_equality_no_ordering"
+    assert cp.returncode != 0
+    assert "org_policy_rule_invalid:unsupported_package_manager:npm" in data["errors"]
 
 
 def test_deterministic_json_identity_and_no_paths_in_identity_material(tmp_path):
@@ -236,3 +237,43 @@ def test_cannot_determine_canonical_repository_root_fails_closed(tmp_path):
     assert cp.returncode != 0
     assert data["resolution_status"] == "FAIL"
     assert any("repository_root_unresolved" in error for error in data["errors"])
+
+
+
+def test_package_manager_supported_domain_and_invalid_outputs(tmp_path):
+    org = tmp_path.parent / "org-pm-supported.json"
+    write_org(org, {"package_manager": "pnpm"})
+    cp, data = resolve_json(tmp_path, "--org-policy", str(org))
+    assert cp.returncode == 0
+    assert data["effective_policy"]["package_manager"] == "pnpm"
+    for value in ["npm", "banana"]:
+        org = tmp_path.parent / f"org-pm-{value}.json"
+        write_org(org, {"package_manager": value})
+        cp, data = resolve_json(tmp_path, "--org-policy", str(org))
+        assert cp.returncode != 0
+        assert data["resolution_status"] == "FAIL"
+        assert f"org_policy_rule_invalid:unsupported_package_manager:{value}" in data["errors"]
+        assert "package_manager" not in data["effective_policy"]
+        human = run_cli(tmp_path, "policy", "resolve", str(tmp_path), "--org-policy", str(org))
+        assert human.returncode != 0
+        assert f"org_policy_rule_invalid:unsupported_package_manager:{value}" in human.stdout
+
+
+def test_unsupported_repository_package_manager_fails_without_effective_value(tmp_path):
+    write_repo_policy(tmp_path, {"package_manager": "npm"})
+    cp, data = resolve_json(tmp_path)
+    assert cp.returncode != 0
+    assert data["resolution_status"] == "FAIL"
+    assert "repository_policy_rule_invalid:unsupported_package_manager:npm" in data["errors"]
+    assert "package_manager" not in data["effective_policy"]
+
+
+def test_unsupported_repository_package_manager_does_not_mask_invalid_value_as_conflict(tmp_path):
+    org = tmp_path.parent / "org-pnpm-repo-banana.json"
+    write_org(org, {"package_manager": "pnpm"})
+    write_repo_policy(tmp_path, {"package_manager": "banana"})
+    cp, data = resolve_json(tmp_path, "--org-policy", str(org))
+    assert cp.returncode != 0
+    assert "repository_policy_rule_invalid:unsupported_package_manager:banana" in data["errors"]
+    assert data["conflicts"] == []
+    assert data["effective_policy"]["package_manager"] == "pnpm"

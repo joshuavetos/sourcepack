@@ -432,6 +432,8 @@ def finding_ignored_by_policy(finding: dict, config: PolicyConfig) -> dict | Non
 
 ORG_POLICY_SCHEMA_VERSION = "sourcepack.org_policy.v1"
 EFFECTIVE_POLICY_SCHEMA_VERSION = "sourcepack.effective_policy.v1"
+SUPPORTED_PACKAGE_MANAGERS = frozenset({"pnpm"})
+
 _POLICY_RULE_NAMES = (
     "block_dependency_additions",
     "block_secret_patterns",
@@ -506,9 +508,12 @@ def _validate_rule_value(rule: str, value: object, source: str) -> tuple[object 
             return value, None
         return None, f"{source}_rule_invalid:max_changed_lines_must_be_positive_integer"
     if rule == "package_manager":
-        if isinstance(value, str) and value.strip():
-            return value.strip().lower(), None
-        return None, f"{source}_rule_invalid:package_manager_must_be_string"
+        if not isinstance(value, str) or not value.strip():
+            return None, f"{source}_rule_invalid:package_manager_must_be_string"
+        normalized = value.strip().lower()
+        if normalized in SUPPORTED_PACKAGE_MANAGERS:
+            return normalized, None
+        return None, f"{source}_rule_invalid:unsupported_package_manager:{normalized}"
     return None, f"{source}_rule_unknown:{rule}"
 
 
@@ -555,12 +560,6 @@ def _repo_rules_from_file(path: Path) -> tuple[dict, list[str], object | None, s
     if err or not isinstance(raw, dict):
         return {}, [], raw, byte_hash
     rules, errors = _rules_from_policy(raw.get("rules", {}), "repository_policy", fail_unknown=False)
-    # Repository-local policy validation historically warns about unsupported package
-    # managers instead of failing. Policy resolution must still see the raw non-empty
-    # string so organization equality/conflict authority cannot be bypassed.
-    raw_rules = raw.get("rules", {})
-    if isinstance(raw_rules, dict) and "package_manager" in raw_rules and isinstance(raw_rules["package_manager"], str) and raw_rules["package_manager"].strip():
-        rules["package_manager"] = raw_rules["package_manager"].strip().lower()
     return rules, errors, raw, byte_hash
 
 

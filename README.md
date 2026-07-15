@@ -247,6 +247,8 @@ sourcepack evidence clear
 sourcepack evidence export --json
 sourcepack policy validate .
 sourcepack policy validate . --json
+sourcepack policy resolve .
+sourcepack policy resolve . --org-policy ../org-policy.json --json
 sourcepack fleet summarize .sourcepack/reports --json
 sourcepack fleet summarize <decision-ledger.jsonl> --input-type ledgers --json
 ```
@@ -365,8 +367,8 @@ Core judgment behavior is validated. Packaging, reports, demos, CI behavior, and
 
 SourcePack currently has a repository-local policy configuration at `.sourcepack/policy.json` validated by `sourcepack policy validate`. The established repository policy schema is `sourcepack.policy.v1`; supported local rule fields are block_dependency_additions (boolean), protected_paths (normalized path-pattern list), package_manager (currently `pnpm` only), require_tests_for (normalized path-pattern list), max_changed_lines (positive integer), and block_secret_patterns (boolean). SourcePack also has a local allow-list file at `.sourcepack/policy/allow.jsonl` managed by `sourcepack allow`/`sourcepack policy list`.
 
-No organization-policy source mechanism is currently established in this repository. Because SourcePack has no canonical organization-policy path, option, environment variable, schema, or documented owner boundary, Milestone I organization-policy resolution is not implemented here. Strengthening, weakening, compatibility, and conflict semantics for organization-vs-repository rule comparison remain undefined product decisions. Milestone J policy findings are not implemented.
+Milestone I organization-policy resolution is implemented as an explicit local resolver. Milestone J policy findings are not implemented.
 
-Local policy resolution commands fail closed when existing validation finds malformed repository policy JSON or unsupported repository policy shapes. Absence of optional repository policy remains informational and exits `0` for `sourcepack policy validate`.
+Local policy validation fails closed when existing validation finds malformed repository policy JSON or unsupported repository policy shapes. Absence of optional repository policy remains informational and exits `0` for `sourcepack policy validate`. Organization policy resolution is available with `sourcepack policy resolve [repo] [--org-policy <path>] [--org-policy-mode optional|required]`. The organization policy schema is `sourcepack.org_policy.v1`; effective-policy output uses `sourcepack.effective_policy.v1`. The organization policy file must be explicit caller-designated local input outside the evaluated repository after symlink resolution. It remains unsigned in Milestone I: SourcePack does not fetch remote policy, authenticate publishers, verify organization identity, provide hosted policy/RBAC/cloud distribution, or emit Milestone J patch findings.
 
 SourcePack policy is local-only: it does not fetch hosted policy, authenticate users, claim RBAC enforcement, or distribute organization policy automatically.

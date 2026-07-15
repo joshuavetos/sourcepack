@@ -112,3 +112,50 @@ Validate policy config directly with `sourcepack policy validate [repo]` or `sou
 Replay is read-only. It does not require `.sourcepack/baseline/`, `.sourcepack/prompt/`, Git, or live repository state, and it does not rerun `sourcepack diff` judgment or scanning over the current working tree. Replay reconstructs saved report or bundle content only; it does not prove correctness, security, runtime success, dependency safety, semantic validity, external API truth, or user intent.
 
 `sourcepack diff` checks current changes against the trusted baseline and may write reports. `sourcepack replay` only reads an existing report or bundle and reports `reran_judgment: false`.
+
+## Organization policy resolution v1
+
+`sourcepack policy resolve [repo]` resolves repository-local policy with an optional caller-designated organization policy. The command is read-only: it does not create, refresh, repair, replace, bless, or activate baseline state; it does not write decision-ledger events; it does not create overrides; and it does not emit policy findings into patch judgment. Milestone J policy findings are not implemented by this command.
+
+Organization policy must be supplied explicitly with `--org-policy <path>`. SourcePack does not discover organization policy inside the repository, does not use a magic global path or environment variable as policy authority, does not fetch policy from a network or hosted service, and does not implement signing, publisher authentication, RBAC, dashboards, cloud distribution, or organization identity claims.
+
+The organization policy file is unsigned caller-designated local authority. SourcePack verifies local path boundaries, file bytes, content hash, schema, and rule provenance. It does not prove operating-system ownership, filesystem permissions, CI secret integrity, workflow administrator identity, cryptographic publisher identity, tamper-proof distribution, or a verified organization identity.
+
+The trust boundary is repository-external. SourcePack resolves the repository root canonically, resolves the organization-policy path canonically with symlinks followed, rejects missing paths, rejects directories, rejects unreadable or malformed JSON, rejects unsupported schemas, and rejects any supplied path whose resolved target is inside the evaluated repository. A symlink outside the repository that resolves back inside the repository is rejected; a symlink that resolves to a valid external file is accepted.
+
+Requirement mode is controlled by `--org-policy-mode optional|required`; the default is `optional` for backward-compatible repository-only resolution. In optional mode, omitting `--org-policy` succeeds when repository policy is valid and records `organization_policy_status: not_supplied`. In required mode, omitting `--org-policy` fails nonzero and records `organization_policy_status: required_but_missing`. Other statuses include `loaded`, `invalid`, and `trust_boundary_violation`.
+
+Organization policy schema `sourcepack.org_policy.v1` is distinct from repository policy schema `sourcepack.policy.v1`:
+
+```json
+{
+  "schema_version": "sourcepack.org_policy.v1",
+  "policy_id": "engineering-default",
+  "rules": {}
+}
+```
+
+Effective-policy JSON uses schema `sourcepack.effective_policy.v1` and includes the PASS/FAIL policy-resolution verdict, organization-policy mode and status, organization and repository source metadata, hashes when supplied, effective rules, per-rule provenance, comparison methods, organization constraints, repository contributions, rejected weakening attempts, conflicts, errors, and a deterministic `epol_` effective-policy ID. Absolute paths, checkout roots, timestamps, JSON whitespace, input key order, and CLI path spelling are excluded from the identity material.
+
+Rule authority is explicit rather than a generic merge:
+
+| Rule | Comparison method | Effective value | Failure behavior |
+| --- | --- | --- | --- |
+| `block_dependency_additions` | `false < true` boolean OR | organization OR repository | repository `false` against organization `true` is a rejected weakening |
+| `block_secret_patterns` | `false < true` boolean OR | organization OR repository | repository `false` against organization `true` is a rejected weakening |
+| `protected_paths` | normalized set union | deterministic union | unsafe organization patterns fail; repository omissions cannot remove organization patterns |
+| `require_tests_for` | normalized set union | deterministic union | unsafe organization patterns fail; repository omissions cannot remove organization patterns |
+| `max_changed_lines` | lower positive integer is stricter; absent means no limit | strictest supplied value | higher repository maximum than organization maximum is a rejected weakening |
+| `package_manager` | string equality, no ordering | equal or only supplied value | differing non-null values are a conflict |
+
+Any rejected weakening attempt is preserved in the result with the rule name, organization value, attempted repository value, comparison method, and reason; resolution returns `FAIL` and exits nonzero. Package-manager conflicts also return `FAIL` and exit nonzero. Unknown organization-policy rules fail closed.
+
+Examples:
+
+```bash
+sourcepack policy resolve .
+sourcepack policy resolve . --json
+sourcepack policy resolve . --org-policy ../org-policy.json
+sourcepack policy resolve . --org-policy ../org-policy.json --json
+sourcepack policy resolve . --org-policy ../org-policy.json --org-policy-mode required
+```

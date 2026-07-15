@@ -863,3 +863,77 @@ def test_early_failure_does_not_guess_policy_rules_without_diff(tmp_path, monkey
     assert "policy_protected_path" not in ids
     assert "policy_dependency_addition" not in ids
     assert "policy_change_limit" not in ids
+
+
+def test_resolution_failure_identity_ignores_effective_policy_id_and_array_ordering():
+    from sourcepack.judgment import _policy_resolution_failure_finding
+    from sourcepack.reports.json import traffic_report
+
+    first = {
+        "schema_version": "sourcepack.effective_policy.v1",
+        "effective_policy_id": "epol_order_a",
+        "organization_policy_mode": "optional",
+        "organization_policy_status": "loaded",
+        "organization_policy_id": "eng",
+        "organization_policy_hash": "sha256:org",
+        "repository_policy_hash": "sha256:repo",
+        "errors": ["z_error", "a_error", "a_error"],
+        "conflicts": [
+            {"rule": "package_manager", "organization_value": "pnpm", "repository_value": "npm"},
+            {"rule": "future", "organization_value": 1, "repository_value": 2},
+        ],
+        "rejected_weakening_attempts": [
+            {"rule": "max_changed_lines", "organization_value": 200, "repository_value": 500},
+            {"rule": "block_secret_patterns", "organization_value": True, "repository_value": False},
+        ],
+    }
+    second = dict(
+        first,
+        effective_policy_id="epol_order_b",
+        errors=["a_error", "z_error"],
+        conflicts=list(reversed(first["conflicts"])),
+        rejected_weakening_attempts=list(reversed(first["rejected_weakening_attempts"])),
+    )
+
+    first_finding = traffic_report("FAIL", findings=[_policy_resolution_failure_finding(first)])["findings"][0]
+    second_finding = traffic_report("FAIL", findings=[_policy_resolution_failure_finding(second)])["findings"][0]
+
+    assert first_finding["policy"]["effective_policy_id"] != second_finding["policy"]["effective_policy_id"]
+    assert first_finding["policy"]["resolution_fingerprint"] == second_finding["policy"]["resolution_fingerprint"]
+    assert first_finding["finding_id"] == second_finding["finding_id"]
+
+
+def test_protected_path_matching_org_and_repo_patterns_is_mixed_authority(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"protected_paths": ["*.py"]})
+    org = tmp_path.parent / "org-protected-mixed-patterns.json"
+    write_org_policy_file(org, {"protected_paths": ["app.*"]})
+    (tmp_path / "app.py").write_text("print(2)\n", encoding="utf-8")
+
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    data = json.loads(cp.stdout)
+    finding = policy_finding(data, "policy_protected_path")
+
+    assert finding["policy_authority"] == "mixed"
+    assert finding["override_eligible"] is False
+    assert sorted(finding["policy"]["matching_patterns"]) == ["*.py", "app.*"]
+
+
+def test_require_tests_matching_org_and_repo_patterns_is_mixed_authority(tmp_path):
+    init_repo(tmp_path)
+    src = tmp_path / "src" / "api"
+    src.mkdir(parents=True)
+    (src / "handler.py").write_text("VALUE = 1\n", encoding="utf-8")
+    trust_current_repo(tmp_path)
+    write_rules(tmp_path, {"require_tests_for": ["src/api/**"]})
+    org = tmp_path.parent / "org-tests-mixed-patterns.json"
+    write_org_policy_file(org, {"require_tests_for": ["src/**"]})
+    (src / "handler.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    data = json.loads(cp.stdout)
+    finding = policy_finding(data, "policy_test_required")
+
+    assert finding["policy_authority"] == "mixed"
+    assert finding["override_eligible"] is False
+    assert finding["policy"]["triggering_path"] == "src/api/handler.py"

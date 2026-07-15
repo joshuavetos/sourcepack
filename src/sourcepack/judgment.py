@@ -1868,6 +1868,17 @@ def _policy_authority_for_rule(result: dict, rule_name: str, *, value: object | 
     return _authority_from_sources(sources)
 
 
+def _policy_authority_for_matching_values(result: dict, rule_name: str, values: list[str]) -> str:
+    sources: list[str] = []
+    for value in values:
+        authority = _policy_authority_for_rule(result, rule_name, value=value)
+        if authority == "mixed":
+            sources.extend(["organization", "repository"])
+        else:
+            sources.append(authority)
+    return _authority_from_sources(sources)
+
+
 def _policy_metadata_for_finding(result: dict, rule_name: str, effective_value: object, authority: str, *, scope: str, provenance: object | None = None) -> dict:
     return {
         "effective_policy_id": result.get("effective_policy_id"),
@@ -1914,7 +1925,7 @@ def _policy_rule_findings(repo: Path, packet_path: Path | None, diff_text: str, 
     for path in protected_check_paths:
         matches = [pattern for pattern in effective.get("protected_paths", []) if policy_path_matches(path, pattern)]
         if matches:
-            authority = "mixed" if any(_policy_authority_for_rule(policy_result, "protected_paths", value=m) == "mixed" for m in matches) else "organization" if any(_policy_authority_for_rule(policy_result, "protected_paths", value=m) == "organization" for m in matches) else "repository"
+            authority = _policy_authority_for_matching_values(policy_result, "protected_paths", matches)
             findings.append(_annotate_policy_finding(normalized_finding(
                     "policy_protected_path",
                     "error",
@@ -1967,7 +1978,7 @@ def _policy_rule_findings(repo: Path, packet_path: Path | None, diff_text: str, 
                     continue
                 matches = [pattern for pattern in effective.get("require_tests_for", []) if policy_path_matches(path, pattern)]
                 if matches:
-                    authority = "mixed" if any(_policy_authority_for_rule(policy_result, "require_tests_for", value=m) == "mixed" for m in matches) else "organization" if any(_policy_authority_for_rule(policy_result, "require_tests_for", value=m) == "organization" for m in matches) else "repository"
+                    authority = _policy_authority_for_matching_values(policy_result, "require_tests_for", matches)
                     findings.append(_annotate_policy_finding(normalized_finding(
                         "policy_test_required",
                         "error",
@@ -2013,15 +2024,24 @@ def _policy_rule_findings(repo: Path, packet_path: Path | None, diff_text: str, 
 
 
 
+def _canonical_policy_resolution_sequence(items: object) -> list[object]:
+    if not isinstance(items, list):
+        return []
+    unique = {json.dumps(item, sort_keys=True, separators=(",", ":")): item for item in items}
+    return [unique[key] for key in sorted(unique)]
+
+
 def _canonical_policy_resolution_material(policy_result: dict) -> dict:
     return {
         "schema_version": policy_result.get("schema_version"),
-        "effective_policy_id": policy_result.get("effective_policy_id"),
         "organization_policy_mode": policy_result.get("organization_policy_mode"),
         "organization_policy_status": policy_result.get("organization_policy_status"),
-        "errors": sorted(str(e) for e in policy_result.get("errors", [])),
-        "conflicts": policy_result.get("conflicts", []),
-        "rejected_weakening_attempts": policy_result.get("rejected_weakening_attempts", []),
+        "organization_policy_id": policy_result.get("organization_policy_id"),
+        "organization_policy_hash": policy_result.get("organization_policy_hash"),
+        "repository_policy_hash": policy_result.get("repository_policy_hash"),
+        "errors": sorted(set(str(e) for e in policy_result.get("errors", []))),
+        "conflicts": _canonical_policy_resolution_sequence(policy_result.get("conflicts", [])),
+        "rejected_weakening_attempts": _canonical_policy_resolution_sequence(policy_result.get("rejected_weakening_attempts", [])),
     }
 
 

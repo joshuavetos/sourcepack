@@ -167,6 +167,14 @@ def _run_installed_demo_validation(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
             return subprocess.CompletedProcess(cmd, 0, "Status: READY\n")
         if cmd[-1] == "demo":
             return subprocess.CompletedProcess(cmd, returncode, output)
+        if cmd[-2:] == ["list", "--json"]:
+            return subprocess.CompletedProcess(cmd, 0, '{"schemas":[{"name":"effective-policy.v1"}]}')
+        if cmd[-1] == "effective-policy.v1" and "show" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, '{"$schema":"https://json-schema.org/draft/2020-12/schema"}')
+        if cmd[-2:] == [".", "--json"] and "resolve" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, '{}')
+        if "validate" in cmd:
+            return subprocess.CompletedProcess(cmd, 0 if "effective-policy.json" in cmd[-2] else 5, '{}')
         return subprocess.CompletedProcess(cmd, 0, "")
 
     monkeypatch.setattr(release_smoke, "run", fake_run)

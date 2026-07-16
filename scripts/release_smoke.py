@@ -234,6 +234,23 @@ def smoke_installed_artifact(artifact: Path, version: str, name: str, work: Path
     demo_cp = run([str(sourcepack), "demo"], work)
     if MISSING_ASSETS_ERROR in demo_cp.stdout:
         raise ReleaseSmokeError(f"{name} sourcepack demo printed the old missing-assets error")
+    schema_list = run([str(sourcepack), "schema", "list", "--json"], work)
+    if "effective-policy.v1" not in schema_list.stdout:
+        raise ReleaseSmokeError(f"{name} installed schema registry omitted effective-policy.v1")
+    schema_show = run([str(sourcepack), "schema", "show", "effective-policy.v1"], work)
+    if '"$schema"' not in schema_show.stdout:
+        raise ReleaseSmokeError(f"{name} installed schema show did not emit JSON Schema")
+    policy_cp = run([str(sourcepack), "policy", "resolve", ".", "--json"], work, check=False)
+    policy_file = work / f"{name}-effective-policy.json"
+    policy_file.write_text(policy_cp.stdout, encoding="utf-8")
+    valid_cp = run([str(sourcepack), "schema", "validate", "effective-policy.v1", str(policy_file), "--json"], work, check=False)
+    if valid_cp.returncode != 0:
+        raise ReleaseSmokeError(f"{name} installed schema rejected policy resolve output")
+    invalid_file = work / f"{name}-invalid-policy.json"
+    invalid_file.write_text('{"schema_version":"invalid"}', encoding="utf-8")
+    invalid_cp = run([str(sourcepack), "schema", "validate", "effective-policy.v1", str(invalid_file), "--json"], work, check=False)
+    if invalid_cp.returncode == 0:
+        raise ReleaseSmokeError(f"{name} installed schema accepted invalid policy artifact")
 
 
 def main() -> int:

@@ -2591,10 +2591,72 @@ def cli_baseline_lifecycle(args) -> int | None:
         return 0 if status.get("state") in {"present", "stale"} else 1
     return None
 
+def cli_schema(args) -> int:
+    """Read-only offline schema commands; diagnostics intentionally never echo values."""
+    from . import schema_contracts
+    command = getattr(args, "schema_command", None)
+    if command == "list":
+        rows = [{"name": c.name, "artifact_schema_version": c.artifact_version, "json_schema_draft": schema_contracts.DRAFT_2020_12, "description": c.description, "aliases": list(c.aliases)} for c in schema_contracts.CONTRACTS]
+        if args.json:
+            print(json.dumps({"schemas": rows}, sort_keys=True, indent=2))
+        else:
+            for row in rows:
+                aliases = f" aliases={','.join(row['aliases'])}" if row["aliases"] else ""
+                print(f"{row['name']}  {row['artifact_schema_version']}  {row['json_schema_draft']}{aliases}\n  {row['description']}")
+        return 0
+    contract = schema_contracts.resolve(getattr(args, "schema_name", ""))
+    if contract is None:
+        if getattr(args, "json", False):
+            print(json.dumps({"status": "unknown_schema", "schema": getattr(args, "schema_name", ""), "path": str(getattr(args, "file", "")), "exit_classification": "unknown_schema", "error_count": 1, "errors": [{"document_path": "/", "schema_path": "/", "keyword": "schema", "message": "unknown schema"}]}, sort_keys=True, indent=2))
+        else:
+            print("ERROR: unknown schema", file=sys.stderr)
+        return schema_contracts.EXIT_UNKNOWN_SCHEMA
+    if command == "show":
+        sys.stdout.buffer.write(schema_contracts.schema_bytes(contract)); return 0
+    path = Path(args.file)
+    if not path.is_file():
+        payload = {"status": "error", "schema": contract.name, "path": str(path), "exit_classification": "unreadable_input", "error_count": 1, "errors": [{"document_path": "/", "schema_path": "/", "keyword": "input", "message": "input is not a readable regular file"}]}
+        if args.json: print(json.dumps(payload, sort_keys=True, indent=2))
+        else: print("ERROR: input is not a readable regular file", file=sys.stderr)
+        return schema_contracts.EXIT_UNREADABLE
+    try:
+        instance = schema_contracts.load_json(path)
+    except schema_contracts.DuplicateKeyError:
+        errors = [{"document_path": "/", "schema_path": "/", "keyword": "duplicate_key", "message": "JSON object contains a duplicate key"}]; code = schema_contracts.EXIT_MALFORMED_JSON; kind = "malformed_json"
+    except UnicodeDecodeError:
+        errors = [{"document_path": "/", "schema_path": "/", "keyword": "utf8", "message": "input is not valid UTF-8"}]; code = schema_contracts.EXIT_MALFORMED_JSON; kind = "malformed_json"
+    except OSError:
+        errors = [{"document_path": "/", "schema_path": "/", "keyword": "input", "message": "input is not readable"}]; code = schema_contracts.EXIT_UNREADABLE; kind = "unreadable_input"
+    except json.JSONDecodeError:
+        errors = [{"document_path": "/", "schema_path": "/", "keyword": "json", "message": "input is not valid JSON"}]; code = schema_contracts.EXIT_MALFORMED_JSON; kind = "malformed_json"
+    else:
+        try:
+            errors = schema_contracts.validation_errors(contract, instance)
+        except Exception:
+            errors = [{"document_path": "/", "schema_path": "/", "keyword": "validator", "message": "validator failed"}]; code = schema_contracts.EXIT_INTERNAL; kind = "validator_failure"
+        else:
+            code = 0 if not errors else schema_contracts.EXIT_INVALID; kind = "valid" if not errors else "invalid"
+    payload = {"status": kind, "schema": contract.name, "path": str(path), "exit_classification": kind, "error_count": len(errors), "errors": errors}
+    if args.json: print(json.dumps(payload, sort_keys=True, indent=2))
+    elif errors:
+        for error in errors: print(f"ERROR [{error['keyword']}] {error['document_path']} {error['schema_path']}: {error['message']}", file=sys.stderr)
+    else: print(f"VALID: {contract.name}")
+    return code
+
 def run_cli(args_list=None):
     parser = argparse.ArgumentParser(prog="sourcepack", description="Local guardrail for AI-assisted repo changes. PASS exits 0, WARN exits 0 locally unless --strict or --ci is used, and FAIL exits nonzero.")
     parser.add_argument("--version", action="store_true")
     subs = parser.add_subparsers(dest="command")
+    schema_cmd = subs.add_parser("schema", help="list, export, and validate public JSON Schema contracts")
+    schema_subs = schema_cmd.add_subparsers(dest="schema_command")
+    schema_list = schema_subs.add_parser("list")
+    schema_list.add_argument("--json", action="store_true")
+    schema_show = schema_subs.add_parser("show")
+    schema_show.add_argument("schema_name")
+    schema_validate = schema_subs.add_parser("validate")
+    schema_validate.add_argument("schema_name")
+    schema_validate.add_argument("file")
+    schema_validate.add_argument("--json", action="store_true")
     build = subs.add_parser("build")
     build.add_argument("input")
     build.add_argument("--out", required=True)
@@ -2717,6 +2779,8 @@ def run_cli(args_list=None):
     if args.version:
         print(__version__); return 0
     try:
+        if args.command == "schema":
+            return cli_schema(args)
         if args.command == "doctor":
             return doctor(strict=getattr(args, "strict", False))
         if args.command == "exec":

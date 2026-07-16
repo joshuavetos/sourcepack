@@ -937,3 +937,295 @@ def test_require_tests_matching_org_and_repo_patterns_is_mixed_authority(tmp_pat
     assert finding["policy_authority"] == "mixed"
     assert finding["override_eligible"] is False
     assert finding["policy"]["triggering_path"] == "src/api/handler.py"
+
+
+def test_repository_policy_protected_path_exact_allow_suppresses_and_recomputes_verdict(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"protected_paths": ["app.py"]})
+    assert run(tmp_path, "allow", "path", "app.py", "--reason", "repository policy reviewed").returncode == 0
+    (tmp_path / "app.py").write_text("print(2)\n", encoding="utf-8")
+
+    code, data = report(tmp_path)
+
+    assert code == 0
+    assert data["verdict"] == "PASS"
+    assert "policy_protected_path" not in finding_ids(data)
+    assert data["policy"]["policy_finding_count"] == 0
+    assert data["policy_rule_findings"] == []
+    assert data["policy_overrides"][0]["suppressed_finding"] == "policy_protected_path"
+    assert data["policy_overrides"][0]["value"] == "app.py"
+
+
+def test_local_allow_does_not_suppress_org_mixed_or_resolution_policy_findings(tmp_path):
+    init_repo(tmp_path)
+    assert run(tmp_path, "allow", "path", "app.py", "--reason", "local review").returncode == 0
+    org = tmp_path.parent / "org-allow-unsuppressible.json"
+    write_org_policy_file(org, {"protected_paths": ["app.py"]})
+    (tmp_path / "app.py").write_text("print(2)\n", encoding="utf-8")
+
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    org_data = json.loads(cp.stdout)
+    assert cp.returncode == 1
+    assert policy_finding(org_data, "policy_protected_path")["policy_authority"] == "organization"
+    assert not org_data.get("policy_overrides")
+
+    write_rules(tmp_path, {"protected_paths": ["*.py"]})
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    mixed_data = json.loads(cp.stdout)
+    assert cp.returncode == 1
+    assert policy_finding(mixed_data, "policy_protected_path")["policy_authority"] == "mixed"
+    assert not mixed_data.get("policy_overrides")
+
+    bad = tmp_path.parent / "bad-allow-unsuppressible.json"
+    bad.write_text("{", encoding="utf-8")
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(bad))
+    failed_data = json.loads(cp.stdout)
+    assert cp.returncode == 1
+    assert [f["id"] for f in failed_data["findings"]].count("policy_resolution_failed") == 1
+    assert not failed_data.get("policy_overrides")
+
+
+def test_local_allow_non_policy_behavior_still_suppresses_dependency(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "app.py").write_text("import fastapi\n", encoding="utf-8")
+    assert run(tmp_path, "allow", "dependency", "fastapi", "--reason", "reviewed").returncode == 0
+
+    code, data = report(tmp_path)
+
+    assert code == 0
+    assert data["verdict"] == "PASS"
+    assert "unsupported_dependency" not in finding_ids(data)
+    assert data["policy_overrides"][0]["suppressed_finding"] == "unsupported_dependency"
+
+
+def test_stale_baseline_preserves_single_policy_finding_and_metadata(tmp_path):
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"protected_paths": ["app.py"]})
+    (tmp_path / ".sourcepack" / "state" / "baseline_stale.json").write_text('{"reason":"test"}', encoding="utf-8")
+    (tmp_path / "app.py").write_text("print(2)\n", encoding="utf-8")
+
+    code, data = report(tmp_path)
+
+    policy_findings = [f for f in data["findings"] if f["id"] == "policy_protected_path"]
+    assert code == 1
+    assert data["verdict"] == "FAIL"
+    assert len(policy_findings) == 1
+    assert data["policy"]["policy_finding_count"] == 1
+    assert [f["id"] for f in data["policy_rule_findings"]] == ["policy_protected_path"]
+    assert "baseline_stale" in finding_ids(data)
+
+
+def test_stale_baseline_preserves_single_policy_resolution_failure(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / ".sourcepack" / "state" / "baseline_stale.json").write_text('{"reason":"test"}', encoding="utf-8")
+    (tmp_path / "app.py").write_text("print(2)\n", encoding="utf-8")
+    bad = tmp_path.parent / "bad-stale-org.json"
+    bad.write_text("{", encoding="utf-8")
+
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(bad))
+    data = json.loads(cp.stdout)
+
+    resolution_findings = [f for f in data["findings"] if f["id"] == "policy_resolution_failed"]
+    assert cp.returncode == 1
+    assert data["verdict"] == "FAIL"
+    assert len(resolution_findings) == 1
+    assert data["policy"]["policy_finding_count"] == 1
+    assert [f["id"] for f in data["policy_rule_findings"]] == ["policy_resolution_failed"]
+    assert "baseline_stale" in finding_ids(data)
+
+
+def test_repository_policy_dependency_addition_exact_allow_suppresses_and_recomputes_verdict(tmp_path):
+    from sourcepack.judgment import _apply_local_policy
+    from sourcepack.reports.json import normalized_finding, traffic_report
+
+    init_repo(tmp_path)
+    assert run(tmp_path, "allow", "dependency", "requests", "--reason", "reviewed dependency").returncode == 0
+    finding = normalized_finding(
+        "policy_dependency_addition",
+        "error",
+        "policy",
+        "Proposed change added an unapproved dependency to project manifest files.",
+        evidence="requests",
+    )
+    finding["policy_authority"] = "repository"
+    finding["override_eligible"] = True
+    finding["policy"] = {"rule_name": "block_dependency_additions", "rule_fingerprint": "sha256:test", "scope": "requests"}
+    report_data = traffic_report("FAIL", findings=[finding])
+    report_data["policy"] = {"evaluated": True, "resolution_status": "PASS", "policy_finding_count": 1}
+    report_data["policy_rule_findings"] = [report_data["findings"][0]]
+
+    data = _apply_local_policy(tmp_path, report_data)
+
+    assert data["verdict"] == "PASS"
+    assert "policy_dependency_addition" not in finding_ids(data)
+    assert data["policy"]["policy_finding_count"] == 0
+    assert data["policy_rule_findings"] == []
+    assert data["policy_overrides"][0]["suppressed_finding"] == "policy_dependency_addition"
+    assert data["policy_overrides"][0]["value"] == "requests"
+
+
+def test_repository_policy_dependency_addition_exact_allow_suppresses_integration(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = []\n", encoding="utf-8")
+    trust_current_repo(tmp_path)
+    write_rules(tmp_path, {"block_dependency_additions": True})
+    assert run(tmp_path, "allow", "dependency", "requests", "--reason", "reviewed dependency").returncode == 0
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = ['requests']\n", encoding="utf-8")
+
+    code, data = report(tmp_path)
+
+    assert code == 0
+    assert "policy_dependency_addition" not in finding_ids(data)
+    assert data["policy"]["policy_finding_count"] == 0
+    assert data["policy_rule_findings"] == []
+    assert data["policy_overrides"][0]["suppressed_finding"] == "policy_dependency_addition"
+    assert data["policy_overrides"][0]["value"] == "requests"
+
+
+def test_policy_dependency_addition_allow_does_not_suppress_org_mixed_or_wrong_name(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = []\n", encoding="utf-8")
+    trust_current_repo(tmp_path)
+    assert run(tmp_path, "allow", "dependency", "requests", "--reason", "reviewed dependency").returncode == 0
+    org = tmp_path.parent / "org-dependency-unsuppressible.json"
+    write_org_policy_file(org, {"block_dependency_additions": True})
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = ['requests']\n", encoding="utf-8")
+
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    org_data = json.loads(cp.stdout)
+    assert cp.returncode == 1
+    assert policy_finding(org_data, "policy_dependency_addition")["policy_authority"] == "organization"
+    assert not org_data.get("policy_overrides")
+
+    write_rules(tmp_path, {"block_dependency_additions": True})
+    cp = run(tmp_path, "diff", ".", "--json", "--org-policy", str(org))
+    mixed_data = json.loads(cp.stdout)
+    assert cp.returncode == 1
+    assert policy_finding(mixed_data, "policy_dependency_addition")["policy_authority"] == "mixed"
+    assert not mixed_data.get("policy_overrides")
+
+    wrong_name_repo = tmp_path / "wrong-name"
+    wrong_name_repo.mkdir()
+    init_repo(wrong_name_repo)
+    (wrong_name_repo / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = []\n", encoding="utf-8")
+    trust_current_repo(wrong_name_repo)
+    write_rules(wrong_name_repo, {"block_dependency_additions": True})
+    assert run(wrong_name_repo, "allow", "dependency", "flask", "--reason", "different dependency").returncode == 0
+    (wrong_name_repo / "pyproject.toml").write_text("[project]\nname = 'demo'\ndependencies = ['requests']\n", encoding="utf-8")
+
+    wrong_code, wrong_data = report(wrong_name_repo)
+    assert wrong_code == 1
+    assert policy_finding(wrong_data, "policy_dependency_addition")["evidence"] == "requests"
+    assert not wrong_data.get("policy_overrides")
+
+
+def test_missing_baseline_applies_local_allow_to_repository_policy_path_finding(tmp_path):
+    import sourcepack.judgment as judgment
+
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"protected_paths": ["app.py"]})
+    assert run(tmp_path, "allow", "path", "app.py", "--reason", "reviewed protected path").returncode == 0
+    remove_active_baseline(tmp_path)
+    patch = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-print(1)\n+print(2)\n"
+
+    data = judgment.build_repo_change_report(tmp_path, patch_text=patch)
+
+    assert data["verdict"] == "FAIL"
+    assert "baseline_missing" in finding_ids(data)
+    assert "policy_protected_path" not in finding_ids(data)
+    assert data["policy"]["policy_finding_count"] == 0
+    assert data["policy_rule_findings"] == []
+    assert data["policy_overrides"][0]["suppressed_finding"] == "policy_protected_path"
+    assert data["policy_overrides"][0]["value"] == "app.py"
+
+
+def test_corrupt_baseline_applies_local_allow_to_repository_policy_secret_finding(tmp_path):
+    import sourcepack.judgment as judgment
+
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"block_secret_patterns": True})
+    assert run(tmp_path, "allow", "path", "app.py", "--reason", "reviewed secret-like test fixture").returncode == 0
+    corrupt_active_baseline(tmp_path)
+    patch = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-print(1)\n+token = 'abcdefghijklmnopqrstuvwxyz'\n"
+
+    data = judgment.build_repo_change_report(tmp_path, patch_text=patch)
+
+    assert data["verdict"] == "FAIL"
+    assert "baseline_corrupt" in finding_ids(data)
+    assert "policy_secret_pattern" not in finding_ids(data)
+    assert data["policy"]["policy_finding_count"] == 0
+    assert data["policy_rule_findings"] == []
+    assert data["policy_overrides"][0]["suppressed_finding"] == "policy_secret_pattern"
+    assert data["policy_overrides"][0]["value"] == "app.py"
+
+
+def test_baseline_early_branches_do_not_suppress_org_or_mixed_policy_findings(tmp_path):
+    import sourcepack.judgment as judgment
+
+    init_repo(tmp_path)
+    assert run(tmp_path, "allow", "path", "app.py", "--reason", "local review").returncode == 0
+    org = tmp_path.parent / "org-baseline-early-policy.json"
+    write_org_policy_file(org, {"protected_paths": ["app.py"]})
+    remove_active_baseline(tmp_path)
+    patch = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-print(1)\n+print(2)\n"
+
+    org_data = judgment.build_repo_change_report(tmp_path, patch_text=patch, org_policy=org)
+    assert org_data["verdict"] == "FAIL"
+    assert "baseline_missing" in finding_ids(org_data)
+    assert policy_finding(org_data, "policy_protected_path")["policy_authority"] == "organization"
+    assert not org_data.get("policy_overrides")
+
+    mixed_repo = tmp_path / "mixed"
+    mixed_repo.mkdir()
+    init_repo(mixed_repo)
+    write_rules(mixed_repo, {"protected_paths": ["*.py"]})
+    assert run(mixed_repo, "allow", "path", "app.py", "--reason", "local review").returncode == 0
+    corrupt_active_baseline(mixed_repo)
+    mixed_org = tmp_path.parent / "org-baseline-early-mixed-policy.json"
+    write_org_policy_file(mixed_org, {"protected_paths": ["app.*"]})
+
+    mixed_data = judgment.build_repo_change_report(mixed_repo, patch_text=patch, org_policy=mixed_org)
+    assert mixed_data["verdict"] == "FAIL"
+    assert "baseline_corrupt" in finding_ids(mixed_data)
+    assert policy_finding(mixed_data, "policy_protected_path")["policy_authority"] == "mixed"
+    assert not mixed_data.get("policy_overrides")
+
+
+def test_baseline_locked_preserves_policy_resolution_failure(tmp_path, monkeypatch):
+    import sourcepack.judgment as judgment
+
+    init_repo(tmp_path)
+    remove_active_baseline(tmp_path)
+
+    def locked(*args, **kwargs):
+        raise judgment.BaselineLockError("locked for test")
+
+    monkeypatch.setattr(judgment, "build_current_baseline", locked)
+    data = judgment.build_repo_change_report(tmp_path, patch_text="", org_policy_mode="required")
+
+    ids = [f["id"] for f in data["findings"]]
+    assert data["verdict"] == "FAIL"
+    assert "baseline_locked" in ids
+    assert ids.count("policy_resolution_failed") == 1
+    assert data["policy"]["policy_finding_count"] == 1
+    assert [f["id"] for f in data["policy_rule_findings"]] == ["policy_resolution_failed"]
+
+
+def test_baseline_failed_preserves_policy_resolution_failure(tmp_path, monkeypatch):
+    import sourcepack.judgment as judgment
+
+    init_repo(tmp_path)
+    remove_active_baseline(tmp_path)
+
+    def failed(*args, **kwargs):
+        raise RuntimeError("failed for test")
+
+    monkeypatch.setattr(judgment, "build_current_baseline", failed)
+    data = judgment.build_repo_change_report(tmp_path, patch_text="", org_policy_mode="required")
+
+    ids = [f["id"] for f in data["findings"]]
+    assert data["verdict"] == "FAIL"
+    assert "baseline_failed" in ids
+    assert ids.count("policy_resolution_failed") == 1
+    assert data["policy"]["policy_finding_count"] == 1
+    assert [f["id"] for f in data["policy_rule_findings"]] == ["policy_resolution_failed"]

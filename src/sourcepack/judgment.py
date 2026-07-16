@@ -1711,25 +1711,31 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
     baseline_status = validate_baseline(repo)
     if baseline_status["state"] == "corrupt":
         rep = traffic_report("FAIL", "trusted baseline is corrupt.", [normalized_finding("baseline_corrupt", "error", "baseline", baseline_status["message"])], ["baseline", "diff"], "Recreate the baseline only after verifying the current repo state should be trusted.")
-        rep = _apply_policy_rules(repo, None, diff_text, rep, policy_result)
+        rep = _apply_policy_finishers(repo, None, diff_text, rep, policy_result)
         rep.update(baseline_report_fields(baseline_status)); return rep
     if baseline_status["state"] == "missing":
         dirty_now, dirty_state_now = git_worktree_dirty(repo)
         if ci:
             rep = traffic_report("FAIL", "trusted baseline is missing in CI.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists; CI must not establish trust.")], ["baseline", "diff"], "create the baseline locally only after deciding the current repo state should be trusted.")
-            rep = _apply_policy_rules(repo, None, diff_text, rep, policy_result)
+            rep = _apply_policy_finishers(repo, None, diff_text, rep, policy_result)
             rep.update(baseline_report_fields(baseline_status)); return rep
         if diff_text.strip() or (dirty_now and not _only_sourcepack_gitignore_change(repo)):
             rep = traffic_report("FAIL", "baseline missing while changes are present.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
-            rep = _apply_policy_rules(repo, None, diff_text, rep, policy_result)
+            rep = _apply_policy_finishers(repo, None, diff_text, rep, policy_result)
             rep.update(baseline_report_fields(baseline_status)); return rep
         try:
             build_current_baseline(repo, quiet=True, force=False); baseline_status = validate_baseline(repo)
             rep_note = "Created SourcePack baseline because none existed and no diff was present."
         except BaselineLockError as exc:
-            return traffic_report("WARN", "baseline writer is locked.", [normalized_finding("baseline_locked", "warn", "tooling", str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")
+            rep = traffic_report("WARN", "baseline writer is locked.", [normalized_finding("baseline_locked", "warn", "tooling", str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")
+            rep = _apply_policy_finishers(repo, None, diff_text, rep, policy_result)
+            rep["repo_path"] = str(repo)
+            return rep
         except Exception as exc:
-            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("baseline_failed", "error", "baseline", f"Baseline verification failed: {exc}")])
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("baseline_failed", "error", "baseline", f"Baseline verification failed: {exc}")])
+            rep = _apply_policy_finishers(repo, None, diff_text, rep, policy_result)
+            rep["repo_path"] = str(repo)
+            return rep
     else:
         rep_note = None
     stale_findings = []
@@ -1742,13 +1748,15 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         packet_path = repo / baseline_status["packet_path"]
         raw = judge_patch_text(packet_path, diff_text); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
         rep = _integrate_execution_findings(repo, diff_text, rep)
-        rep = _apply_local_policy(repo, rep)
-        rep = _apply_policy_rules(repo, packet_path, diff_text, rep, policy_result)
-        rep = _apply_policy_config(repo, rep)
-        if stale_findings and rep["verdict"] != "FAIL":
-            rep = traffic_report("WARN", "SourcePack could not fully evaluate this change.", rep.get("findings", []) + stale_findings, rep.get("checked_categories", []), rep.get("next_action"), reason_type="uncertainty"); rep["raw_patch_judgment"] = raw
-        elif stale_findings:
-            rep = traffic_report("FAIL", rep.get("headline"), rep.get("findings", []) + stale_findings, rep.get("checked_categories", []), rep.get("next_action")); rep["raw_patch_judgment"] = raw
+        rep = _apply_policy_finishers(repo, packet_path, diff_text, rep, policy_result)
+        if stale_findings:
+            rep = _rebuild_from_findings(rep, rep.get("findings", []) + stale_findings)
+            if rep["verdict"] != "FAIL":
+                rep["verdict"] = "WARN"
+                rep["light"] = "YELLOW"
+                rep["headline"] = "SourcePack could not fully evaluate this change."
+                rep["reason_type"] = "uncertainty"
+            rep["raw_patch_judgment"] = raw
     if "policy" not in rep:
         rep = _apply_policy_rules(repo, None, diff_text, rep, policy_result)
     rep.update(baseline_report_fields(baseline_status))
@@ -2076,21 +2084,62 @@ def _policy_report_metadata(policy_result: dict, policy_finding_count: int) -> d
     }
 
 
+def _is_policy_rule_finding(finding: dict) -> bool:
+    return finding.get("category") == "policy" and finding.get("id") in {
+        "policy_resolution_failed",
+        "policy_dependency_addition",
+        "policy_protected_path",
+        "policy_test_required",
+        "policy_change_limit",
+        "policy_secret_pattern",
+        "policy_package_manager",
+    }
+
+
+def _policy_finding_key(finding: dict) -> str:
+    policy = finding.get("policy") if isinstance(finding.get("policy"), dict) else {}
+    payload = {
+        "id": finding.get("id"),
+        "path": finding.get("path"),
+        "evidence": finding.get("evidence"),
+        "rule_fingerprint": policy.get("rule_fingerprint"),
+        "scope": policy.get("scope"),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _sync_policy_rule_metadata(rep: dict, policy_result: dict) -> dict:
+    synced = dict(rep)
+    policy_rule_findings = [finding for finding in synced.get("findings", []) if _is_policy_rule_finding(finding)]
+    synced["policy"] = _policy_report_metadata(policy_result, len(policy_rule_findings))
+    synced["policy_rule_findings"] = policy_rule_findings
+    return synced
+
+
 def _apply_policy_rules(repo: Path, packet_path: Path | None, diff_text: str, rep: dict, policy_result: dict) -> dict:
     findings = []
     if policy_result.get("resolution_status") != "PASS":
         findings.append(_policy_resolution_failure_finding(policy_result))
-    else:
+    elif not rep.get("policy"):
         findings = _policy_rule_findings(repo, packet_path, diff_text, policy_result)
-    rebuilt = _rebuild_from_findings(rep, list(rep.get("findings", [])) + findings) if findings else dict(rep)
-    rebuilt["policy"] = _policy_report_metadata(policy_result, len(findings))
-    rebuilt["policy_rule_findings"] = findings
-    return rebuilt
+
+    existing_findings = list(rep.get("findings", []))
+    existing_policy_keys = {_policy_finding_key(finding) for finding in existing_findings if _is_policy_rule_finding(finding)}
+    new_findings = [finding for finding in findings if _policy_finding_key(finding) not in existing_policy_keys]
+    rebuilt = _rebuild_from_findings(rep, existing_findings + new_findings) if new_findings else dict(rep)
+    return _sync_policy_rule_metadata(rebuilt, policy_result)
 
 
+
+
+
+def _apply_policy_finishers(repo: Path, packet_path: Path | None, diff_text: str, rep: dict, policy_result: dict) -> dict:
+    rep = _apply_policy_rules(repo, packet_path, diff_text, rep, policy_result)
+    rep = _apply_local_policy(repo, rep)
+    return _apply_policy_config(repo, rep)
 
 def _finalize_early_core_failure(repo: Path, rep: dict, policy_result: dict) -> dict:
-    finalized = _apply_policy_rules(repo, None, "", rep, policy_result)
+    finalized = _apply_policy_finishers(repo, None, "", rep, policy_result)
     finalized["repo_path"] = str(repo)
     return finalized
 
@@ -2123,7 +2172,7 @@ def _policy_matches(entry: dict, finding: dict) -> bool:
     if finding.get("category") == "policy" and not (finding.get("policy_authority") == "repository" and finding.get("override_eligible") is True):
         return False
     if scope == "dependency":
-        return fid == "unsupported_dependency" and finding.get("evidence") == value
+        return fid in {"unsupported_dependency", "policy_dependency_addition"} and finding.get("evidence") == value
     if scope == "command":
         return fid == "unsupported_command" and finding.get("evidence") == value
     if scope == "path":
@@ -2134,6 +2183,19 @@ def _policy_matches(entry: dict, finding: dict) -> bool:
         return fid not in {"git_path_modification"}
     return False
 
+
+
+
+def _sync_existing_policy_rule_metadata(rep: dict) -> dict:
+    synced = dict(rep)
+    if "policy" not in synced:
+        return synced
+    policy_rule_findings = [finding for finding in synced.get("findings", []) if _is_policy_rule_finding(finding)]
+    synced["policy_rule_findings"] = policy_rule_findings
+    policy = dict(synced.get("policy") or {})
+    policy["policy_finding_count"] = len(policy_rule_findings)
+    synced["policy"] = policy
+    return synced
 
 def _apply_local_policy(repo: Path, rep: dict) -> dict:
     entries = _policy_entries_for_judgment(repo)
@@ -2149,10 +2211,10 @@ def _apply_local_policy(repo: Path, rep: dict) -> dict:
             kept.append(finding)
     if not overrides:
         return rep
-    rebuilt = _rebuild_from_findings(rep, kept)
+    rebuilt = _sync_existing_policy_rule_metadata(_rebuild_from_findings(rep, kept))
     rebuilt["policy_overrides"] = overrides
     rebuilt.setdefault("findings", []).append(normalized_finding("policy_override", "info", "policy", "A local allow policy suppressed a matching finding.", evidence=", ".join(str(o.get("value")) for o in overrides)))
-    return _rebuild_from_findings(rebuilt, rebuilt["findings"])
+    return _sync_existing_policy_rule_metadata(_rebuild_from_findings(rebuilt, rebuilt["findings"]))
 
 
 def _apply_policy_config(repo: Path, rep: dict) -> dict:

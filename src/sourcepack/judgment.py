@@ -1711,25 +1711,31 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
     baseline_status = validate_baseline(repo)
     if baseline_status["state"] == "corrupt":
         rep = traffic_report("FAIL", "trusted baseline is corrupt.", [normalized_finding("baseline_corrupt", "error", "baseline", baseline_status["message"])], ["baseline", "diff"], "Recreate the baseline only after verifying the current repo state should be trusted.")
-        rep = _apply_policy_rules(repo, None, diff_text, rep, policy_result)
+        rep = _apply_policy_finishers(repo, None, diff_text, rep, policy_result)
         rep.update(baseline_report_fields(baseline_status)); return rep
     if baseline_status["state"] == "missing":
         dirty_now, dirty_state_now = git_worktree_dirty(repo)
         if ci:
             rep = traffic_report("FAIL", "trusted baseline is missing in CI.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists; CI must not establish trust.")], ["baseline", "diff"], "create the baseline locally only after deciding the current repo state should be trusted.")
-            rep = _apply_policy_rules(repo, None, diff_text, rep, policy_result)
+            rep = _apply_policy_finishers(repo, None, diff_text, rep, policy_result)
             rep.update(baseline_report_fields(baseline_status)); return rep
         if diff_text.strip() or (dirty_now and not _only_sourcepack_gitignore_change(repo)):
             rep = traffic_report("FAIL", "baseline missing while changes are present.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
-            rep = _apply_policy_rules(repo, None, diff_text, rep, policy_result)
+            rep = _apply_policy_finishers(repo, None, diff_text, rep, policy_result)
             rep.update(baseline_report_fields(baseline_status)); return rep
         try:
             build_current_baseline(repo, quiet=True, force=False); baseline_status = validate_baseline(repo)
             rep_note = "Created SourcePack baseline because none existed and no diff was present."
         except BaselineLockError as exc:
-            return traffic_report("WARN", "baseline writer is locked.", [normalized_finding("baseline_locked", "warn", "tooling", str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")
+            rep = traffic_report("WARN", "baseline writer is locked.", [normalized_finding("baseline_locked", "warn", "tooling", str(exc))], ["baseline", "diff"], "try again after the other baseline operation finishes.", reason_type="tooling")
+            rep = _apply_policy_finishers(repo, None, diff_text, rep, policy_result)
+            rep["repo_path"] = str(repo)
+            return rep
         except Exception as exc:
-            return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("baseline_failed", "error", "baseline", f"Baseline verification failed: {exc}")])
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("baseline_failed", "error", "baseline", f"Baseline verification failed: {exc}")])
+            rep = _apply_policy_finishers(repo, None, diff_text, rep, policy_result)
+            rep["repo_path"] = str(repo)
+            return rep
     else:
         rep_note = None
     stale_findings = []
@@ -1742,9 +1748,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         packet_path = repo / baseline_status["packet_path"]
         raw = judge_patch_text(packet_path, diff_text); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
         rep = _integrate_execution_findings(repo, diff_text, rep)
-        rep = _apply_policy_rules(repo, packet_path, diff_text, rep, policy_result)
-        rep = _apply_local_policy(repo, rep)
-        rep = _apply_policy_config(repo, rep)
+        rep = _apply_policy_finishers(repo, packet_path, diff_text, rep, policy_result)
         if stale_findings:
             rep = _rebuild_from_findings(rep, rep.get("findings", []) + stale_findings)
             if rep["verdict"] != "FAIL":
@@ -2127,8 +2131,15 @@ def _apply_policy_rules(repo: Path, packet_path: Path | None, diff_text: str, re
 
 
 
+
+
+def _apply_policy_finishers(repo: Path, packet_path: Path | None, diff_text: str, rep: dict, policy_result: dict) -> dict:
+    rep = _apply_policy_rules(repo, packet_path, diff_text, rep, policy_result)
+    rep = _apply_local_policy(repo, rep)
+    return _apply_policy_config(repo, rep)
+
 def _finalize_early_core_failure(repo: Path, rep: dict, policy_result: dict) -> dict:
-    finalized = _apply_policy_rules(repo, None, "", rep, policy_result)
+    finalized = _apply_policy_finishers(repo, None, "", rep, policy_result)
     finalized["repo_path"] = str(repo)
     return finalized
 

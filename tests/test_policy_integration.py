@@ -1117,3 +1117,115 @@ def test_policy_dependency_addition_allow_does_not_suppress_org_mixed_or_wrong_n
     assert wrong_code == 1
     assert policy_finding(wrong_data, "policy_dependency_addition")["evidence"] == "requests"
     assert not wrong_data.get("policy_overrides")
+
+
+def test_missing_baseline_applies_local_allow_to_repository_policy_path_finding(tmp_path):
+    import sourcepack.judgment as judgment
+
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"protected_paths": ["app.py"]})
+    assert run(tmp_path, "allow", "path", "app.py", "--reason", "reviewed protected path").returncode == 0
+    remove_active_baseline(tmp_path)
+    patch = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-print(1)\n+print(2)\n"
+
+    data = judgment.build_repo_change_report(tmp_path, patch_text=patch)
+
+    assert data["verdict"] == "FAIL"
+    assert "baseline_missing" in finding_ids(data)
+    assert "policy_protected_path" not in finding_ids(data)
+    assert data["policy"]["policy_finding_count"] == 0
+    assert data["policy_rule_findings"] == []
+    assert data["policy_overrides"][0]["suppressed_finding"] == "policy_protected_path"
+    assert data["policy_overrides"][0]["value"] == "app.py"
+
+
+def test_corrupt_baseline_applies_local_allow_to_repository_policy_secret_finding(tmp_path):
+    import sourcepack.judgment as judgment
+
+    init_repo(tmp_path)
+    write_rules(tmp_path, {"block_secret_patterns": True})
+    assert run(tmp_path, "allow", "path", "app.py", "--reason", "reviewed secret-like test fixture").returncode == 0
+    corrupt_active_baseline(tmp_path)
+    patch = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-print(1)\n+token = 'abcdefghijklmnopqrstuvwxyz'\n"
+
+    data = judgment.build_repo_change_report(tmp_path, patch_text=patch)
+
+    assert data["verdict"] == "FAIL"
+    assert "baseline_corrupt" in finding_ids(data)
+    assert "policy_secret_pattern" not in finding_ids(data)
+    assert data["policy"]["policy_finding_count"] == 0
+    assert data["policy_rule_findings"] == []
+    assert data["policy_overrides"][0]["suppressed_finding"] == "policy_secret_pattern"
+    assert data["policy_overrides"][0]["value"] == "app.py"
+
+
+def test_baseline_early_branches_do_not_suppress_org_or_mixed_policy_findings(tmp_path):
+    import sourcepack.judgment as judgment
+
+    init_repo(tmp_path)
+    assert run(tmp_path, "allow", "path", "app.py", "--reason", "local review").returncode == 0
+    org = tmp_path.parent / "org-baseline-early-policy.json"
+    write_org_policy_file(org, {"protected_paths": ["app.py"]})
+    remove_active_baseline(tmp_path)
+    patch = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-print(1)\n+print(2)\n"
+
+    org_data = judgment.build_repo_change_report(tmp_path, patch_text=patch, org_policy=org)
+    assert org_data["verdict"] == "FAIL"
+    assert "baseline_missing" in finding_ids(org_data)
+    assert policy_finding(org_data, "policy_protected_path")["policy_authority"] == "organization"
+    assert not org_data.get("policy_overrides")
+
+    mixed_repo = tmp_path / "mixed"
+    mixed_repo.mkdir()
+    init_repo(mixed_repo)
+    write_rules(mixed_repo, {"protected_paths": ["*.py"]})
+    assert run(mixed_repo, "allow", "path", "app.py", "--reason", "local review").returncode == 0
+    corrupt_active_baseline(mixed_repo)
+    mixed_org = tmp_path.parent / "org-baseline-early-mixed-policy.json"
+    write_org_policy_file(mixed_org, {"protected_paths": ["app.*"]})
+
+    mixed_data = judgment.build_repo_change_report(mixed_repo, patch_text=patch, org_policy=mixed_org)
+    assert mixed_data["verdict"] == "FAIL"
+    assert "baseline_corrupt" in finding_ids(mixed_data)
+    assert policy_finding(mixed_data, "policy_protected_path")["policy_authority"] == "mixed"
+    assert not mixed_data.get("policy_overrides")
+
+
+def test_baseline_locked_preserves_policy_resolution_failure(tmp_path, monkeypatch):
+    import sourcepack.judgment as judgment
+
+    init_repo(tmp_path)
+    remove_active_baseline(tmp_path)
+
+    def locked(*args, **kwargs):
+        raise judgment.BaselineLockError("locked for test")
+
+    monkeypatch.setattr(judgment, "build_current_baseline", locked)
+    data = judgment.build_repo_change_report(tmp_path, patch_text="", org_policy_mode="required")
+
+    ids = [f["id"] for f in data["findings"]]
+    assert data["verdict"] == "FAIL"
+    assert "baseline_locked" in ids
+    assert ids.count("policy_resolution_failed") == 1
+    assert data["policy"]["policy_finding_count"] == 1
+    assert [f["id"] for f in data["policy_rule_findings"]] == ["policy_resolution_failed"]
+
+
+def test_baseline_failed_preserves_policy_resolution_failure(tmp_path, monkeypatch):
+    import sourcepack.judgment as judgment
+
+    init_repo(tmp_path)
+    remove_active_baseline(tmp_path)
+
+    def failed(*args, **kwargs):
+        raise RuntimeError("failed for test")
+
+    monkeypatch.setattr(judgment, "build_current_baseline", failed)
+    data = judgment.build_repo_change_report(tmp_path, patch_text="", org_policy_mode="required")
+
+    ids = [f["id"] for f in data["findings"]]
+    assert data["verdict"] == "FAIL"
+    assert "baseline_failed" in ids
+    assert ids.count("policy_resolution_failed") == 1
+    assert data["policy"]["policy_finding_count"] == 1
+    assert [f["id"] for f in data["policy_rule_findings"]] == ["policy_resolution_failed"]

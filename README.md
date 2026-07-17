@@ -1,4 +1,5 @@
 # SourcePack
+
 <p align="center">
   <img
     src="docs/assets/sourcepack-hero.png"
@@ -12,26 +13,24 @@
 ![License](https://img.shields.io/github/license/joshuavetos/sourcepack)
 ![Status](https://img.shields.io/badge/status-public%20alpha-orange)
 
-SourcePack blocks AI-generated code changes that rely on fake repo facts.
+**SourcePack blocks AI-generated code changes that rely on repository facts the local codebase does not support.**
 
-SourcePack catches fake repo facts in AI-generated code changes before they become review facts.
+It checks proposed diffs against locally verifiable evidence such as tracked files, dependency manifests, scripts, commands, protected paths, trusted baseline artifacts, and recorded execution evidence.
 
-**SourcePack checks proposed diffs against locally verifiable evidence from the actual codebase.**
+A simple example: an AI assistant adds FastAPI code to a repository that does not declare FastAPI. SourcePack detects the unsupported dependency and blocks the change before it becomes a review problem.
 
-Concrete first scenario: an AI assistant proposes adding FastAPI code to a repository that does not use FastAPI. SourcePack checks the proposed change against local repo evidence, sees that `fastapi` is not declared, and flags the change as an unsupported dependency before review.
+SourcePack is a local-first public-alpha guardrail. It does not prove code correctness, security, runtime success, semantic validity, dependency safety, external API truth, or user intent.
 
-SourcePack is a local public-alpha guardrail for reviewing repo changes. It does not prove code correctness, security, runtime success, dependency safety, semantic validity, external API truth, or user intent.
-
-## Try the demo first
+## Try the demo
 
 ```bash
 python -m pip install sourcepack
 sourcepack demo
 ```
 
-The demo creates a small local repo, applies the unsupported FastAPI scenario, and runs SourcePack against that change.
+The demo creates a small local repository, applies an unsupported FastAPI change, and runs SourcePack against it.
 
-You should see a concrete failure like this:
+Expected output includes:
 
 ```text
 RED LIGHT: commit blocked
@@ -40,35 +39,31 @@ unsupported_dependency: sourcepack/server.py imports fastapi, but fastapi is not
 Verdict: FAIL
 ```
 
-Read that output as three separate layers:
+The output has three layers:
 
-- Human-facing verdict: `RED LIGHT`
-- Formal result: `Verdict: FAIL`
-- Machine reason code: `unsupported_dependency`
+- `RED LIGHT` is the human stop signal.
+- `Verdict: FAIL` is the formal judgment.
+- `unsupported_dependency` is the machine-readable reason code.
 
-In this demo, the proposed code imports `fastapi`, but the repository evidence does not declare FastAPI as a dependency. SourcePack blocks the commit because the AI change relies on an unsupported repo assumption.
+## What SourcePack checks
 
-## What SourcePack does
+SourcePack focuses on repository assumptions that can be tested locally:
 
-AI-generated code can look plausible while relying on facts that are not true in your repository.
+- edits to files that do not exist
+- undeclared imports or dependencies
+- missing scripts and unsupported commands
+- unsupported project ecosystems
+- unsafe or protected paths
+- malformed or binary diffs
+- stale, missing, or corrupt trusted baselines
+- policy violations in the proposed change
+- bounded local execution evidence
 
-SourcePack focuses on locally verifiable repo-assumption failures:
+Its judgment is deliberately narrow:
 
-- AI coding agents can edit files that do not exist.
-- They can import undeclared dependencies.
-- They can reference missing scripts or unsupported commands.
-- They can reshape project structure based on prompt assumptions.
-- They can touch protected trust or workflow files without making that risk obvious.
+> This proposed change relies on a repository fact that the local evidence does not support.
 
-- SourcePack catches those locally verifiable failures before commit or in CI.
-
-SourcePack checks those claims against repo evidence before commit or in CI.
-
-It does not say “this code is bad because AI wrote it.”
-
-It says a narrower, testable thing:
-
-> This proposed change relies on a repo fact that the local evidence does not support.
+SourcePack does not reject code merely because AI produced it.
 
 ## First five minutes
 
@@ -78,54 +73,26 @@ It says a narrower, testable thing:
    python -m pip install sourcepack
    ```
 
-2. Run the demo before configuring your own repo.
+2. Run the demo.
 
    ```bash
    sourcepack demo
    ```
 
-3. Understand the failure.
-
-   `RED LIGHT` is the human stop signal.
-
-   `Verdict: FAIL` is the formal result.
-
-   `unsupported_dependency` is the machine-readable reason code.
-
-4. Initialize SourcePack in a repo whose current state you have reviewed and want to trust.
+3. Initialize SourcePack in a repository whose current state you have reviewed and want to trust.
 
    ```bash
    sourcepack init . --auto
+   ```
+
+4. Check the current change and open the report.
+
+   ```bash
    sourcepack diff .
    sourcepack report open
    ```
 
-`sourcepack init . --auto` creates or refreshes local SourcePack state after you decide the current repo state should be trusted. Do not use initialization to bless an AI patch just because SourcePack reported a failure.
-
-
-## Evidence bundles
-
-SourcePack can write a local Evidence Bundle v1 manifest for one saved judgment report and its decision-ledger evidence chain:
-
-```bash
-sourcepack bundle create .sourcepack/reports/latest.json --ledger .sourcepack/decisions.jsonl
-sourcepack bundle verify .sourcepack/reports/latest.bundle.json
-sourcepack bundle verify .sourcepack/reports/latest.bundle.json --json
-```
-
-An evidence bundle is a plain JSON manifest. It records the target report schema and SHA-256, related report-created and fail-detected decision-ledger events, parent-chain information, verifiably linked override records, scanner-manifest references when available, and referenced artifact hashes. Verification checks local bytes and local relationships only.
-
-## Local Workbench dashboard
-
-Start the local dashboard with `sourcepack ui .` (or `sourcepack workbench .`). The Workbench binds only to loopback, prints a session-token URL, and serves the dashboard at `/`. The token is required for every `/api/dashboard/v1/` request; it is retained in browser session storage after the initial URL handshake. The dashboard has no cloud service, telemetry, analytics, CDN dependency, account model, or external network requests.
-
-The dashboard is read-only. Opening it does not create `.sourcepack`, generate or repair a baseline, generate a report, run replay, install hooks, edit policy or overrides, or modify Git state. Its sections use the existing canonical sources: Git metadata plus baseline validation and effective-policy resolution for **Repository overview**; `resolve_effective_policy` for **Policy**; only `.sourcepack/reports/latest.json` for **Findings and report**; `validate_baseline` for **Baseline**; the saved report replay/evidence fields for **Replay and evidence**; and persisted `.sourcepack/decisions.jsonl` override records plus saved report policy findings for **Overrides and policy findings**. It never searches archives or arbitrary filesystem paths.
-
-Current report support is `traffic_report.v1`; stored replay/evidence fields are displayed as recorded rather than rerun or interpreted. Missing artifacts show empty/unavailable states. Malformed canonical artifacts show an error state, and an unsupported canonical report version shows an unsupported-version state without falling back to an older report. Every section provides a raw JSON toggle that displays the exact already-fetched API response as escaped text.
-
-The dashboard intentionally provides no write actions, policy editing, override management, baseline lifecycle controls, replay execution, generalized filesystem browsing, command execution, historical artifact search, authenticity proof, report-correctness proof, repository-correctness proof, or user-intent proof. If no report is present, run the normal `sourcepack diff` workflow separately; if the baseline is missing or corrupt, use the normal reviewed baseline workflow separately rather than the dashboard.
-
-An evidence bundle does not prove semantic correctness, runtime safety, or that every historical event was recorded. It is not cryptographically signed or tamper-proof. It verifies hashes and relationships among the local artifacts it includes or references.
+`sourcepack init . --auto` creates or refreshes local SourcePack state only after you decide the current repository state should be trusted. Do not use initialization to bless a failed AI patch.
 
 ## What SourcePack catches
 
@@ -143,84 +110,36 @@ An evidence bundle does not prove semantic correctness, runtime safety, or that 
 | Unsafe paths | FAIL | `unsafe_path`, `path_escape` |
 | Binary diffs | WARN or FAIL for high-risk paths | `binary_diff` |
 | Malformed diffs | FAIL | `malformed_diff` |
-| Missing, stale, or corrupt baseline | FAIL or WARN depending on state and mode | `baseline_missing`, `baseline_stale`, `baseline_corrupt` |
-| Workflow automation changes | WARN or FAIL depending on mode and policy | `workflow_change` |
+| Missing, stale, or corrupt baseline | FAIL or WARN by state and mode | `baseline_missing`, `baseline_stale`, `baseline_corrupt` |
+| Workflow automation changes | WARN or FAIL by mode and policy | `workflow_change` |
 
-See [`docs/reason-codes.md`](docs/reason-codes.md) for reason-code behavior and fixes.
+See [`docs/reason-codes.md`](docs/reason-codes.md) for exact behavior and remediation guidance.
 
-## What SourcePack is not
+## How the trust model works
 
-SourcePack is not a general AI code reviewer.
+SourcePack keeps reviewed repository evidence separate from AI guidance.
 
-It does not judge whether code is elegant, well-designed, scalable, secure, or production-ready. It does not replace tests, type checkers, security scanners, linters, or human review.
+- **Baseline:** reviewed local enforcement state
+- **Prompt context:** advisory material for an AI assistant
+- **Diff:** the actual proposed repository change
+- **Judgment:** the result of checking that change against trusted evidence and policy
 
-SourcePack answers a narrower question:
+Prompt context never becomes trust.
 
-> Did this proposed change rely on repo facts that are locally verifiable?
+SourcePack refuses to create a trusted baseline from a dirty Git working tree unless `--force` is explicitly supplied. In CI, committed `.sourcepack/baseline/` state must be consumed as-is. CI must never create, refresh, repair, or silently bless trusted baseline state.
 
-## Does SourcePack fit my problem?
+See [`docs/baseline-lifecycle.md`](docs/baseline-lifecycle.md).
 
-Use SourcePack when the question can be checked against local project evidence:
-
-- files
-- dependency manifests
-- scripts and commands
-- protected paths
-- diffs
-- trusted SourcePack baseline artifacts
-- local execution evidence
-
-SourcePack is only a partial fit for broad AI PR review burden, and it is not a fit for judging architecture, taste, runtime quality, business logic, or management decisions.
-
-See [`docs/problem-fit.md`](docs/problem-fit.md) for fit, partial-fit, and not-fit examples.
-
-## What SourcePack does not claim
-
-- does not prove code correctness
-- does not prove security
-- does not prove runtime success
-- does not prove semantic validity
-- does not prove external API truth
-- does not prove dependency safety
-- does not prove user intent
-
-## Public proof links
-
-- [License](LICENSE)
-- [Changelog](CHANGELOG.md)
-- [Reason codes](docs/reason-codes.md)
-- [CI usage](docs/ci.md)
-- [GitHub Actions quickstart](docs/github-action-quickstart.md)
-- [Problem fit](docs/problem-fit.md)
-- [AI-agent workflow](docs/ai-agent-workflow.md)
-- [Public-alpha readiness](docs/public-alpha-readiness.md)
-
-## How SourcePack works
-
-SourcePack keeps trusted repo evidence separate from AI guidance.
-
-- Baseline = reviewed local enforcement state.
-- Prompt context = AI guidance only.
-- Prompt context never becomes trust.
-- `sourcepack diff` checks actual repo changes against the baseline.
-
-Create or refresh the trusted baseline only after reviewing that the current repo state should be trusted.
-
-SourcePack refuses to create a trusted baseline from a dirty Git working tree unless you pass `--force`.
-
-For baseline lifecycle details, see [`docs/baseline-lifecycle.md`](docs/baseline-lifecycle.md).
-
-CI should consume committed `.sourcepack/baseline/` state and must not create, refresh, repair, or bless trusted baseline state automatically.
-
-## Local policy
+## Verdicts and exit behavior
 
 - PASS exits `0`.
 - WARN exits `0` locally.
 - WARN exits nonzero with `--strict` or `--ci` by default.
-- `sourcepack diff --exit-policy fail-only` keeps WARN visible but exits `0` for WARN.
-- `sourcepack diff --exit-policy warn-or-fail` exits nonzero for WARN and FAIL.
+- `--exit-policy fail-only` keeps WARN visible but exits `0` for WARN.
+- `--exit-policy warn-or-fail` exits nonzero for WARN and FAIL.
 - FAIL exits nonzero under every diff exit policy.
-- Verdicts are report judgments; process exits are command-boundary policy decisions and do not rewrite JSON or human verdicts.
+
+Verdicts are report judgments. Process exit codes are command-boundary policy decisions and do not rewrite the saved JSON or human-readable verdict.
 
 ## Common commands
 
@@ -240,7 +159,7 @@ sourcepack doctor
 sourcepack doctor --strict
 ```
 
-More commands exist for prompt generation, baseline maintenance, report replay, hooks, local execution evidence, and policy validation:
+Additional workflows:
 
 ```bash
 sourcepack prompt . "task" --copy
@@ -268,13 +187,13 @@ sourcepack fleet summarize <decision-ledger.jsonl> --input-type ledgers --json
 `sourcepack init . --auto` installs hooks when possible in a Git repository.
 
 - The pre-commit hook checks staged changes with `sourcepack diff . --staged`.
-- The post-commit hook refreshes the baseline only after clean commits.
-- If the working tree is dirty after a commit, SourcePack marks the baseline stale instead of silently trusting it.
-- To uninstall hooks, run `sourcepack uninstall-hook .`.
+- The post-commit hook refreshes the baseline only after a clean commit.
+- A dirty working tree after commit marks the baseline stale instead of silently trusting it.
+- `sourcepack uninstall-hook .` removes the hooks.
 
-## CI quickstart
+## CI and GitHub Actions
 
-Safe CI usage for projects that intentionally manage a trusted baseline:
+Minimal CI usage:
 
 ```yaml
 - uses: actions/checkout@v4
@@ -282,21 +201,11 @@ Safe CI usage for projects that intentionally manage a trusted baseline:
 - run: sourcepack diff . --ci
 ```
 
-For pull-request CI, make sure the PR delta is visible before running `sourcepack diff . --ci`.
+For pull requests, make sure the PR delta is visible before running SourcePack. A clean checkout may already contain the proposed changes as committed files, leaving no workspace delta to inspect.
 
-A clean PR checkout may already contain the proposed changes as committed files, leaving no local workspace delta for SourcePack to inspect.
+The bundled composite action consumes an existing committed `.sourcepack/baseline/` directory and fails closed when that baseline is missing.
 
-For a complete copy-paste workflow, see [`docs/github-action-quickstart.md`](docs/github-action-quickstart.md).
-
-CI must consume committed baseline state and must not create, refresh, repair, or bless trusted baseline state.
-
-## GitHub Action
-
-The bundled composite action can run SourcePack in CI while preserving the trust-state boundary.
-
-It consumes an existing committed `.sourcepack/baseline/` directory and fails closed when that baseline is missing.
-
-The action writes report artifacts under `sourcepack-report/` by default:
+By default it writes:
 
 - `sourcepack.json`
 - `sourcepack.md`
@@ -306,91 +215,156 @@ The action writes report artifacts under `sourcepack-report/` by default:
 - `sourcepack-command.json`
 - `sourcepack.sarif.json` when SARIF is produced
 
-`sourcepack-command.txt` is human-readable. `sourcepack-command.json` records structured command arguments for downstream tooling.
-
-See [`docs/ci.md`](docs/ci.md) and [`docs/github-action-quickstart.md`](docs/github-action-quickstart.md) before enabling the action on pull requests.
+See [`docs/ci.md`](docs/ci.md) and [`docs/github-action-quickstart.md`](docs/github-action-quickstart.md).
 
 ## Local reports
 
-`sourcepack diff .` writes local report artifacts under `.sourcepack/reports/`:
+`sourcepack diff .` writes:
 
 - `.sourcepack/reports/latest.html`
 - `.sourcepack/reports/latest.json`
 - `.sourcepack/reports/latest.md`
 
-Use `sourcepack report path` to print the HTML report path and `sourcepack report open` to open it.
+Use `sourcepack report path` to print the HTML path and `sourcepack report open` to open it.
 
-HTML is for humans. JSON is for automation and remains JSON-only on stdout when `sourcepack diff . --json` is used.
+HTML is for humans. JSON is for automation. When `sourcepack diff . --json` is used, stdout remains JSON-only.
 
-## Replay saved reports
+## Local Workbench
+
+Start the read-only dashboard with:
+
+```bash
+sourcepack ui .
+```
+
+`sourcepack workbench .` is also supported.
+
+The Workbench binds only to loopback, prints a session-token URL, and makes no external network requests. It has no telemetry, analytics, CDN dependency, cloud account requirement, or write controls.
+
+The dashboard reads canonical SourcePack artifacts. It does not create or repair baselines, generate reports, execute replay, install hooks, edit policy, manage overrides, run commands, browse arbitrary files, or modify Git state.
+
+Current report support is `traffic_report.v1`. Missing artifacts remain unavailable, malformed artifacts produce errors, and unsupported report versions do not silently fall back to older data.
+
+## Evidence bundles
+
+Create and verify a local Evidence Bundle v1:
+
+```bash
+sourcepack bundle create .sourcepack/reports/latest.json --ledger .sourcepack/decisions.jsonl
+sourcepack bundle verify .sourcepack/reports/latest.bundle.json
+sourcepack bundle verify .sourcepack/reports/latest.bundle.json --json
+```
+
+An evidence bundle is a JSON manifest that can bind a saved report to related decision-ledger events, linked overrides, scanner-manifest references, parent-chain information, and referenced artifact hashes.
+
+Verification checks local bytes and relationships. It is not a cryptographic signature, tamper-proof archive, semantic proof, or guarantee that every historical event was recorded.
+
+## Replay
 
 ```bash
 sourcepack replay <report-or-bundle-path>
 sourcepack replay <report-or-bundle-path> --json
 ```
 
-Replay reconstructs a saved SourcePack JSON report or replay bundle.
-
-Replay is read-only, does not rerun judgment against the current checkout, and does not prove code correctness, security, runtime success, dependency safety, semantic validity, external API truth, or user intent.
+Replay reconstructs a saved SourcePack JSON report or replay bundle. It is read-only and does not rerun judgment against the current checkout.
 
 ## Local execution evidence
 
-`sourcepack exec -- <command...>` runs a local command and records bounded evidence under `.sourcepack/evidence/ledger.jsonl`.
+```bash
+sourcepack exec -- <command...>
+```
 
-Ledger entries store command metadata, exit code, stdout/stderr SHA-256 hashes, short excerpts, git head, dirty-worktree state before and after execution, duration, and a small environment summary.
+SourcePack records bounded execution evidence under `.sourcepack/evidence/ledger.jsonl`, including command metadata, exit code, stdout and stderr hashes, short excerpts, Git head, dirty-worktree state before and after execution, duration, and a small environment summary.
 
-They do not store full logs by default and are local-only.
+Full logs are not stored by default. Execution evidence supports only the bounded claim that a command ran locally under the recorded conditions.
 
-Execution evidence only supports bounded claims that a command was run locally. It does not prove code correctness, security, runtime success, semantic validity, external API truth, dependency safety, or user intent.
+Prompt context in `.sourcepack/prompt/` is advisory and cannot satisfy execution evidence.
 
-Prompt context in `.sourcepack/prompt/` remains advisory and cannot satisfy execution evidence.
+## Policy
 
-## Validation
+Repository policy lives at `.sourcepack/policy.json` and is validated with:
 
-Validation is local and deterministic.
+```bash
+sourcepack policy validate .
+```
 
-`sourcepack doctor --strict` checks production-readiness prerequisites and packaged assets. Hosted GitHub Actions remains the source of truth for hosted checks.
+Supported rule areas include:
 
-The primary proof unit is a repo-state transition, not a random repository.
+- dependency additions
+- protected paths
+- required tests for selected paths
+- maximum changed lines
+- secret-pattern blocking
+- package-manager consistency, currently for `pnpm`
 
-## Screenshot assets
+Organization policy can be supplied as explicit local input:
 
-Screenshot assets are optional and should only be shown inline after the image files actually exist in the repository.
+```bash
+sourcepack policy resolve . --org-policy ../org-policy.json --json
+sourcepack diff . --org-policy ../org-policy.json --org-policy-mode required
+```
 
-Expected future asset targets are expected screenshot targets:
+Policy findings are first-class SourcePack findings and participate in Markdown, HTML, JSON, SARIF, finding identity, override eligibility, and final PASS/WARN/FAIL composition.
 
-- `docs/assets/sourcepack-terminal-red.png` — terminal output from `fail-unsupported-dependency`.
-- `docs/assets/sourcepack-red-report.png` — HTML report from `fail-unsupported-dependency`.
-- `docs/assets/sourcepack-warn-report.png` — HTML report from `warn-new-file`.
-- `docs/assets/sourcepack-pass-report.png` — HTML report from `pass-clean`.
+The local policy layer is read-only during judgment. It does not mutate policy files, baseline state, overrides, decision ledgers, Git configuration, or the evaluated working tree.
 
-See [`docs/assets/README.md`](docs/assets/README.md) for exact capture instructions.
+See [`docs/problem-fit.md`](docs/problem-fit.md) and the policy documentation for supported scope and limits.
 
-## Status
+## Optional hosted control plane
 
-v1.10 alpha series: local-first public alpha.
+The repository also contains an optional hosted service entry point, `sourcepack-hosted`, for team-oriented control-plane work such as organizations, memberships, repository registration, service identities, role-based authorization, idempotent mutations, and audit retrieval.
 
-Core judgment behavior is validated. Packaging, reports, demos, CI behavior, and UX polish are active areas.
+Local SourcePack commands do not start the hosted service. The local guardrail remains usable without accounts, telemetry, or a network service.
 
+The hosted layer does not convert remote policy or organizational state into unquestioned local trust. Trust-state boundaries remain explicit.
 
-## Policy resolution status
+## What SourcePack is not
 
-SourcePack currently has a repository-local policy configuration at `.sourcepack/policy.json` validated by `sourcepack policy validate`. The established repository policy schema is `sourcepack.policy.v1`; supported local rule fields are block_dependency_additions (boolean), protected_paths (normalized path-pattern list), package_manager (currently `pnpm` only), require_tests_for (normalized path-pattern list), max_changed_lines (positive integer), and block_secret_patterns (boolean). SourcePack also has a local allow-list file at `.sourcepack/policy/allow.jsonl` managed by `sourcepack allow`/`sourcepack policy list`.
+SourcePack is not a general AI code reviewer. It does not decide whether code is elegant, scalable, secure, production-ready, architecturally sound, or aligned with business intent.
 
-Milestone I organization-policy resolution is implemented as an explicit local resolver. Milestone J policy findings are implemented for `sourcepack diff` by resolving the same effective policy used by `sourcepack policy resolve` and emitting first-class findings in the normal traffic report.
+It does not replace:
 
-Local policy validation fails closed when existing validation finds malformed repository policy JSON or unsupported repository policy shapes. Absence of optional repository policy remains informational and exits `0` for `sourcepack policy validate`. Organization policy resolution is available with `sourcepack policy resolve [repo] [--org-policy <path>] [--org-policy-mode optional|required]`. The organization policy schema is `sourcepack.org_policy.v1`; effective-policy output uses `sourcepack.effective_policy.v1`; the supported package-manager domain remains `pnpm` only. The organization policy file must be explicit caller-designated local input outside the evaluated repository after symlink resolution. It remains unsigned in Milestone I: SourcePack does not fetch remote policy, authenticate publishers, verify organization identity, provide hosted policy/RBAC/cloud distribution, or fetch hosted policy. Milestone J does not add signing, cloud distribution, dashboards, APIs, users, teams, RBAC, or Milestone K schema export.
+- tests
+- type checkers
+- linters
+- security scanners
+- dependency review
+- runtime validation
+- human review
 
-### Policy findings during diff
+Use SourcePack when the disputed claim can be checked against local repository evidence. It is only a partial fit for broad PR-review burden and is not a fit for questions of taste, architecture, business logic, or management judgment.
 
-`sourcepack diff` accepts `--org-policy <path>` and `--org-policy-mode optional|required`. The flags work with local, strict, CI, staged, and committed-range diff modes. `--org-policy-mode required` without `--org-policy` produces a structured `policy_resolution_failed` FAIL report rather than only an argument-parser error. Invalid mode values remain argparse-rejected.
+## Explicit non-claims
 
-Diff policy evaluation uses the canonical Git repository root and Milestone I effective-policy resolver. Repository-local `.sourcepack/policy.json` rules apply even when no organization policy is supplied. Policy findings join the existing report, Markdown, HTML, SARIF, finding identity, and PASS/WARN/FAIL verdict composition paths. The final verdict is the maximum severity across core and policy findings.
+SourcePack does not prove:
 
-Milestone J policy reason codes are `policy_resolution_failed`, `policy_dependency_addition`, `policy_protected_path`, `policy_test_required`, `policy_change_limit`, `policy_secret_pattern`, and `policy_package_manager`. Policy findings carry structured policy metadata including effective-policy ID, rule name, rule fingerprint, effective value, provenance, authority, scope, and override eligibility. Repository-only policy findings are repository-overridable by existing primitives when the finding maps to an existing allow scope: dependency additions use dependency allows, and path-scoped policy findings use exact path allows. `policy_package_manager` has no package-manager-specific allow primitive; repository-authority package-manager findings can only be suppressed by an exact path allow for the emitted lockfile path. Organization, mixed-provenance, and policy-resolution-failure findings are not organization-overridable in Milestone J. Organization-authority overrides remain unimplemented.
+- code correctness
+- security
+- runtime success
+- semantic validity
+- external API truth
+- dependency safety
+- user intent
+- authenticity of every historical artifact
 
-Enforced rules are limited to the established resolver domain: block_dependency_additions, protected_paths, require_tests_for, max_changed_lines, block_secret_patterns, and package_manager. Changed-line counting is added lines plus deleted lines from the parsed diff, excluding headers and metadata. Test qualification uses SourcePack's existing `_is_test_path` conventions (`tests/`, `test/`, `__tests__`, `_test.py`, `.test.*`, and `.spec.*`) and deleted tests do not qualify. Secret checks inspect only added lines and report classes/counts without raw secret values. The package-manager domain is currently `pnpm` only; incompatible npm/yarn lockfile changes are policy violations.
+## Validation and status
 
-The report-level `policy` section is additive and includes evaluation status, resolution status, effective-policy ID, organization-policy mode/status/ID/hash, repository policy hash, effective rules, and policy finding count. The policy layer is read-only: it does not mutate baseline state, policy files, org-policy files, overrides, decision ledgers, Git configuration, cloud state, or the evaluated working tree.
+SourcePack is in the v1.10 public-alpha series.
 
-SourcePack policy is local-only: it does not fetch hosted policy, authenticate users, claim RBAC enforcement, or distribute organization policy automatically.
+Core judgment behavior, packaging, reports, demos, policy resolution, replay, local execution evidence, CI behavior, evidence bundles, and the local Workbench are implemented. Public-alpha work continues around compatibility, packaging, integration coverage, and UX polish.
+
+`sourcepack doctor --strict` checks local production-readiness prerequisites and packaged assets. Hosted GitHub Actions remain the source of truth for hosted checks.
+
+The primary proof unit is a repository-state transition: a known trusted state, a proposed change, the evidence evaluated, and the resulting judgment.
+
+## Public proof links
+
+- [License](LICENSE)
+- [Changelog](CHANGELOG.md)
+- [Reason codes](docs/reason-codes.md)
+- [CI usage](docs/ci.md)
+- [GitHub Actions quickstart](docs/github-action-quickstart.md)
+- [Problem fit](docs/problem-fit.md)
+- [AI-agent workflow](docs/ai-agent-workflow.md)
+- [Public-alpha readiness](docs/public-alpha-readiness.md)
+- [Baseline lifecycle](docs/baseline-lifecycle.md)

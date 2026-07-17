@@ -6,8 +6,10 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import venv
 import zipfile
+from http.client import HTTPConnection
 from email.parser import Parser
 from pathlib import Path, PurePosixPath
 
@@ -34,6 +36,7 @@ WHEEL_REQUIRED_FILES = (
     "sourcepack/examples/fake_ai_answer.md",
     "sourcepack/examples/fake_ai_patch.diff",
     "sourcepack/examples/demo_repo/.env",
+    "sourcepack/workbench_static/index.html",
 )
 SDIST_REQUIRED_FILES = tuple(f"src/{path}" for path in WHEEL_REQUIRED_FILES)
 WHEEL_DEMO_SCAN_PREFIXES = (
@@ -251,6 +254,16 @@ def smoke_installed_artifact(artifact: Path, version: str, name: str, work: Path
     invalid_cp = run([str(sourcepack), "schema", "validate", "effective-policy.v1", str(invalid_file), "--json"], work, check=False)
     if invalid_cp.returncode == 0:
         raise ReleaseSmokeError(f"{name} installed schema accepted invalid policy artifact")
+    dashboard_check = (
+        "import json,threading;from http.client import HTTPConnection;"
+        "from pathlib import Path;from sourcepack.workbench import WorkbenchServer,WorkbenchHandler;"
+        "s=WorkbenchServer(('127.0.0.1',0),WorkbenchHandler,Path('.'),'release-token');"
+        "t=threading.Thread(target=s.serve_forever,daemon=True);t.start();"
+        "c=HTTPConnection('127.0.0.1',s.server_address[1]);c.request('GET','/');r=c.getresponse();assert r.status==200 and b'SourcePack Workbench' in r.read();"
+        "c.close();c=HTTPConnection('127.0.0.1',s.server_address[1]);c.request('GET','/api/dashboard/v1/overview');assert c.getresponse().status==403;c.close();"
+        "c=HTTPConnection('127.0.0.1',s.server_address[1]);c.request('GET','/api/dashboard/v1/overview',headers={'X-SourcePack-Token':'release-token'});r=c.getresponse();assert r.status==200 and json.loads(r.read())['schema_version']=='sourcepack.dashboard.overview.v1';c.close();s.shutdown();s.server_close();t.join(5)"
+    )
+    run([str(python), "-c", dashboard_check], work)
 
 
 def main() -> int:

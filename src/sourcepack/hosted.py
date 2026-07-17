@@ -120,28 +120,65 @@ class Store:
     def repositories(self, actor: str, org: str) -> list[dict]:
         if not self.permit(actor,org,"repositories:read"): raise PermissionError
         with self.db() as db: return [{"schema_version":"sourcepack.cloud.repository.v1","id":r["id"],"organization_id":org,"display_name":r["display_name"],"registered_at":r["created_at"],"status":r["status"]} for r in db.execute("SELECT * FROM repositories WHERE organization_id=? ORDER BY created_at,id",(org,))]
+    def _membership_record(self, row: sqlite3.Row) -> dict:
+        return {"schema_version":"sourcepack.cloud.membership.v1","id":row["id"],"organization_id":row["organization_id"],"user_id":row["user_id"],"role":row["role"],"status":row["status"],"created_at":row["created_at"],"role_changed_at":row["role_changed_at"]}
+    def _membership_authorized(self, db: sqlite3.Connection, actor: str, org: str) -> sqlite3.Row:
+        """Authorize membership mutations inside the locked transaction."""
+        row=db.execute("SELECT * FROM memberships WHERE user_id=? AND organization_id=? AND status='active'",(actor,org)).fetchone()
+        if not row or "members:write" not in ROLE_PERMISSIONS.get(row["role"],set()): raise PermissionError
+        return row
+    def _begin_membership_write(self, db: sqlite3.Connection) -> None:
+        # SQLite must acquire the write lock before any membership state is read.
+        db.execute("BEGIN IMMEDIATE")
     def add_membership(self, actor: str, org: str, user_id: str, role: str) -> dict:
-        if role not in ROLE_PERMISSIONS or not self.permit(actor,org,"members:write"): raise PermissionError
-        stamp=now(); record={"schema_version":"sourcepack.cloud.membership.v1","id":"mem_"+uuid.uuid4().hex,"organization_id":org,"user_id":user_id,"role":role,"status":"active","created_at":stamp,"role_changed_at":stamp}
-        with self.db() as db:
-            db.execute("INSERT INTO memberships VALUES (?,?,?,?,?,?,?,?)",tuple(record[k] for k in ("id","schema_version","organization_id","user_id","role","status","created_at","role_changed_at"))); self.audit(db,org,actor,"membership_added","membership",record["id"])
-        return record
+        if role not in ROLE_PERMISSIONS: raise ValueError("invalid_role")
+        db=self.db()
+        try:
+            self._begin_membership_write(db); self._membership_authorized(db,actor,org)
+            if not db.execute("SELECT 1 FROM users WHERE id=? AND status='active'",(user_id,)).fetchone(): raise LookupError
+            existing=db.execute("SELECT * FROM memberships WHERE organization_id=? AND user_id=?",(org,user_id)).fetchone()
+            if existing and existing["status"] == "active": raise ValueError("duplicate_membership")
+            stamp=now()
+            if existing:
+                db.execute("UPDATE memberships SET role=?,status='active',role_changed_at=? WHERE id=?",(role,stamp,existing["id"]))
+                row=db.execute("SELECT * FROM memberships WHERE id=?",(existing["id"],)).fetchone()
+                self.audit(db,org,actor,"membership_reactivated","membership",existing["id"])
+            else:
+                record_id="mem_"+uuid.uuid4().hex
+                db.execute("INSERT INTO memberships VALUES (?,?,?,?,?,?,?,?)",(record_id,"sourcepack.cloud.membership.v1",org,user_id,role,"active",stamp,stamp))
+                row=db.execute("SELECT * FROM memberships WHERE id=?",(record_id,)).fetchone()
+                self.audit(db,org,actor,"membership_added","membership",record_id)
+            db.commit(); return self._membership_record(row)
+        except Exception:
+            db.rollback(); raise
+        finally: db.close()
     def _owner_count(self, db: sqlite3.Connection, org: str) -> int:
         return int(db.execute("SELECT COUNT(*) FROM memberships WHERE organization_id=? AND role='owner' AND status='active'", (org,)).fetchone()[0])
     def change_role(self, actor: str, org: str, membership_id: str, role: str) -> None:
-        if role not in ROLE_PERMISSIONS or not self.permit(actor,org,"members:write"): raise PermissionError
-        with self.db() as db:
+        if role not in ROLE_PERMISSIONS: raise ValueError("invalid_role")
+        db=self.db()
+        try:
+            self._begin_membership_write(db); self._membership_authorized(db,actor,org)
             row=db.execute("SELECT * FROM memberships WHERE id=? AND organization_id=? AND status='active'",(membership_id,org)).fetchone()
             if not row: raise LookupError
-            if row["role"]=="owner" and (role!="owner") and self._owner_count(db,org)<=1: raise ValueError("final_owner")
+            if row["role"]=="owner" and role!="owner" and self._owner_count(db,org)<=1: raise ValueError("final_owner")
             db.execute("UPDATE memberships SET role=?,role_changed_at=? WHERE id=?",(role,now(),membership_id)); self.audit(db,org,actor,"membership_role_changed","membership",membership_id)
+            db.commit()
+        except Exception:
+            db.rollback(); raise
+        finally: db.close()
     def remove_member(self, actor: str, org: str, membership_id: str) -> None:
-        if not self.permit(actor,org,"members:write"): raise PermissionError
-        with self.db() as db:
+        db=self.db()
+        try:
+            self._begin_membership_write(db); self._membership_authorized(db,actor,org)
             row=db.execute("SELECT * FROM memberships WHERE id=? AND organization_id=? AND status='active'",(membership_id,org)).fetchone()
             if not row: raise LookupError
             if row["role"]=="owner" and self._owner_count(db,org)<=1: raise ValueError("final_owner")
             db.execute("UPDATE memberships SET status='removed' WHERE id=?",(membership_id,)); self.audit(db,org,actor,"membership_removed","membership",membership_id)
+            db.commit()
+        except Exception:
+            db.rollback(); raise
+        finally: db.close()
     def repository(self, actor:str, org:str, repo:str)->dict:
         if not self.permit(actor,org,"repositories:read"): raise PermissionError
         with self.db() as db:
@@ -191,7 +228,7 @@ class Store:
     def members(self, actor: str, org: str) -> list[dict]:
         if not self.permit(actor,org,"repositories:read"): raise PermissionError
         with self.db() as db:
-            return [{"schema_version":"sourcepack.cloud.membership.v1","id":r["id"],"organization_id":org,"user_id":r["user_id"],"role":r["role"],"status":r["status"],"created_at":r["created_at"],"role_changed_at":r["role_changed_at"]} for r in db.execute("SELECT * FROM memberships WHERE organization_id=? ORDER BY created_at,id",(org,))]
+            return [self._membership_record(r) for r in db.execute("SELECT * FROM memberships WHERE organization_id=? ORDER BY created_at,id",(org,))]
 
 
 def envelope(*, data: object | None=None, error: str | None=None, request_id: str | None=None) -> dict:
@@ -221,6 +258,9 @@ def make_handler(database: str | Path) -> type[BaseHTTPRequestHandler]:
             actor=store.actor(self.headers.get("Authorization"))
             if not actor: self.send(401,envelope(error="authentication_required")); return None
             return actor
+        def membership_actor(self, actor):
+            if actor["actor_kind"] != "user": self.send(404,envelope(error="not_found")); return None
+            return actor
         def do_GET(self)->None:
             path=urlparse(self.path).path
             if path=="/api/v1/health": self.send(200,envelope(data={"status":"ok"})); return
@@ -240,6 +280,7 @@ def make_handler(database: str | Path) -> type[BaseHTTPRequestHandler]:
                 except PermissionError:self.send(404,envelope(error="not_found"))
                 return
             if len(parts)==6 and parts[3]=="organizations" and parts[5]=="members":
+                if not self.membership_actor(actor): return
                 try:self.send(200,envelope(data={"items":store.members(actor["id"],parts[4])}))
                 except PermissionError:self.send(404,envelope(error="not_found"))
                 return
@@ -273,9 +314,11 @@ def make_handler(database: str | Path) -> type[BaseHTTPRequestHandler]:
                 except PermissionError:self.send(404,envelope(error="not_found"))
                 return
             if len(parts)==6 and parts[3]=="organizations" and parts[5]=="members":
-                try:self.send(201,envelope(data=store.add_membership(actor["id"],parts[4],str(data.get("user_id","")),str(data.get("role","")))))
-                except PermissionError:self.send(404,envelope(error="not_found"))
-                except sqlite3.IntegrityError:self.send(400,envelope(error="invalid_request"))
+                if not self.membership_actor(actor): return
+                if set(data)!={"user_id","role"} or not isinstance(data.get("user_id"),str) or not isinstance(data.get("role"),str): self.send(400,envelope(error="invalid_request")); return
+                try:self.send(201,envelope(data=store.add_membership(actor["id"],parts[4],data["user_id"],data["role"])))
+                except ValueError as exc:self.send(409 if str(exc)=="duplicate_membership" else 400,envelope(error=str(exc) if str(exc)=="duplicate_membership" else "invalid_request"))
+                except (PermissionError,LookupError):self.send(404,envelope(error="not_found"))
                 return
             if len(parts)==6 and parts[3]=="organizations" and parts[5]=="services":
                 if set(data)!={"display_name"} or not isinstance(data.get("display_name"),str):self.send(400,envelope(error="invalid_request"));return
@@ -308,6 +351,20 @@ def make_handler(database: str | Path) -> type[BaseHTTPRequestHandler]:
             if not actor:return
             parts=urlparse(self.path).path.split("/")
             if len(parts)==7 and parts[3]=="organizations" and parts[5]=="members":
+                if not self.membership_actor(actor): return
+                content_type=self.headers.get("Content-Type")
+                if content_type and content_type.split(";",1)[0] != "application/json": self.send(415,envelope(error="unsupported_content_type")); return
+                try:
+                    size=int(self.headers.get("Content-Length","0"))
+                    if size:
+                        def pairs(items):
+                            result={}
+                            for key,value in items:
+                                if key in result: raise ValueError
+                                result[key]=value
+                            return result
+                        if _json:=json.loads(self.rfile.read(size).decode(),object_pairs_hook=pairs): raise ValueError
+                except Exception: self.send(400,envelope(error="malformed_json")); return
                 try:store.remove_member(actor["id"],parts[4],parts[6]);self.send(200,envelope(data={"removed":True}))
                 except ValueError:self.send(409,envelope(error="final_owner"))
                 except (PermissionError,LookupError):self.send(404,envelope(error="not_found"))
@@ -323,9 +380,11 @@ def make_handler(database: str | Path) -> type[BaseHTTPRequestHandler]:
             actor=self.auth()
             if not actor:return
             parts=urlparse(self.path).path.split("/")
-            if len(parts)==7 and parts[3]=="organizations" and parts[5]=="members" and set(data)=={"role"} and isinstance(data["role"],str):
+            if len(parts)==7 and parts[3]=="organizations" and parts[5]=="members":
+                if not self.membership_actor(actor): return
+                if set(data)!={"role"} or not isinstance(data.get("role"),str): self.send(400,envelope(error="invalid_request")); return
                 try:store.change_role(actor["id"],parts[4],parts[6],data["role"]);self.send(200,envelope(data={"changed":True}))
-                except ValueError:self.send(409,envelope(error="final_owner"))
+                except ValueError as exc:self.send(409 if str(exc)=="final_owner" else 400,envelope(error=str(exc) if str(exc)=="final_owner" else "invalid_request"))
                 except (PermissionError,LookupError):self.send(404,envelope(error="not_found"))
                 return
             self.send(400,envelope(error="invalid_request"))

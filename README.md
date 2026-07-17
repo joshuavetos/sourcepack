@@ -115,6 +115,16 @@ sourcepack bundle verify .sourcepack/reports/latest.bundle.json --json
 
 An evidence bundle is a plain JSON manifest. It records the target report schema and SHA-256, related report-created and fail-detected decision-ledger events, parent-chain information, verifiably linked override records, scanner-manifest references when available, and referenced artifact hashes. Verification checks local bytes and local relationships only.
 
+## Local Workbench dashboard
+
+Start the local dashboard with `sourcepack ui .` (or `sourcepack workbench .`). The Workbench binds only to loopback, prints a session-token URL, and serves the dashboard at `/`. The token is required for every `/api/dashboard/v1/` request; it is retained in browser session storage after the initial URL handshake. The dashboard has no cloud service, telemetry, analytics, CDN dependency, account model, or external network requests.
+
+The dashboard is read-only. Opening it does not create `.sourcepack`, generate or repair a baseline, generate a report, run replay, install hooks, edit policy or overrides, or modify Git state. Its sections use the existing canonical sources: Git metadata plus baseline validation and effective-policy resolution for **Repository overview**; `resolve_effective_policy` for **Policy**; only `.sourcepack/reports/latest.json` for **Findings and report**; `validate_baseline` for **Baseline**; the saved report replay/evidence fields for **Replay and evidence**; and persisted `.sourcepack/decisions.jsonl` override records plus saved report policy findings for **Overrides and policy findings**. It never searches archives or arbitrary filesystem paths.
+
+Current report support is `traffic_report.v1`; stored replay/evidence fields are displayed as recorded rather than rerun or interpreted. Missing artifacts show empty/unavailable states. Malformed canonical artifacts show an error state, and an unsupported canonical report version shows an unsupported-version state without falling back to an older report. Every section provides a raw JSON toggle that displays the exact already-fetched API response as escaped text.
+
+The dashboard intentionally provides no write actions, policy editing, override management, baseline lifecycle controls, replay execution, generalized filesystem browsing, command execution, historical artifact search, authenticity proof, report-correctness proof, repository-correctness proof, or user-intent proof. If no report is present, run the normal `sourcepack diff` workflow separately; if the baseline is missing or corrupt, use the normal reviewed baseline workflow separately rather than the dashboard.
+
 An evidence bundle does not prove semantic correctness, runtime safety, or that every historical event was recorded. It is not cryptographically signed or tamper-proof. It verifies hashes and relationships among the local artifacts it includes or references.
 
 ## What SourcePack catches

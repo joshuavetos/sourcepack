@@ -4,33 +4,52 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SourcePack Workbench</title>
+  <style>
+    body { font: 16px system-ui, sans-serif; margin: 2rem auto; max-width: 1100px; padding: 0 1rem; color: #17212b; }
+    header { border-bottom: 2px solid #d7e0e7; margin-bottom: 1.5rem; } .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); }
+    section { border: 1px solid #bdcad3; border-radius: .4rem; padding: 1rem; } pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f4f7f9; padding: .75rem; border-radius: .25rem; }
+    .state { font-weight: 700; } button { padding: .45rem .7rem; cursor: pointer; } button:focus-visible { outline: 3px solid #075fcc; outline-offset: 2px; }
+    .raw { display: none; } .raw.visible { display: block; } .message { margin: .5rem 0; }
+  </style>
 </head>
 <body>
-  <h1>SourcePack Workbench</h1>
-  <button id="status">Status</button>
-  <button id="review">Review</button>
-  <button id="latest">Latest</button>
-  <pre id="output"></pre>
+  <header><h1>SourcePack Workbench</h1><p>Local, read-only dashboard. It does not run replay, generate reports, or change repository state.</p></header>
+  <main class="grid" id="sections"></main>
   <script>
-    const params = new URLSearchParams(window.location.search);
-    const queryToken = params.get('token');
-    if (queryToken) {
-      sessionStorage.setItem('sourcepackToken', queryToken);
-      window.history.replaceState({}, document.title, window.location.pathname + window.location.hash);
+    const definitions = [
+      ['overview', 'Repository overview'], ['policy', 'Policy'], ['report', 'Findings and report'],
+      ['baseline', 'Baseline'], ['replay-evidence', 'Replay and evidence'], ['overrides', 'Overrides and policy findings']
+    ];
+    const params = new URLSearchParams(window.location.search), supplied = params.get('token');
+    if (supplied) { sessionStorage.setItem('sourcepackToken', supplied); history.replaceState({}, document.title, location.pathname + location.hash); }
+    const token = sessionStorage.getItem('sourcepackToken') || '', root = document.getElementById('sections');
+    function makeSection(id, title) {
+      const section = document.createElement('section'); section.id = id;
+      const heading = document.createElement('h2'); heading.textContent = title;
+      const state = document.createElement('p'); state.className = 'state'; state.textContent = 'Loading…';
+      const detail = document.createElement('pre'); detail.className = 'message';
+      const toggle = document.createElement('button'); toggle.type = 'button'; toggle.textContent = 'Show raw JSON';
+      const raw = document.createElement('pre'); raw.className = 'raw'; toggle.addEventListener('click', () => { raw.classList.toggle('visible'); toggle.textContent = raw.classList.contains('visible') ? 'Hide raw JSON' : 'Show raw JSON'; });
+      section.append(heading, state, detail, toggle, raw); root.append(section); return {state, detail, raw};
     }
-    const sourcepackToken = sessionStorage.getItem('sourcepackToken') || '';
-    const output = document.getElementById('output');
-    async function api(path, options = {}) {
-      const headers = new Headers(options.headers || {});
-      headers.set('X-SourcePack-Token', sourcepackToken);
-      const response = await fetch(path, {...options, headers});
-      const text = await response.text();
-      try { return JSON.stringify(JSON.parse(text), null, 2); }
-      catch (_error) { return text; }
+    function summarize(data) {
+      if (data.status === 'empty') return data.error?.message || 'No data is available.';
+      if (data.status === 'unsupported') return data.error?.message || 'Artifact version is unsupported.';
+      if (!data.ok) return data.error?.message || 'Dashboard data could not be read.';
+      if (data.report) return `Verdict: ${data.report.verdict ?? 'not recorded'}\nBlockers: ${(data.report.blockers || []).length}\nWarnings: ${(data.report.warnings || []).length}\n\n${JSON.stringify(data.report, null, 2)}`;
+      if (data.overview || data.repository) return JSON.stringify(data, null, 2);
+      return JSON.stringify(Object.fromEntries(Object.entries(data).filter(([key]) => !['schema_version', 'ok', 'status'].includes(key))), null, 2);
     }
-    document.getElementById('status').addEventListener('click', async () => { output.textContent = await api('/api/status'); });
-    document.getElementById('review').addEventListener('click', async () => { output.textContent = await api('/api/review', {method: 'POST'}); });
-    document.getElementById('latest').addEventListener('click', async () => { output.textContent = await api('/api/latest'); });
+    async function load(id, title) {
+      const view = makeSection(id, title);
+      try {
+        const response = await fetch(`/api/dashboard/v1/${id}`, {headers: {'X-SourcePack-Token': token}});
+        const data = await response.json(); view.raw.textContent = JSON.stringify(data, null, 2);
+        view.state.textContent = `${data.status || 'failure'}${data.error?.code ? `: ${data.error.code}` : ''}`;
+        view.detail.textContent = summarize(data);
+      } catch (_) { view.state.textContent = 'failure'; view.detail.textContent = 'Dashboard data could not be loaded.'; }
+    }
+    definitions.forEach(([id, title]) => load(id, title));
   </script>
 </body>
 </html>

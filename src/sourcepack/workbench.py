@@ -13,9 +13,106 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from . import __version__
+from .baseline import validate_baseline
+from .git import metadata as git_metadata
+from .overrides import OVERRIDE_SCHEMA_VERSION, override_applies
+from .paths import sourcepack_paths
+from .policy import resolve_effective_policy
+
 STATIC_ROOT = Path(__file__).with_name("workbench_static")
 REQUEST_TIMEOUT_SECONDS = 120
 ALLOWED_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+DASHBOARD_PREFIX = "/api/dashboard/v1/"
+TRAFFIC_REPORT_SCHEMA_VERSION = "traffic_report.v1"
+
+
+def _dashboard_error(section: str, code: str, message: str, status: str = "error") -> dict[str, Any]:
+    return {"schema_version": f"sourcepack.dashboard.{section}.v1", "ok": False, "status": status, "error": {"code": code, "message": message}}
+
+
+def _read_canonical_report(repo: Path) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Read only the established latest.json location; never search archives."""
+    path = sourcepack_paths(repo)["latest_json"]
+    if not path.is_file():
+        return None, None
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, _dashboard_error("report", "artifact_malformed", "The canonical report is malformed.")
+    if not isinstance(report, dict):
+        return None, _dashboard_error("report", "artifact_malformed", "The canonical report is malformed.")
+    if report.get("schema_version") != TRAFFIC_REPORT_SCHEMA_VERSION:
+        return None, _dashboard_error("report", "artifact_version_unsupported", "The canonical report version is unsupported.", "unsupported")
+    return report, None
+
+
+def _report_payload(repo: Path) -> dict[str, Any]:
+    report, error = _read_canonical_report(repo)
+    if error:
+        return error
+    if report is None:
+        return {"schema_version": "sourcepack.dashboard.report.v1", "ok": True, "status": "empty", "error": {"code": "report_unavailable", "message": "No canonical report is available."}, "report": None}
+    return {"schema_version": "sourcepack.dashboard.report.v1", "ok": True, "status": "success", "report_path": ".sourcepack/reports/latest.json", "report": report}
+
+
+def _dashboard_payload(repo: Path, section: str) -> dict[str, Any]:
+    try:
+        if not repo.is_dir():
+            return _dashboard_error(section, "repository_unavailable", "The Workbench repository is unavailable.")
+        if section == "report":
+            return _report_payload(repo)
+        if section == "policy":
+            policy = resolve_effective_policy(repo)
+            status = "success" if policy.get("resolution_status") == "PASS" else "error"
+            payload = {"schema_version": "sourcepack.dashboard.policy.v1", "ok": status == "success", "status": status, "policy": policy}
+            if status != "success":
+                payload["error"] = {"code": "policy_resolution_failed", "message": "Policy resolution failed."}
+            return payload
+        if section == "baseline":
+            baseline = validate_baseline(repo)
+            status = "success" if baseline.get("state") in {"present", "stale"} else "empty" if baseline.get("state") == "missing" else "error"
+            payload = {"schema_version": "sourcepack.dashboard.baseline.v1", "ok": bool(baseline.get("ok")), "status": status, "baseline": baseline}
+            if status == "empty": payload["error"] = {"code": "baseline_unavailable", "message": "No trusted baseline is available."}
+            if status == "error": payload["error"] = {"code": "artifact_malformed", "message": "The baseline is unavailable or malformed."}
+            return payload
+        if section == "replay-evidence":
+            report, error = _read_canonical_report(repo)
+            if error:
+                error["schema_version"] = "sourcepack.dashboard.replay_evidence.v1"
+                return error
+            if report is None:
+                return {"schema_version": "sourcepack.dashboard.replay_evidence.v1", "ok": True, "status": "empty", "replay": None, "evidence": None}
+            return {"schema_version": "sourcepack.dashboard.replay_evidence.v1", "ok": True, "status": "success", "report_path": ".sourcepack/reports/latest.json", "replay": report.get("replay_bundle"), "evidence": report.get("evidence_items", report.get("evidence")), "reason_code_evidence": report.get("reason_code_evidence")}
+        if section == "overrides":
+            # The decision ledger is the persisted SourcePack override record.
+            ledger = sourcepack_paths(repo)["base"] / "decisions.jsonl"
+            overrides: list[dict[str, Any]] = []
+            if ledger.is_file():
+                for line in ledger.read_text(encoding="utf-8").splitlines():
+                    try: event = json.loads(line)
+                    except json.JSONDecodeError:
+                        return _dashboard_error("overrides", "artifact_malformed", "The persisted override record is malformed.")
+                    data = event.get("data") if isinstance(event, dict) else None
+                    override = data.get("override") if isinstance(data, dict) else None
+                    if isinstance(override, dict) and override.get("schema_version") == OVERRIDE_SCHEMA_VERSION:
+                        overrides.append({**override, "currently_applicable": override_applies(override), "related_finding": data.get("finding_id")})
+            report, report_error = _read_canonical_report(repo)
+            if report_error:
+                report_error["schema_version"] = "sourcepack.dashboard.overrides.v1"
+                return report_error
+            findings = [item for item in (report or {}).get("findings", []) if isinstance(item, dict) and item.get("category") == "policy"]
+            return {"schema_version": "sourcepack.dashboard.overrides.v1", "ok": True, "status": "success" if overrides or findings else "empty", "overrides": overrides, "policy_findings": findings}
+        if section == "overview":
+            git = git_metadata(repo)
+            baseline = validate_baseline(repo)
+            policy = resolve_effective_policy(repo)
+            report, report_error = _read_canonical_report(repo)
+            report_state = "error" if report_error else "empty" if report is None else "available"
+            return {"schema_version": "sourcepack.dashboard.overview.v1", "ok": True, "status": "success", "repository": {"path": str(repo), "sourcepack_version": __version__}, "git": git, "baseline": baseline, "policy_resolution_status": policy.get("resolution_status"), "report_status": report_state, "report_verdict": report.get("verdict") if report else None, "blocker_count": len(report.get("blockers", [])) if report else 0, "warning_count": len(report.get("warnings", [])) if report else 0}
+    except Exception:
+        return _dashboard_error(section, "internal_error", "Dashboard data could not be read.")
+    return _dashboard_error(section, "internal_error", "Dashboard section is unavailable.")
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -95,8 +192,25 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         self._send_json(403, {"ok": False, "error": "forbidden"})
         return False
 
+    def _require_dashboard_token(self) -> bool:
+        if self._api_token_valid():
+            return True
+        self._send_json(403, _dashboard_error("authorization", "unauthorized", "A valid session token is required."))
+        return False
+
     def do_GET(self) -> None:
-        requested = urllib.parse.urlparse(self.path).path
+        parsed = urllib.parse.urlparse(self.path)
+        requested = parsed.path
+        if requested.startswith(DASHBOARD_PREFIX):
+            if not self._require_dashboard_token():
+                return
+            section = requested.removeprefix(DASHBOARD_PREFIX)
+            sections = {"overview", "policy", "report", "baseline", "replay-evidence", "overrides"}
+            if section not in sections or "/" in section or "%" in requested:
+                self._send_json(404, _dashboard_error("routing", "internal_error", "Dashboard route was not found."))
+                return
+            self._send_json(200, _dashboard_payload(self.repo_root, section))
+            return
         if requested.startswith("/api/"):
             if not self._require_api_token():
                 return
@@ -119,6 +233,11 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         requested = urllib.parse.urlparse(self.path).path
+        if requested.startswith(DASHBOARD_PREFIX):
+            if not self._require_dashboard_token():
+                return
+            self._send_json(405, _dashboard_error("routing", "internal_error", "Dashboard endpoints are read-only."))
+            return
         if not requested.startswith("/api/"):
             self.send_error(404)
             return

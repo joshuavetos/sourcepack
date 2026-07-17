@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import sqlite3
 import hashlib
@@ -13,7 +14,7 @@ from urllib.request import Request, urlopen
 
 from sourcepack.cli import run_cli
 from sourcepack.cloud import CloudClient, CloudConfig, CloudError, canonical_json_bytes, pull_policy
-from sourcepack.hosted import Store, hash_password, initialize_database, make_handler, verify_password
+from sourcepack.hosted import Store, hash_password, hash_value, initialize_database, make_handler, verify_password
 
 
 def _serve(handler: type[BaseHTTPRequestHandler]) -> tuple[ThreadingHTTPServer, str]:
@@ -487,3 +488,171 @@ def test_membership_delete_body_length_validation(tmp_path: Path) -> None:
         assert status == 409 and response["error"]["code"] == "final_owner"
     finally:
         server.shutdown(); server.server_close()
+
+
+def test_audit_events_http_contract_authorization_filters_and_pagination(tmp_path: Path) -> None:
+    database = tmp_path / "cloud.sqlite"; store = Store(database)
+    owner, organization = store.bootstrap("audit-owner@example.test", "audit-password", "One")
+    maintainer, _ = store.bootstrap("audit-maintainer@example.test", "password", "Two")
+    reviewer, _ = store.bootstrap("audit-reviewer@example.test", "password", "Three")
+    member, _ = store.bootstrap("audit-member@example.test", "password", "Four")
+    removed, _ = store.bootstrap("audit-removed@example.test", "password", "Five")
+    outsider, other_organization = store.bootstrap("audit-outsider@example.test", "password", "Six")
+    for user, role in ((maintainer, "maintainer"), (reviewer, "reviewer"), (member, "member"), (removed, "reviewer")):
+        store.add_membership(owner, organization, user, role)
+    removed_membership = next(record["id"] for record in store.members(owner, organization) if record["user_id"] == removed)
+    store.remove_member(owner, organization, removed_membership)
+    repository = store.create_repository(owner, organization, "history")
+    store.set_repository_status(owner, organization, repository["id"], "inactive")
+    store.set_repository_status(owner, organization, repository["id"], "active")
+    service, service_token = store.create_service(owner, organization, "audit-service")
+    with store.db() as db:
+        db.executemany("INSERT INTO audit_events VALUES (?,?,?,?,?,?,?,?,?,?)", (
+            ("aud_a", "sourcepack.cloud.audit_event.v1", organization, owner, "manual", "test", "resource-a", "2099-01-01T00:00:00+00:00", "success", "{\"safe\":true}"),
+            ("aud_z", "sourcepack.cloud.audit_event.v1", organization, maintainer, "manual", "test", "resource-z", "2099-01-01T00:00:00+00:00", "failure", "{}"),
+        ))
+    issued = {identity: store.login(identity, "audit-password" if identity == "audit-owner@example.test" else "password") for identity in (
+        "audit-owner@example.test", "audit-maintainer@example.test", "audit-reviewer@example.test",
+        "audit-member@example.test", "audit-removed@example.test", "audit-outsider@example.test",
+    )}
+    tokens = {identity: value["access_token"] for identity, value in issued.items()}
+    server, url = _serve(make_handler(database)); route = f"organizations/{organization}/audit-events"
+    try:
+        status, owner_page = _membership_request(url, tokens["audit-owner@example.test"], "GET", route + "?limit=2", None, None)
+        assert status == 200
+        assert owner_page["schema_version"] == "sourcepack.cloud.api_response.v1" and owner_page["request_id"]
+        assert len(owner_page["data"]["items"]) == 2
+        first_items = owner_page["data"]["items"]
+        assert all("detail_json" not in item and isinstance(item["detail"], dict) for item in first_items)
+        assert [(item["timestamp"], item["id"]) for item in first_items] == sorted(
+            [(item["timestamp"], item["id"]) for item in first_items], reverse=True)
+        assert [item["id"] for item in first_items] == ["aud_z", "aud_a"]
+        status, second_page = _membership_request(url, tokens["audit-owner@example.test"], "GET", route + "?limit=2&cursor=" + owner_page["data"]["next_cursor"], None, None)
+        assert status == 200 and not {item["id"] for item in first_items} & {item["id"] for item in second_page["data"]["items"]}
+        all_ids = [item["id"] for item in first_items]; cursor = owner_page["data"]["next_cursor"]
+        while cursor:
+            status, page = _membership_request(url, tokens["audit-owner@example.test"], "GET", route + "?limit=2&cursor=" + cursor, None, None)
+            assert status == 200
+            all_ids.extend(item["id"] for item in page["data"]["items"]); cursor = page["data"]["next_cursor"]
+        with store.db() as db:
+            expected_count = db.execute("SELECT COUNT(*) FROM audit_events WHERE organization_id=?", (organization,)).fetchone()[0]
+        assert len(all_ids) == expected_count == len(set(all_ids))
+        for identity in ("audit-maintainer@example.test", "audit-reviewer@example.test"):
+            assert _membership_request(url, tokens[identity], "GET", route, None, None)[0] == 200
+        for identity in ("audit-member@example.test", "audit-removed@example.test"):
+            status, response = _membership_request(url, tokens[identity], "GET", route, None, None)
+            assert status == 404 and response["error"]["code"] == "not_found"
+        status, response = _membership_request(url, service_token, "GET", route, None, None)
+        assert status == 404 and response["error"]["code"] == "not_found"
+        status, response = _membership_request(url, tokens["audit-outsider@example.test"], "GET", route, None, None)
+        assert status == 404 and response["error"]["code"] == "not_found"
+        for query, expected in (("?limit=0", "invalid_request"), ("?limit=101", "invalid_request"), ("?limit=x", "invalid_request"), ("?cursor=broken", "invalid_cursor"), ("?unknown=value", "invalid_request"), ("?timestamp_from=nope", "invalid_request"), ("?timestamp_to=nope", "invalid_request"), ("?timestamp_from=2099-01-02T00%3A00%3A00%2B00%3A00&timestamp_to=2099-01-01T00%3A00%3A00%2B00%3A00", "invalid_request"), ("?timestamp_from=2099-01-01T00%3A00%3A00", "invalid_request"), ("?action=manual&action=repository_active", "invalid_request")):
+            status, response = _membership_request(url, tokens["audit-owner@example.test"], "GET", route + query, None, None)
+            assert status == 400 and response["error"]["code"] == expected
+        assert _membership_request(url, tokens["audit-owner@example.test"], "GET", route + "?limit=100", None, None)[0] == 200
+        forged = base64.urlsafe_b64encode(json.dumps([organization, "2099-01-01T01:00:00+01:00", "aud_z", "0" * 64]).encode()).decode().rstrip("=")
+        status, response = _membership_request(url, tokens["audit-owner@example.test"], "GET", route + "?cursor=" + forged, None, None)
+        assert status == 400 and response["error"]["code"] == "invalid_cursor"
+        status, filtered = _membership_request(url, tokens["audit-owner@example.test"], "GET", route + "?resource_id=" + repository["id"] + "&action=repository_inactive", None, None)
+        assert status == 200 and [item["action"] for item in filtered["data"]["items"]] == ["repository_inactive"]
+        status, literal = _membership_request(url, tokens["audit-owner@example.test"], "GET", route + "?action=%27%20OR%201%3D1--", None, None)
+        assert status == 200 and literal["data"] == {"schema_version": "sourcepack.cloud.audit_event_collection.v1", "items": [], "next_cursor": None}
+        for query, expected_id in (("?actor_id=" + maintainer, "aud_z"), ("?action=manual", "aud_z"), ("?resource_type=test", "aud_z"), ("?resource_id=resource-a", "aud_a"), ("?result=failure", "aud_z"), ("?timestamp_from=2099-01-01T00%3A00%3A00%2B00%3A00", "aud_z"), ("?timestamp_to=2099-01-01T00%3A00%3A00%2B00%3A00", "aud_z"), ("?action=manual&resource_id=resource-a&result=success", "aud_a")):
+            status, filtered = _membership_request(url, tokens["audit-owner@example.test"], "GET", route + query, None, None)
+            assert status == 200 and filtered["data"]["items"][0]["id"] == expected_id
+        status, normalized = _membership_request(url, tokens["audit-owner@example.test"], "GET", route + "?timestamp_from=2099-01-01T01%3A00%3A00%2B01%3A00&timestamp_to=2099-01-01T01%3A00%3A00%2B01%3A00", None, None)
+        assert status == 200 and [item["id"] for item in normalized["data"]["items"]] == ["aud_z", "aud_a"]
+        status, filtered_page = _membership_request(url, tokens["audit-owner@example.test"], "GET", route + "?action=manual&limit=1", None, None)
+        assert status == 200 and filtered_page["data"]["next_cursor"]
+        status, filtered_next = _membership_request(url, tokens["audit-owner@example.test"], "GET", route + "?action=manual&limit=1&cursor=" + filtered_page["data"]["next_cursor"], None, None)
+        assert status == 200 and filtered_next["data"]["items"][0]["id"] == "aud_a"
+        status, response = _membership_request(url, tokens["audit-owner@example.test"], "GET", route + "?action=repository_active&cursor=" + filtered_page["data"]["next_cursor"], None, None)
+        assert status == 400 and response["error"]["code"] == "invalid_cursor"
+        status, cross_cursor = _membership_request(url, tokens["audit-owner@example.test"], "GET", f"organizations/{other_organization}/audit-events?cursor=" + owner_page["data"]["next_cursor"], None, None)
+        assert status == 404 and cross_cursor["error"]["code"] == "not_found"
+        status, history = _membership_request(url, tokens["audit-owner@example.test"], "GET", route + "?resource_id=" + repository["id"], None, None)
+        assert status == 200 and {item["action"] for item in history["data"]["items"]} >= {"repository_registered", "repository_inactive", "repository_active"}
+        status, response = _membership_request(url, tokens["audit-owner@example.test"], "PATCH", route + "/aud_a", b'{"detail":{}}')
+        assert status == 400 and response["error"]["code"] == "invalid_request"
+        status, response = _membership_request(url, tokens["audit-owner@example.test"], "DELETE", route + "/aud_a", None, None)
+        assert status == 404 and response["error"]["code"] == "not_found"
+        status, error = _membership_request(url, tokens["audit-member@example.test"], "GET", route, None, None)
+        assert status == 404
+        owner_issued = issued["audit-owner@example.test"]
+        secrets_to_exclude = [
+            "audit-password", owner_issued["access_token"], owner_issued["refresh_token"], service_token,
+            hash_value(owner_issued["access_token"]), hash_value(owner_issued["refresh_token"]), hash_value(service_token),
+            "Bearer " + owner_issued["access_token"],
+            *(value["access_token"] for value in issued.values()), *(value["refresh_token"] for value in issued.values()),
+            *(hash_value(value["access_token"]) for value in issued.values()), *(hash_value(value["refresh_token"]) for value in issued.values()),
+        ]
+        with store.db() as db:
+            audit_storage = " ".join(str(value) for row in db.execute("SELECT actor_id,action,resource_type,resource_id,detail_json FROM audit_events") for value in row)
+        assert all(value not in audit_storage for value in secrets_to_exclude)
+        assert all(value not in json.dumps(error) for value in secrets_to_exclude)
+        assert service["id"]
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def test_hosted_audit_mutations_share_transaction_boundaries(tmp_path: Path) -> None:
+    """An audit insertion failure rolls back each covered state mutation."""
+    database = tmp_path / "cloud.sqlite"; store = Store(database)
+    owner, organization = store.bootstrap("transaction-owner@example.test", "password", "One")
+    repository = store.create_repository(owner, organization, "repo")
+    service, _ = store.create_service(owner, organization, "ci")
+    assignment = store.assign_service(owner, organization, service["id"], repository["id"])
+    credential = store.login("transaction-owner@example.test", "password")
+
+    def reject(action: str) -> None:
+        with store.db() as db:
+            db.execute("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_events WHEN NEW.action=" + repr(action) + " BEGIN SELECT RAISE(ABORT, 'audit rejected'); END")
+
+    reject("repository_inactive")
+    try:
+        store.set_repository_status(owner, organization, repository["id"], "inactive")
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise AssertionError("audit failure must reject repository deactivation")
+    with store.db() as db:
+        assert db.execute("SELECT status FROM repositories WHERE id=?", (repository["id"],)).fetchone()[0] == "active"
+        db.execute("DROP TRIGGER reject_audit")
+
+    reject("service_revoked")
+    try:
+        store.revoke_service(owner, organization, service["id"])
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise AssertionError("audit failure must reject service revocation")
+    with store.db() as db:
+        assert db.execute("SELECT status FROM service_identities WHERE id=?", (service["id"],)).fetchone()[0] == "active"
+        db.execute("DROP TRIGGER reject_audit")
+
+    reject("service_assignment_removed")
+    try:
+        store.remove_assignment(owner, organization, assignment["id"])
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise AssertionError("audit failure must reject assignment removal")
+    with store.db() as db:
+        assert db.execute("SELECT status FROM repository_assignments WHERE id=?", (assignment["id"],)).fetchone()[0] == "active"
+        db.execute("DROP TRIGGER reject_audit")
+
+    reject("credential_revoked")
+    try:
+        store.revoke("Bearer " + credential["access_token"])
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise AssertionError("audit failure must reject credential revocation")
+    assert store.actor("Bearer " + credential["access_token"])
+    with store.db() as db:
+        assert db.execute("SELECT COUNT(*) FROM audit_events WHERE action='credential_revoked'").fetchone()[0] == 0
+        db.execute("DROP TRIGGER reject_audit")
+    assert store.revoke("Bearer " + credential["access_token"])
+    with store.db() as db:
+        event = db.execute("SELECT organization_id,actor_id,resource_type,resource_id FROM audit_events WHERE action='credential_revoked'").fetchone()
+    assert tuple(event) == (organization, owner, "credential", event[3])

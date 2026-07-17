@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import hashlib
+import http.client
 import threading
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
@@ -24,6 +27,8 @@ def _membership_request(url: str, token: str, method: str, route: str, body: byt
     headers = {"Authorization": "Bearer " + token}
     if content_type is not None:
         headers["Content-Type"] = content_type
+    if method == "POST" and route.endswith(("/members", "/repositories", "/services", "/assignments")):
+        headers["Idempotency-Key"] = "test-idempotency-" + uuid.uuid4().hex
     request = Request(url + "/api/v1/" + route, data=body, headers=headers, method=method)
     try:
         with urlopen(request) as response:
@@ -156,7 +161,7 @@ def test_cloud_client_repository_routes_match_hosted_api(tmp_path: Path) -> None
     server, url = _serve(make_handler(database))
     try:
         client = CloudClient(CloudConfig(url, organization_id=organization), tokens["access_token"])
-        created = client.request("POST", f"organizations/{organization}/repositories", b'{"display_name":"Repository"}')
+        created = client.request("POST", f"organizations/{organization}/repositories", b'{"display_name":"Repository"}', idempotency_key="client-idempotency-key-0001")
         assert created["data"]["organization_id"] == organization
         listed = client.request("GET", f"organizations/{organization}/repositories")
         assert [item["id"] for item in listed["data"]["items"]] == [created["data"]["id"]]
@@ -171,15 +176,15 @@ def test_hosted_governance_routes_expose_members_repositories_and_services(tmp_p
     token = store.login("owner@example.test", "password")["access_token"]
     server, url = _serve(make_handler(database)); client = CloudClient(CloudConfig(url, organization_id=organization), token)
     try:
-        membership = client.request("POST", f"organizations/{organization}/members", json.dumps({"user_id":member,"role":"reviewer"}).encode())["data"]
+        membership = client.request("POST", f"organizations/{organization}/members", json.dumps({"user_id":member,"role":"reviewer"}).encode(), idempotency_key="governance-members-key-0001")["data"]
         assert client.request("PATCH", f"organizations/{organization}/members/{membership['id']}", b'{"role":"maintainer"}')["data"]["changed"]
-        repository = client.request("POST", f"organizations/{organization}/repositories", b'{"display_name":"repo"}')["data"]
+        repository = client.request("POST", f"organizations/{organization}/repositories", b'{"display_name":"repo"}', idempotency_key="governance-repository-key-1")["data"]
         assert client.request("GET", f"organizations/{organization}/repositories/{repository['id']}")["data"]["id"] == repository["id"]
         assert client.request("POST", f"organizations/{organization}/repositories/{repository['id']}/deactivate", b'{}')["data"]["status"] == "inactive"
-        service = client.request("POST", f"organizations/{organization}/services", b'{"display_name":"ci"}')["data"]
+        service = client.request("POST", f"organizations/{organization}/services", b'{"display_name":"ci"}', idempotency_key="governance-service-key-0001")["data"]
         assert service["schema_version"] == "sourcepack.cloud.service_identity.v1"
         assert client.request("POST", f"organizations/{organization}/repositories/{repository['id']}/reactivate", b'{}')["data"]["status"] == "active"
-        assignment = client.request("POST", f"organizations/{organization}/services/{service['id']}/assignments", json.dumps({"repository_id":repository["id"]}).encode())["data"]
+        assignment = client.request("POST", f"organizations/{organization}/services/{service['id']}/assignments", json.dumps({"repository_id":repository["id"]}).encode(), idempotency_key="governance-assignment-key-1")["data"]
         assert client.request("DELETE", f"organizations/{organization}/assignments/{assignment['id']}")["data"]["removed"]
     finally: server.shutdown(); server.server_close()
 
@@ -316,5 +321,169 @@ def test_policy_pull_hashes_exact_artifact_bytes_and_keeps_unverified(tmp_path: 
         compact = b'{"schema_version":"sourcepack.org_policy.v1","policy_id":"engineering","rules":{"max_changed_lines":2}}'
         assert hashlib.sha256(compact).hexdigest() != metadata["source_sha256"]
         assert canonical_json_bytes(json.loads(compact)) == canonical_json_bytes(json.loads(policy_bytes))
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def _create_request(url: str, token: str, route: str, body: bytes, key: str | None) -> tuple[int, dict]:
+    headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+    if key is not None:
+        headers["Idempotency-Key"] = key
+    request = Request(url + "/api/v1/" + route, data=body, headers=headers, method="POST")
+    try:
+        with urlopen(request) as response:
+            return response.status, json.loads(response.read())
+    except HTTPError as error:
+        return error.code, json.loads(error.read())
+
+
+def test_hosted_create_idempotency_http_contract(tmp_path: Path) -> None:
+    database = tmp_path / "cloud.sqlite"; store = Store(database)
+    owner, organization = store.bootstrap("owner@example.test", "password", "One")
+    other_owner, other_organization = store.bootstrap("other@example.test", "password", "Two")
+    member, _ = store.bootstrap("member@example.test", "password", "Three")
+    token = store.login("owner@example.test", "password")["access_token"]
+    other_token = store.login("other@example.test", "password")["access_token"]
+    server, url = _serve(make_handler(database)); route = f"organizations/{organization}/repositories"; body = b'{"display_name":"once"}'; key = "valid-idempotency-key-0001"
+    try:
+        for invalid in (None, "short", "x" * 129, "valid idempotency key", "valid-idempotency-key-\u00e9", "valid-idempotency-key-\x01"):
+            status, response = _create_request(url, token, route, body, invalid)
+            assert status == 400 and response["error"]["code"] == "invalid_idempotency_key"
+        status, first = _create_request(url, token, route, body, key)
+        status2, replay = _create_request(url, token, route, body, key)
+        assert status == status2 == 201 and first == replay
+        with store.db() as db:
+            assert db.execute("SELECT COUNT(*) FROM repositories WHERE organization_id=?", (organization,)).fetchone()[0] == 1
+            assert db.execute("SELECT COUNT(*) FROM idempotency WHERE organization_id=?", (organization,)).fetchone()[0] == 1
+            assert db.execute("SELECT COUNT(*) FROM audit_events WHERE organization_id=? AND action='repository_registered'", (organization,)).fetchone()[0] == 1
+        status, conflict = _create_request(url, token, route, b'{"display_name":"other"}', key)
+        assert status == 409 and conflict["error"]["code"] == "idempotency_conflict"
+        status, independent = _create_request(url, other_token, f"organizations/{other_organization}/repositories", body, key)
+        assert status == 201 and independent["data"]["organization_id"] == other_organization
+        # Invalid payload and unauthorized attempts do not consume a valid key.
+        bad_key = "valid-idempotency-key-0002"
+        assert _create_request(url, token, route, b'{"unexpected":true}', bad_key)[0] == 400
+        assert _create_request(url, token, route, b'{"display_name":"corrected"}', bad_key)[0] == 201
+        assert _create_request(url, other_token, route, b'{"display_name":"denied"}', "valid-idempotency-key-0003")[0] == 404
+        with store.db() as db:
+            assert db.execute("SELECT COUNT(*) FROM idempotency WHERE organization_id=? AND key=?", (organization, "valid-idempotency-key-0003")).fetchone()[0] == 0
+        # Each other covered route uses the same atomic path.
+        membership = _create_request(url, token, f"organizations/{organization}/members", json.dumps({"user_id": member, "role": "reviewer"}).encode(), "valid-idempotency-key-0004")
+        service = _create_request(url, token, f"organizations/{organization}/services", b'{"display_name":"ci"}', "valid-idempotency-key-0005")
+        assignment = _create_request(url, token, f"organizations/{organization}/services/{service[1]['data']['id']}/assignments", json.dumps({"repository_id": first["data"]["id"]}).encode(), "valid-idempotency-key-0006")
+        assert membership[0] == service[0] == assignment[0] == 201
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def test_hosted_idempotency_concurrent_requests_are_serialized(tmp_path: Path) -> None:
+    database = tmp_path / "cloud.sqlite"; store = Store(database)
+    owner, organization = store.bootstrap("owner@example.test", "password", "One")
+    token = store.login("owner@example.test", "password")["access_token"]
+    server, url = _serve(make_handler(database)); route = f"organizations/{organization}/repositories"; key = "valid-idempotency-key-serial"
+    try:
+        barrier = threading.Barrier(2); results: list[tuple[int, dict]] = []
+        def create(body: bytes) -> None:
+            barrier.wait(); results.append(_create_request(url, token, route, body, key))
+        threads = [threading.Thread(target=create, args=(b'{"display_name":"once"}',)) for _ in range(2)]
+        [thread.start() for thread in threads]; [thread.join() for thread in threads]
+        assert [result[0] for result in results] == [201, 201]
+        assert results[0][1]["data"]["id"] == results[1][1]["data"]["id"]
+        with store.db() as db:
+            assert db.execute("SELECT COUNT(*) FROM repositories WHERE organization_id=?", (organization,)).fetchone()[0] == 1
+            assert db.execute("SELECT COUNT(*) FROM audit_events WHERE organization_id=? AND action='repository_registered'", (organization,)).fetchone()[0] == 1
+        results.clear(); barrier = threading.Barrier(2); key = "valid-idempotency-key-differ"
+        threads = [threading.Thread(target=create, args=(body,)) for body in (b'{"display_name":"one"}', b'{"display_name":"two"}')]
+        [thread.start() for thread in threads]; [thread.join() for thread in threads]
+        assert sorted(result[0] for result in results) == [201, 409]
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def test_hosted_idempotency_migration_preserves_v3_records(tmp_path: Path) -> None:
+    database = tmp_path / "cloud.sqlite"; initialize_database(database)
+    with sqlite3.connect(database) as db:
+        db.executescript("""
+ALTER TABLE idempotency RENAME TO idempotency_v4_test;
+CREATE TABLE idempotency (organization_id TEXT NOT NULL, actor_id TEXT NOT NULL, method TEXT NOT NULL, route TEXT NOT NULL, key TEXT NOT NULL, body_sha256 TEXT NOT NULL, response_json TEXT NOT NULL, PRIMARY KEY (organization_id, actor_id, method, route, key));
+INSERT INTO idempotency VALUES ('org','usr','POST','/api/v1/organizations/org/repositories','legacy-idempotency-key-0001','hash','{\"ok\":true}');
+DROP TABLE idempotency_v4_test;
+DELETE FROM cloud_migrations WHERE version=4;
+""")
+    initialize_database(database)
+    with sqlite3.connect(database) as db:
+        record = db.execute("SELECT actor_kind,response_status,response_json FROM idempotency").fetchone()
+        assert record == ("user", 201, '{"ok":true}')
+        assert db.execute("SELECT version FROM cloud_migrations WHERE version=4").fetchone() == (4,)
+
+
+def test_service_token_creation_discloses_secret_once_without_persistence(tmp_path: Path) -> None:
+    database = tmp_path / "cloud.sqlite"; store = Store(database)
+    owner, organization = store.bootstrap("owner@example.test", "password", "One")
+    token = store.login("owner@example.test", "password")["access_token"]
+    server, url = _serve(make_handler(database)); key = "service-token-idempotency-0001"
+    try:
+        status, service = _create_request(url, token, f"organizations/{organization}/services", b'{"display_name":"ci"}', "service-identity-idempotency-1")
+        assert status == 201 and "token" not in service["data"]
+        route = f"organizations/{organization}/services/{service['data']['id']}/tokens"; body = b'{"expires_hours":24}'
+        status, first = _create_request(url, token, route, body, key)
+        status2, replay = _create_request(url, token, route, body, key)
+        assert status == status2 == 201 and first["data"]["token"] and first["data"]["raw_token_disclosed"]
+        assert replay["data"]["id"] == first["data"]["id"] and replay["data"]["raw_token_unavailable"] and "token" not in replay["data"]
+        with store.db() as db:
+            serialized = " ".join(str(value) for row in db.execute("SELECT token_hash FROM service_tokens") for value in row) + " ".join(str(value) for row in db.execute("SELECT response_json FROM idempotency") for value in row) + " ".join(str(value) for row in db.execute("SELECT detail_json FROM audit_events") for value in row)
+            assert first["data"]["token"] not in serialized
+            assert db.execute("SELECT COUNT(*) FROM service_tokens").fetchone()[0] == 1
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def _delete_with_headers(url: str, token: str, route: str, headers: dict[str, str], body: bytes | None = None) -> tuple[int, dict]:
+    parsed = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(url)
+    connection = http.client.HTTPConnection(parsed.hostname, parsed.port)
+    connection.putrequest("DELETE", "/api/v1/" + route)
+    connection.putheader("Authorization", "Bearer " + token)
+    for name, value in headers.items():
+        connection.putheader(name, value)
+    connection.endheaders(body)
+    response = connection.getresponse(); payload = json.loads(response.read()); connection.close()
+    return response.status, payload
+
+
+def test_membership_delete_body_length_validation(tmp_path: Path) -> None:
+    database = tmp_path / "cloud.sqlite"; store = Store(database)
+    owner, organization = store.bootstrap("owner@example.test", "password", "One")
+    member, _ = store.bootstrap("member@example.test", "password", "Two")
+    token = store.login("owner@example.test", "password")["access_token"]
+    membership = store.add_membership(owner, organization, member, "member")
+    server, url = _serve(make_handler(database)); route = f"organizations/{organization}/members/{membership['id']}"
+    try:
+        for headers, body, expected in (
+            ({}, None, 200),
+        ):
+            status, response = _delete_with_headers(url, token, route, headers, body)
+            assert status == expected and response["data"]["removed"]
+        # Re-add a target for each parser case so parse rejection cannot mutate it.
+        for headers, body, expected in (
+            ({"Content-Length": "0"}, None, "ok"),
+            ({"Content-Type": "application/json", "Content-Length": "2"}, b"{}", "ok"),
+            ({"Content-Length": "-1"}, None, "malformed_json"),
+            ({"Content-Length": "nope"}, None, "malformed_json"),
+            ({"Content-Length": "1000001"}, None, "payload_too_large"),
+            ({"Content-Type": "application/json", "Content-Length": "1"}, b"{", "malformed_json"),
+            ({"Content-Type": "application/json", "Content-Length": "13"}, b'{"a":1,"a":2}', "malformed_json"),
+            ({"Content-Type": "text/plain", "Content-Length": "0"}, None, "unsupported_content_type"),
+        ):
+            current = store.add_membership(owner, organization, member, "member")
+            status, response = _delete_with_headers(url, token, f"organizations/{organization}/members/{current['id']}", headers, body)
+            if expected == "ok":
+                assert status == 200 and response["data"]["removed"]
+            else:
+                assert response["error"]["code"] == expected
+                assert store.members(owner, organization)[-1]["id"] == current["id"]
+                store.remove_member(owner, organization, current["id"])
+        owner_membership = next(item["id"] for item in store.members(owner, organization) if item["user_id"] == owner)
+        status, response = _delete_with_headers(url, token, f"organizations/{organization}/members/{owner_membership}", {"Content-Length": "0"})
+        assert status == 409 and response["error"]["code"] == "final_owner"
     finally:
         server.shutdown(); server.server_close()

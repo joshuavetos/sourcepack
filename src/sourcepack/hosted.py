@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import secrets
@@ -10,7 +12,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
@@ -27,6 +29,15 @@ _PASSWORD_HASHER = PasswordHasher()
 
 
 def now() -> str: return datetime.now(timezone.utc).isoformat()
+def canonical_audit_timestamp(value: str, error: str) -> str:
+    """Normalize a timezone-aware ISO-8601 instant to audit storage format."""
+    try:
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError
+        return parsed.astimezone(timezone.utc).isoformat()
+    except (TypeError, ValueError):
+        raise ValueError(error) from None
 def hash_value(value: str) -> str: return hashlib.sha256(value.encode()).hexdigest()
 def hash_password(password: str) -> str:
     if not password: raise ValueError("password_required")
@@ -104,9 +115,18 @@ class Store:
             db.execute("UPDATE credentials SET revoked_at=? WHERE id=?",(now(),row["id"]))
             return self.issue_tokens(db,row["user_id"])
     def revoke(self, authorization: str) -> bool:
+        """Revoke an access credential and audit it for each active organization membership."""
         if not authorization.startswith("Bearer "): return False
         with self.db() as db:
-            result=db.execute("UPDATE credentials SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL",(now(),hash_value(authorization[7:]))); return result.rowcount == 1
+            credential = db.execute("SELECT id,user_id FROM credentials WHERE token_hash=? AND revoked_at IS NULL", (hash_value(authorization[7:]),)).fetchone()
+            if not credential:
+                return False
+            stamp = now()
+            db.execute("UPDATE credentials SET revoked_at=? WHERE id=?", (stamp, credential["id"]))
+            organizations = db.execute("SELECT organization_id FROM memberships WHERE user_id=? AND status='active'", (credential["user_id"],)).fetchall()
+            for organization in organizations:
+                self.audit(db, organization["organization_id"], credential["user_id"], "credential_revoked", "credential", credential["id"])
+            return True
     def actor(self, authorization: str | None) -> sqlite3.Row | None:
         if not authorization or not authorization.startswith("Bearer "): return None
         token=hash_value(authorization[7:])
@@ -310,6 +330,56 @@ class Store:
         if not self.permit(actor,org,"repositories:read"): raise PermissionError
         with self.db() as db:
             return [self._membership_record(r) for r in db.execute("SELECT * FROM memberships WHERE organization_id=? ORDER BY created_at,id",(org,))]
+    def audit_events(self, actor: sqlite3.Row, org: str, filters: dict[str, object]) -> dict:
+        """Return the append-only organization audit history in cursor order."""
+        if actor["actor_kind"] != "user" or not self.permit(actor["id"], org, "audit:read"):
+            raise PermissionError
+        clauses = ["organization_id=?"]
+        parameters: list[object] = [org]
+        for field in ("actor_id", "action", "resource_type", "resource_id", "result"):
+            value = filters.get(field)
+            if value is not None:
+                clauses.append(f"{field}=?")
+                parameters.append(value)
+        if filters.get("timestamp_from") is not None:
+            clauses.append("timestamp>=?")
+            parameters.append(filters["timestamp_from"])
+        if filters.get("timestamp_to") is not None:
+            clauses.append("timestamp<=?")
+            parameters.append(filters["timestamp_to"])
+        cursor = filters.get("cursor")
+        if cursor is not None:
+            cursor_org, cursor_timestamp, cursor_id, cursor_filter_digest = decode_audit_cursor(str(cursor))
+            if cursor_org != org or cursor_filter_digest != audit_filter_digest(filters):
+                raise ValueError("invalid_cursor")
+            clauses.append("(timestamp < ? OR (timestamp = ? AND id < ?))")
+            parameters.extend((cursor_timestamp, cursor_timestamp, cursor_id))
+        parameters.append(int(filters["limit"]) + 1)
+        with self.db() as db:
+            rows = db.execute(
+                "SELECT * FROM audit_events WHERE " + " AND ".join(clauses) +
+                " ORDER BY timestamp DESC, id DESC LIMIT ?", parameters,
+            ).fetchall()
+        more = len(rows) > int(filters["limit"])
+        rows = rows[:int(filters["limit"])]
+        items = []
+        for row in rows:
+            try:
+                detail = json.loads(row["detail_json"])
+            except (TypeError, json.JSONDecodeError):
+                # Existing audit rows are durable evidence; do not rewrite them.
+                detail = {}
+            if not isinstance(detail, dict):
+                detail = {}
+            items.append({
+                "id": row["id"], "schema_version": row["schema_version"],
+                "organization_id": row["organization_id"], "actor_id": row["actor_id"],
+                "action": row["action"], "resource_type": row["resource_type"],
+                "resource_id": row["resource_id"], "timestamp": row["timestamp"],
+                "result": row["result"], "detail": detail,
+            })
+        next_cursor = encode_audit_cursor(org, rows[-1]["timestamp"], rows[-1]["id"], audit_filter_digest(filters)) if more else None
+        return {"schema_version": "sourcepack.cloud.audit_event_collection.v1", "items": items, "next_cursor": next_cursor}
 
 
 def envelope(*, data: object | None=None, error: str | None=None, request_id: str | None=None) -> dict:
@@ -318,6 +388,60 @@ def envelope(*, data: object | None=None, error: str | None=None, request_id: st
 
 def valid_idempotency_key(key: str | None) -> bool:
     return bool(key and 16 <= len(key) <= 128 and all(33 <= ord(char) <= 126 for char in key))
+
+
+AUDIT_QUERY_FIELDS = {"actor_id", "action", "resource_type", "resource_id", "result", "timestamp_from", "timestamp_to", "limit", "cursor"}
+AUDIT_DEFAULT_LIMIT = 50
+AUDIT_MAX_LIMIT = 100
+
+
+def audit_filter_digest(filters: dict[str, object]) -> str:
+    """Bind cursors to the filters that define their ordered result set."""
+    values = {key: filters[key] for key in sorted(filters) if key not in {"cursor", "limit"}}
+    return hashlib.sha256(json.dumps(values, separators=(",", ":"), sort_keys=True).encode()).hexdigest()
+
+
+def encode_audit_cursor(org: str, timestamp: str, event_id: str, filter_digest: str) -> str:
+    payload = json.dumps([org, canonical_audit_timestamp(timestamp, "invalid_cursor"), event_id, filter_digest], separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def decode_audit_cursor(cursor: str) -> tuple[str, str, str, str]:
+    try:
+        decoded = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        org, timestamp, event_id, filter_digest = json.loads(decoded.decode())
+        if not all(isinstance(value, str) and value for value in (org, timestamp, event_id, filter_digest)):
+            raise ValueError
+        canonical_timestamp = canonical_audit_timestamp(timestamp, "invalid_cursor")
+        if timestamp != canonical_timestamp or not event_id.startswith("aud_") or len(filter_digest) != 64:
+            raise ValueError
+        int(filter_digest, 16)
+        return org, canonical_timestamp, event_id, filter_digest
+    except (binascii.Error, ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("invalid_cursor") from None
+
+
+def audit_query(query: str) -> dict[str, object]:
+    pairs = parse_qsl(query, keep_blank_values=True)
+    if len({key for key, _ in pairs}) != len(pairs) or any(key not in AUDIT_QUERY_FIELDS for key, _ in pairs):
+        raise ValueError("invalid_request")
+    result: dict[str, object] = {key: value for key, value in pairs}
+    raw_limit = result.get("limit", str(AUDIT_DEFAULT_LIMIT))
+    try:
+        limit = int(str(raw_limit))
+    except ValueError:
+        raise ValueError("invalid_request") from None
+    if str(limit) != raw_limit or not 1 <= limit <= AUDIT_MAX_LIMIT:
+        raise ValueError("invalid_request")
+    result["limit"] = limit
+    for field in ("timestamp_from", "timestamp_to"):
+        if field in result:
+            result[field] = canonical_audit_timestamp(str(result[field]), "invalid_request")
+    if result.get("timestamp_from", "") > result.get("timestamp_to", "~"):
+        raise ValueError("invalid_request")
+    if "cursor" in result:
+        decode_audit_cursor(str(result["cursor"]))
+    return result
 
 
 def make_handler(database: str | Path) -> type[BaseHTTPRequestHandler]:
@@ -381,6 +505,14 @@ def make_handler(database: str | Path) -> type[BaseHTTPRequestHandler]:
             if len(parts)==6 and parts[3]=="organizations" and parts[5]=="repositories":
                 try:self.send(200,envelope(data={"items":store.repositories(actor["id"],parts[4])}))
                 except PermissionError:self.send(404,envelope(error="not_found"))
+                return
+            if len(parts)==6 and parts[3]=="organizations" and parts[5]=="audit-events":
+                try:
+                    self.send(200,envelope(data=store.audit_events(actor, parts[4], audit_query(urlparse(self.path).query))))
+                except PermissionError:
+                    self.send(404,envelope(error="not_found"))
+                except ValueError as exc:
+                    self.send(400,envelope(error=str(exc)))
                 return
             if len(parts)==6 and parts[3]=="organizations" and parts[5]=="members":
                 if not self.membership_actor(actor): return

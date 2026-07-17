@@ -1,0 +1,337 @@
+"""Optional SourcePack hosted control plane; never started by local commands."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import secrets
+import sqlite3
+import uuid
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
+
+API_SCHEMA = "sourcepack.cloud.api_response.v1"
+MIGRATION_VERSION = 3
+ROLE_PERMISSIONS = {
+    "owner": {"members:write", "repositories:read", "repositories:write", "services:write", "artifacts:write", "audit:read"},
+    "maintainer": {"repositories:read", "repositories:write", "artifacts:write", "audit:read"},
+    "reviewer": {"repositories:read", "audit:read"},
+    "member": {"repositories:read"},
+}
+_PASSWORD_HASHER = PasswordHasher()
+
+
+def now() -> str: return datetime.now(timezone.utc).isoformat()
+def hash_value(value: str) -> str: return hashlib.sha256(value.encode()).hexdigest()
+def hash_password(password: str) -> str:
+    if not password: raise ValueError("password_required")
+    return _PASSWORD_HASHER.hash(password)
+def verify_password(password_hash: str, password: str) -> bool:
+    try: return _PASSWORD_HASHER.verify(password_hash, password)
+    except (InvalidHashError, VerifyMismatchError): return False
+
+
+def initialize_database(path: str | Path) -> None:
+    db = sqlite3.connect(path)
+    try:
+        db.execute("PRAGMA foreign_keys = ON")
+        db.execute("CREATE TABLE IF NOT EXISTS cloud_migrations (version INTEGER PRIMARY KEY)")
+        applied = {r[0] for r in db.execute("SELECT version FROM cloud_migrations")}
+        if 1 not in applied:
+            db.executescript("""
+CREATE TABLE organizations (id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, display_name TEXT NOT NULL, created_at TEXT NOT NULL, status TEXT NOT NULL);
+CREATE TABLE audit_events (id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, organization_id TEXT NOT NULL REFERENCES organizations(id), actor_id TEXT, action TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT, timestamp TEXT NOT NULL, result TEXT NOT NULL, detail_json TEXT NOT NULL);
+CREATE TABLE idempotency (organization_id TEXT NOT NULL, actor_id TEXT NOT NULL, method TEXT NOT NULL, route TEXT NOT NULL, key TEXT NOT NULL, body_sha256 TEXT NOT NULL, response_json TEXT NOT NULL, PRIMARY KEY (organization_id, actor_id, method, route, key));
+"""); db.execute("INSERT INTO cloud_migrations VALUES (1)")
+        if 2 not in applied:
+            db.execute("CREATE TABLE users (id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, login_identity TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL)")
+            db.execute("INSERT INTO cloud_migrations VALUES (2)")
+        if 3 not in applied:
+            db.executescript("""
+CREATE TABLE memberships (id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, organization_id TEXT NOT NULL REFERENCES organizations(id), user_id TEXT NOT NULL REFERENCES users(id), role TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, role_changed_at TEXT NOT NULL, UNIQUE(organization_id,user_id));
+CREATE TABLE repositories (id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, organization_id TEXT NOT NULL REFERENCES organizations(id), display_name TEXT NOT NULL, local_identity_json TEXT, created_at TEXT NOT NULL, status TEXT NOT NULL, UNIQUE(organization_id,id));
+CREATE TABLE service_identities (id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, organization_id TEXT NOT NULL REFERENCES organizations(id), display_name TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE service_tokens (id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, service_id TEXT NOT NULL REFERENCES service_identities(id), token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, revoked_at TEXT);
+CREATE TABLE repository_assignments (id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, organization_id TEXT NOT NULL REFERENCES organizations(id), repository_id TEXT NOT NULL REFERENCES repositories(id), service_id TEXT NOT NULL REFERENCES service_identities(id), creator_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(repository_id,service_id));
+CREATE TABLE credentials (id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id), token_hash TEXT NOT NULL UNIQUE, refresh_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, refresh_expires_at TEXT NOT NULL, revoked_at TEXT, created_at TEXT NOT NULL);
+"""); db.execute("INSERT INTO cloud_migrations VALUES (3)")
+        db.commit()
+    finally: db.close()
+
+
+class Store:
+    def __init__(self, path: str | Path): self.path = str(path); initialize_database(path)
+    def db(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path); conn.row_factory = sqlite3.Row; conn.execute("PRAGMA foreign_keys = ON"); return conn
+    def bootstrap(self, login: str, password: str, organization_name: str) -> tuple[str, str]:
+        user_id, org_id, stamp = "usr_"+uuid.uuid4().hex, "org_"+uuid.uuid4().hex, now()
+        with self.db() as db:
+            db.execute("INSERT INTO users VALUES (?,?,?,?,?,?)", (user_id,"sourcepack.cloud.user.v1",login,hash_password(password),"active",stamp))
+            db.execute("INSERT INTO organizations VALUES (?,?,?,?,?)", (org_id,"sourcepack.cloud.organization.v1",organization_name,stamp,"active"))
+            db.execute("INSERT INTO memberships VALUES (?,?,?,?,?,?,?,?)", ("mem_"+uuid.uuid4().hex,"sourcepack.cloud.membership.v1",org_id,user_id,"owner","active",stamp,stamp))
+        return user_id, org_id
+    def audit(self, db: sqlite3.Connection, org: str, actor: str, action: str, resource: str, resource_id: str, result: str="success") -> None:
+        db.execute("INSERT INTO audit_events VALUES (?,?,?,?,?,?,?,?,?,?)", ("aud_"+uuid.uuid4().hex,"sourcepack.cloud.audit_event.v1",org,actor,action,resource,resource_id,now(),result,"{}"))
+    def login(self, identity: str, password: str) -> dict | None:
+        with self.db() as db:
+            row=db.execute("SELECT * FROM users WHERE login_identity=?",(identity,)).fetchone()
+            if not row or row["status"]!="active" or not verify_password(row["password_hash"],password): return None
+            return self.issue_tokens(db,row["id"])
+    def issue_tokens(self, db: sqlite3.Connection, user_id: str) -> dict:
+        access, refresh=secrets.token_urlsafe(32),secrets.token_urlsafe(48); stamp=now()
+        db.execute("INSERT INTO credentials VALUES (?,?,?,?,?,?,?,?,?)", ("cred_"+uuid.uuid4().hex,"sourcepack.cloud.credential.v1",user_id,hash_value(access),hash_value(refresh),(datetime.now(timezone.utc)+timedelta(minutes=15)).isoformat(),(datetime.now(timezone.utc)+timedelta(days=30)).isoformat(),None,stamp))
+        return {"access_token":access,"refresh_token":refresh,"token_type":"bearer","expires_in":900}
+    def refresh(self, refresh: str) -> dict | None:
+        with self.db() as db:
+            row=db.execute("SELECT * FROM credentials WHERE refresh_hash=? AND revoked_at IS NULL AND refresh_expires_at>?",(hash_value(refresh),now())).fetchone()
+            if not row: return None
+            db.execute("UPDATE credentials SET revoked_at=? WHERE id=?",(now(),row["id"]))
+            return self.issue_tokens(db,row["user_id"])
+    def revoke(self, authorization: str) -> bool:
+        if not authorization.startswith("Bearer "): return False
+        with self.db() as db:
+            result=db.execute("UPDATE credentials SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL",(now(),hash_value(authorization[7:]))); return result.rowcount == 1
+    def actor(self, authorization: str | None) -> sqlite3.Row | None:
+        if not authorization or not authorization.startswith("Bearer "): return None
+        token=hash_value(authorization[7:])
+        with self.db() as db:
+            user=db.execute("SELECT u.*, 'user' AS actor_kind FROM credentials c JOIN users u ON u.id=c.user_id WHERE c.token_hash=? AND c.revoked_at IS NULL AND c.expires_at>? AND u.status='active'",(token,now())).fetchone()
+            if user: return user
+            return db.execute("SELECT s.id,s.organization_id,s.status,'service' AS actor_kind FROM service_tokens t JOIN service_identities s ON s.id=t.service_id WHERE t.token_hash=? AND t.revoked_at IS NULL AND t.expires_at>? AND s.status='active'",(token,now())).fetchone()
+    def service_repository_access(self, actor: sqlite3.Row, org: str, repo: str) -> bool:
+        if actor["actor_kind"] != "service" or actor["organization_id"] != org: return False
+        with self.db() as db:
+            return bool(db.execute("SELECT 1 FROM repository_assignments a JOIN repositories r ON r.id=a.repository_id WHERE a.service_id=? AND a.organization_id=? AND a.repository_id=? AND a.status='active' AND r.organization_id=? AND r.status='active'",(actor["id"],org,repo,org)).fetchone())
+    def membership(self, actor: str, org: str) -> sqlite3.Row | None:
+        with self.db() as db: return db.execute("SELECT * FROM memberships WHERE user_id=? AND organization_id=? AND status='active'",(actor,org)).fetchone()
+    def permit(self, actor: str, org: str, permission: str) -> bool:
+        membership=self.membership(actor,org); return bool(membership and permission in ROLE_PERMISSIONS.get(membership["role"],set()))
+    def create_repository(self, actor: str, org: str, name: str) -> dict:
+        if not self.permit(actor,org,"repositories:write"): raise PermissionError
+        record={"schema_version":"sourcepack.cloud.repository.v1","id":"repo_"+uuid.uuid4().hex,"organization_id":org,"display_name":name,"registered_at":now(),"status":"active"}
+        with self.db() as db:
+            db.execute("INSERT INTO repositories VALUES (?,?,?,?,?,?,?)",(record["id"],record["schema_version"],org,name,None,record["registered_at"],"active")); self.audit(db,org,actor,"repository_registered","repository",record["id"])
+        return record
+    def repositories(self, actor: str, org: str) -> list[dict]:
+        if not self.permit(actor,org,"repositories:read"): raise PermissionError
+        with self.db() as db: return [{"schema_version":"sourcepack.cloud.repository.v1","id":r["id"],"organization_id":org,"display_name":r["display_name"],"registered_at":r["created_at"],"status":r["status"]} for r in db.execute("SELECT * FROM repositories WHERE organization_id=? ORDER BY created_at,id",(org,))]
+    def add_membership(self, actor: str, org: str, user_id: str, role: str) -> dict:
+        if role not in ROLE_PERMISSIONS or not self.permit(actor,org,"members:write"): raise PermissionError
+        stamp=now(); record={"schema_version":"sourcepack.cloud.membership.v1","id":"mem_"+uuid.uuid4().hex,"organization_id":org,"user_id":user_id,"role":role,"status":"active","created_at":stamp,"role_changed_at":stamp}
+        with self.db() as db:
+            db.execute("INSERT INTO memberships VALUES (?,?,?,?,?,?,?,?)",tuple(record[k] for k in ("id","schema_version","organization_id","user_id","role","status","created_at","role_changed_at"))); self.audit(db,org,actor,"membership_added","membership",record["id"])
+        return record
+    def _owner_count(self, db: sqlite3.Connection, org: str) -> int:
+        return int(db.execute("SELECT COUNT(*) FROM memberships WHERE organization_id=? AND role='owner' AND status='active'", (org,)).fetchone()[0])
+    def change_role(self, actor: str, org: str, membership_id: str, role: str) -> None:
+        if role not in ROLE_PERMISSIONS or not self.permit(actor,org,"members:write"): raise PermissionError
+        with self.db() as db:
+            row=db.execute("SELECT * FROM memberships WHERE id=? AND organization_id=? AND status='active'",(membership_id,org)).fetchone()
+            if not row: raise LookupError
+            if row["role"]=="owner" and (role!="owner") and self._owner_count(db,org)<=1: raise ValueError("final_owner")
+            db.execute("UPDATE memberships SET role=?,role_changed_at=? WHERE id=?",(role,now(),membership_id)); self.audit(db,org,actor,"membership_role_changed","membership",membership_id)
+    def remove_member(self, actor: str, org: str, membership_id: str) -> None:
+        if not self.permit(actor,org,"members:write"): raise PermissionError
+        with self.db() as db:
+            row=db.execute("SELECT * FROM memberships WHERE id=? AND organization_id=? AND status='active'",(membership_id,org)).fetchone()
+            if not row: raise LookupError
+            if row["role"]=="owner" and self._owner_count(db,org)<=1: raise ValueError("final_owner")
+            db.execute("UPDATE memberships SET status='removed' WHERE id=?",(membership_id,)); self.audit(db,org,actor,"membership_removed","membership",membership_id)
+    def repository(self, actor:str, org:str, repo:str)->dict:
+        if not self.permit(actor,org,"repositories:read"): raise PermissionError
+        with self.db() as db:
+            row=db.execute("SELECT * FROM repositories WHERE id=? AND organization_id=?",(repo,org)).fetchone()
+            if not row: raise LookupError
+            return {"schema_version":"sourcepack.cloud.repository.v1","id":row["id"],"organization_id":org,"display_name":row["display_name"],"registered_at":row["created_at"],"status":row["status"]}
+    def set_repository_status(self,actor:str,org:str,repo:str,status:str)->None:
+        if status not in {"active","inactive"} or not self.permit(actor,org,"repositories:write"): raise PermissionError
+        with self.db() as db:
+            if db.execute("UPDATE repositories SET status=? WHERE id=? AND organization_id=?",(status,repo,org)).rowcount!=1: raise LookupError
+            self.audit(db,org,actor,"repository_"+status,"repository",repo)
+    def create_service(self,actor:str,org:str,name:str,expires_hours:int=720)->tuple[dict,str]:
+        if not self.permit(actor,org,"services:write"): raise PermissionError
+        sid="svc_"+uuid.uuid4().hex; token=secrets.token_urlsafe(32); stamp=now()
+        record={"schema_version":"sourcepack.cloud.service_identity.v1","id":sid,"organization_id":org,"display_name":name,"status":"active","created_at":stamp}
+        with self.db() as db:
+            db.execute("INSERT INTO service_identities VALUES (?,?,?,?,?,?)",(sid,"sourcepack.cloud.service_identity.v1",org,name,"active",stamp)); db.execute("INSERT INTO service_tokens VALUES (?,?,?,?,?,?)",("stok_"+uuid.uuid4().hex,"sourcepack.cloud.credential.v1",sid,hash_value(token),(datetime.now(timezone.utc)+timedelta(hours=expires_hours)).isoformat(),None)); self.audit(db,org,actor,"service_created","service",sid)
+        return record,token
+    def services(self,actor:str,org:str)->list[dict]:
+        if not self.permit(actor,org,"services:write"): raise PermissionError
+        with self.db() as db:return [{"schema_version":"sourcepack.cloud.service_identity.v1","id":r["id"],"organization_id":org,"display_name":r["display_name"],"status":r["status"],"created_at":r["created_at"]} for r in db.execute("SELECT * FROM service_identities WHERE organization_id=? ORDER BY created_at,id",(org,))]
+    def revoke_service(self,actor:str,org:str,sid:str)->None:
+        if not self.permit(actor,org,"services:write"): raise PermissionError
+        with self.db() as db:
+            if db.execute("UPDATE service_identities SET status='revoked' WHERE id=? AND organization_id=?",(sid,org)).rowcount!=1: raise LookupError
+            db.execute("UPDATE service_tokens SET revoked_at=? WHERE service_id=?",(now(),sid)); self.audit(db,org,actor,"service_revoked","service",sid)
+    def assign_service(self,actor:str,org:str,sid:str,repo:str)->dict:
+        if not self.permit(actor,org,"services:write"): raise PermissionError
+        stamp=now(); aid="asn_"+uuid.uuid4().hex
+        with self.db() as db:
+            if not db.execute("SELECT 1 FROM repositories WHERE id=? AND organization_id=? AND status='active'",(repo,org)).fetchone(): raise LookupError
+            if not db.execute("SELECT 1 FROM service_identities WHERE id=? AND organization_id=? AND status='active'",(sid,org)).fetchone(): raise LookupError
+            previous=db.execute("SELECT id FROM repository_assignments WHERE repository_id=? AND service_id=?",(repo,sid)).fetchone()
+            if previous:
+                aid=previous["id"]; db.execute("UPDATE repository_assignments SET status='active',creator_id=?,created_at=? WHERE id=?",(actor,stamp,aid))
+            else: db.execute("INSERT INTO repository_assignments VALUES (?,?,?,?,?,?,?,?)",(aid,"sourcepack.cloud.repository_assignment.v1",org,repo,sid,actor,"active",stamp))
+            self.audit(db,org,actor,"service_assigned","repository_assignment",aid)
+        return {"schema_version":"sourcepack.cloud.repository_assignment.v1","id":aid,"organization_id":org,"repository_id":repo,"service_id":sid,"status":"active","created_at":stamp}
+    def assignments(self,actor:str,org:str,sid:str)->list[dict]:
+        if not self.permit(actor,org,"services:write"): raise PermissionError
+        with self.db() as db:return [{"schema_version":"sourcepack.cloud.repository_assignment.v1","id":r["id"],"organization_id":org,"repository_id":r["repository_id"],"service_id":sid,"status":r["status"],"created_at":r["created_at"]} for r in db.execute("SELECT * FROM repository_assignments WHERE organization_id=? AND service_id=? AND status='active' ORDER BY created_at,id",(org,sid))]
+    def remove_assignment(self,actor:str,org:str,aid:str)->None:
+        if not self.permit(actor,org,"services:write"): raise PermissionError
+        with self.db() as db:
+            if db.execute("UPDATE repository_assignments SET status='removed' WHERE id=? AND organization_id=? AND status='active'",(aid,org)).rowcount!=1: raise LookupError
+            self.audit(db,org,actor,"service_assignment_removed","repository_assignment",aid)
+    def members(self, actor: str, org: str) -> list[dict]:
+        if not self.permit(actor,org,"repositories:read"): raise PermissionError
+        with self.db() as db:
+            return [{"schema_version":"sourcepack.cloud.membership.v1","id":r["id"],"organization_id":org,"user_id":r["user_id"],"role":r["role"],"status":r["status"],"created_at":r["created_at"],"role_changed_at":r["role_changed_at"]} for r in db.execute("SELECT * FROM memberships WHERE organization_id=? ORDER BY created_at,id",(org,))]
+
+
+def envelope(*, data: object | None=None, error: str | None=None, request_id: str | None=None) -> dict:
+    result={"schema_version":API_SCHEMA,"ok":error is None,"request_id":request_id or str(uuid.uuid4())}; result["data" if error is None else "error"] = data if error is None else {"code":error,"message":"The request could not be completed."}; return result
+
+
+def make_handler(database: str | Path) -> type[BaseHTTPRequestHandler]:
+    store=Store(database)
+    class Handler(BaseHTTPRequestHandler):
+        server_version="SourcePackHosted/1"; max_body=1_000_000
+        def log_message(self, format: str, *args: object) -> None: return
+        def send(self,status:int,payload:dict)->None:
+            body=json.dumps(payload,separators=(",",":"),sort_keys=True).encode(); self.send_response(status); self.send_header("Content-Type","application/json; charset=utf-8"); self.send_header("Content-Length",str(len(body))); self.send_header("Cache-Control","no-store"); self.end_headers(); self.wfile.write(body)
+        def body(self)->dict|None:
+            if self.headers.get("Content-Type","").split(";",1)[0]!="application/json": self.send(415,envelope(error="unsupported_content_type")); return None
+            try:
+                size=int(self.headers.get("Content-Length","-1")); assert 0<=size<=self.max_body
+                def pairs(items):
+                    d={}
+                    for k,v in items:
+                        if k in d: raise ValueError
+                        d[k]=v
+                    return d
+                value=json.loads(self.rfile.read(size).decode(),object_pairs_hook=pairs); assert isinstance(value,dict); return value
+            except Exception: self.send(400,envelope(error="malformed_json")); return None
+        def auth(self):
+            actor=store.actor(self.headers.get("Authorization"))
+            if not actor: self.send(401,envelope(error="authentication_required")); return None
+            return actor
+        def do_GET(self)->None:
+            path=urlparse(self.path).path
+            if path=="/api/v1/health": self.send(200,envelope(data={"status":"ok"})); return
+            actor=self.auth()
+            if not actor:return
+            if path=="/api/v1/auth/me":
+                if actor["actor_kind"] != "user": self.send(404,envelope(error="not_found")); return
+                self.send(200,envelope(data={"schema_version":"sourcepack.cloud.user.v1","id":actor["id"],"login_identity":actor["login_identity"],"status":actor["status"],"created_at":actor["created_at"]})); return
+            parts=path.split("/")
+            if len(parts)==5 and parts[3]=="organizations" and parts[4]:
+                if not store.permit(actor["id"],parts[4],"repositories:read"): self.send(404,envelope(error="not_found")); return
+                with store.db() as db: row=db.execute("SELECT * FROM organizations WHERE id=? AND status='active'",(parts[4],)).fetchone()
+                if not row:self.send(404,envelope(error="not_found")); return
+                self.send(200,envelope(data={"schema_version":"sourcepack.cloud.organization.v1","id":row["id"],"display_name":row["display_name"],"created_at":row["created_at"],"status":row["status"]})); return
+            if len(parts)==6 and parts[3]=="organizations" and parts[5]=="repositories":
+                try:self.send(200,envelope(data={"items":store.repositories(actor["id"],parts[4])}))
+                except PermissionError:self.send(404,envelope(error="not_found"))
+                return
+            if len(parts)==6 and parts[3]=="organizations" and parts[5]=="members":
+                try:self.send(200,envelope(data={"items":store.members(actor["id"],parts[4])}))
+                except PermissionError:self.send(404,envelope(error="not_found"))
+                return
+            if len(parts)==7 and parts[3]=="organizations" and parts[5]=="repositories":
+                try:self.send(200,envelope(data=store.repository(actor["id"],parts[4],parts[6])))
+                except (PermissionError,LookupError):self.send(404,envelope(error="not_found"))
+                return
+            if len(parts)==6 and parts[3]=="organizations" and parts[5]=="services":
+                try:self.send(200,envelope(data={"items":store.services(actor["id"],parts[4])}))
+                except PermissionError:self.send(404,envelope(error="not_found"))
+                return
+            if len(parts)==8 and parts[3]=="organizations" and parts[5]=="services" and parts[7]=="assignments":
+                try:self.send(200,envelope(data={"items":store.assignments(actor["id"],parts[4],parts[6])}))
+                except PermissionError:self.send(404,envelope(error="not_found"))
+                return
+            self.send(404,envelope(error="not_found"))
+        def do_POST(self)->None:
+            path=urlparse(self.path).path; data=self.body()
+            if data is None:return
+            if path=="/api/v1/auth/login":
+                tokens=store.login(str(data.get("identity","")),str(data.get("password",""))); self.send(200 if tokens else 401,envelope(data=tokens) if tokens else envelope(error="authentication_rejected")); return
+            if path=="/api/v1/auth/refresh":
+                tokens=store.refresh(str(data.get("refresh_token",""))); self.send(200 if tokens else 401,envelope(data=tokens) if tokens else envelope(error="authentication_rejected")); return
+            actor=self.auth()
+            if not actor:return
+            parts=path.split("/")
+            if len(parts)==6 and parts[3]=="organizations" and parts[5]=="repositories":
+                name=data.get("display_name")
+                if not isinstance(name,str) or not name.strip(): self.send(400,envelope(error="invalid_request")); return
+                try:self.send(201,envelope(data=store.create_repository(actor["id"],parts[4],name)))
+                except PermissionError:self.send(404,envelope(error="not_found"))
+                return
+            if len(parts)==6 and parts[3]=="organizations" and parts[5]=="members":
+                try:self.send(201,envelope(data=store.add_membership(actor["id"],parts[4],str(data.get("user_id","")),str(data.get("role","")))))
+                except PermissionError:self.send(404,envelope(error="not_found"))
+                except sqlite3.IntegrityError:self.send(400,envelope(error="invalid_request"))
+                return
+            if len(parts)==6 and parts[3]=="organizations" and parts[5]=="services":
+                if set(data)!={"display_name"} or not isinstance(data.get("display_name"),str):self.send(400,envelope(error="invalid_request"));return
+                try:
+                    service, token=store.create_service(actor["id"],parts[4],data["display_name"]); self.send(201,envelope(data={**service,"token":token}))
+                except PermissionError:self.send(404,envelope(error="not_found"))
+                return
+            if len(parts)==9 and parts[3]=="organizations" and parts[5]=="repositories" and parts[7] in {"deactivate","reactivate"}:
+                self.send(404,envelope(error="not_found")); return
+            if len(parts)==8 and parts[3]=="organizations" and parts[5]=="repositories" and parts[7] in {"deactivate","reactivate"}:
+                try:store.set_repository_status(actor["id"],parts[4],parts[6],"inactive" if parts[7]=="deactivate" else "active");self.send(200,envelope(data={"status":"inactive" if parts[7]=="deactivate" else "active"}))
+                except (PermissionError,LookupError):self.send(404,envelope(error="not_found"))
+                return
+            if len(parts)==8 and parts[3]=="organizations" and parts[5]=="services" and parts[7]=="revoke":
+                try:store.revoke_service(actor["id"],parts[4],parts[6]);self.send(200,envelope(data={"revoked":True}))
+                except (PermissionError,LookupError):self.send(404,envelope(error="not_found"))
+                return
+            if len(parts)==8 and parts[3]=="organizations" and parts[5]=="services" and parts[7]=="assignments":
+                if set(data)!={"repository_id"} or not isinstance(data.get("repository_id"),str):self.send(400,envelope(error="invalid_request"));return
+                try:self.send(201,envelope(data=store.assign_service(actor["id"],parts[4],parts[6],data["repository_id"])))
+                except (PermissionError,LookupError,sqlite3.IntegrityError):self.send(404,envelope(error="not_found"))
+                return
+            self.send(404,envelope(error="not_found"))
+        def do_DELETE(self)->None:
+            if urlparse(self.path).path=="/api/v1/auth/current":
+                if store.revoke(self.headers.get("Authorization", "")): self.send(200,envelope(data={"revoked":True}))
+                else:self.send(401,envelope(error="authentication_required"))
+                return
+            actor=self.auth()
+            if not actor:return
+            parts=urlparse(self.path).path.split("/")
+            if len(parts)==7 and parts[3]=="organizations" and parts[5]=="members":
+                try:store.remove_member(actor["id"],parts[4],parts[6]);self.send(200,envelope(data={"removed":True}))
+                except ValueError:self.send(409,envelope(error="final_owner"))
+                except (PermissionError,LookupError):self.send(404,envelope(error="not_found"))
+                return
+            if len(parts)==7 and parts[3]=="organizations" and parts[5]=="assignments":
+                try:store.remove_assignment(actor["id"],parts[4],parts[6]);self.send(200,envelope(data={"removed":True}))
+                except (PermissionError,LookupError):self.send(404,envelope(error="not_found"))
+                return
+            self.send(404,envelope(error="not_found"))
+        def do_PATCH(self)->None:
+            data=self.body()
+            if data is None:return
+            actor=self.auth()
+            if not actor:return
+            parts=urlparse(self.path).path.split("/")
+            if len(parts)==7 and parts[3]=="organizations" and parts[5]=="members" and set(data)=={"role"} and isinstance(data["role"],str):
+                try:store.change_role(actor["id"],parts[4],parts[6],data["role"]);self.send(200,envelope(data={"changed":True}))
+                except ValueError:self.send(409,envelope(error="final_owner"))
+                except (PermissionError,LookupError):self.send(404,envelope(error="not_found"))
+                return
+            self.send(400,envelope(error="invalid_request"))
+    return Handler
+
+
+def main(argv: list[str] | None=None)->int:
+    parser=argparse.ArgumentParser(description="Run the optional SourcePack hosted API."); parser.add_argument("--database",required=True); parser.add_argument("--host",default="127.0.0.1"); parser.add_argument("--port",type=int,default=8080); args=parser.parse_args(argv)
+    ThreadingHTTPServer((args.host,args.port),make_handler(args.database)).serve_forever(); return 0

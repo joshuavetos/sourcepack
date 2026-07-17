@@ -16,7 +16,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
 API_SCHEMA = "sourcepack.cloud.api_response.v1"
-MIGRATION_VERSION = 3
+MIGRATION_VERSION = 4
 ROLE_PERMISSIONS = {
     "owner": {"members:write", "repositories:read", "repositories:write", "services:write", "artifacts:write", "audit:read"},
     "maintainer": {"repositories:read", "repositories:write", "artifacts:write", "audit:read"},
@@ -60,6 +60,17 @@ CREATE TABLE service_tokens (id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, 
 CREATE TABLE repository_assignments (id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, organization_id TEXT NOT NULL REFERENCES organizations(id), repository_id TEXT NOT NULL REFERENCES repositories(id), service_id TEXT NOT NULL REFERENCES service_identities(id), creator_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(repository_id,service_id));
 CREATE TABLE credentials (id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id), token_hash TEXT NOT NULL UNIQUE, refresh_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, refresh_expires_at TEXT NOT NULL, revoked_at TEXT, created_at TEXT NOT NULL);
 """); db.execute("INSERT INTO cloud_migrations VALUES (3)")
+        if 4 not in applied:
+            # Rebuild the original table so actor kind and the committed status are
+            # part of the durable replay contract.
+            db.executescript("""
+ALTER TABLE idempotency RENAME TO idempotency_v1;
+CREATE TABLE idempotency (organization_id TEXT NOT NULL, actor_kind TEXT NOT NULL, actor_id TEXT NOT NULL, method TEXT NOT NULL, route TEXT NOT NULL, key TEXT NOT NULL, body_sha256 TEXT NOT NULL, response_status INTEGER NOT NULL, response_json TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (organization_id, actor_kind, actor_id, method, route, key));
+INSERT INTO idempotency (organization_id,actor_kind,actor_id,method,route,key,body_sha256,response_status,response_json,created_at)
+SELECT organization_id,'user',actor_id,method,route,key,body_sha256,201,response_json,datetime('now') FROM idempotency_v1;
+DROP TABLE idempotency_v1;
+""")
+            db.execute("INSERT INTO cloud_migrations VALUES (4)")
         db.commit()
     finally: db.close()
 
@@ -130,6 +141,76 @@ class Store:
     def _begin_membership_write(self, db: sqlite3.Connection) -> None:
         # SQLite must acquire the write lock before any membership state is read.
         db.execute("BEGIN IMMEDIATE")
+    def _authorized(self, db: sqlite3.Connection, actor: sqlite3.Row, org: str, permission: str) -> None:
+        if actor["actor_kind"] != "user": raise PermissionError
+        row=db.execute("SELECT role FROM memberships WHERE user_id=? AND organization_id=? AND status='active'", (actor["id"], org)).fetchone()
+        if not row or permission not in ROLE_PERMISSIONS.get(row["role"], set()): raise PermissionError
+    def idempotent_create(self, actor: sqlite3.Row, org: str, route: str, key: str, body: bytes, mutation) -> tuple[int, dict]:
+        """Atomically replay or commit a create response while holding SQLite's write lock."""
+        digest=hashlib.sha256(body).hexdigest(); db=self.db()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            row=db.execute("SELECT body_sha256,response_status,response_json FROM idempotency WHERE organization_id=? AND actor_kind=? AND actor_id=? AND method='POST' AND route=? AND key=?", (org,actor["actor_kind"],actor["id"],route,key)).fetchone()
+            if row:
+                if row["body_sha256"] != digest: db.rollback(); return 409,envelope(error="idempotency_conflict")
+                payload=json.loads(row["response_json"]); db.rollback(); return row["response_status"],payload
+            record=mutation(db)
+            payload=envelope(data=record)
+            db.execute("INSERT INTO idempotency VALUES (?,?,?,?,?,?,?,?,?,?)", (org,actor["actor_kind"],actor["id"],"POST",route,key,digest,201,json.dumps(payload,separators=(",",":"),sort_keys=True),now()))
+            db.commit(); return 201,payload
+        except Exception:
+            db.rollback(); raise
+        finally: db.close()
+    def create_repository_in(self, db: sqlite3.Connection, actor: sqlite3.Row, org: str, name: str) -> dict:
+        self._authorized(db,actor,org,"repositories:write")
+        record={"schema_version":"sourcepack.cloud.repository.v1","id":"repo_"+uuid.uuid4().hex,"organization_id":org,"display_name":name,"registered_at":now(),"status":"active"}
+        db.execute("INSERT INTO repositories VALUES (?,?,?,?,?,?,?)",(record["id"],record["schema_version"],org,name,None,record["registered_at"],"active")); self.audit(db,org,actor["id"],"repository_registered","repository",record["id"])
+        return record
+    def add_membership_in(self, db: sqlite3.Connection, actor: sqlite3.Row, org: str, user_id: str, role: str) -> dict:
+        if role not in ROLE_PERMISSIONS: raise ValueError("invalid_role")
+        self._authorized(db,actor,org,"members:write")
+        if not db.execute("SELECT 1 FROM users WHERE id=? AND status='active'",(user_id,)).fetchone(): raise LookupError
+        existing=db.execute("SELECT * FROM memberships WHERE organization_id=? AND user_id=?",(org,user_id)).fetchone(); stamp=now()
+        if existing and existing["status"] == "active": raise ValueError("duplicate_membership")
+        if existing:
+            db.execute("UPDATE memberships SET role=?,status='active',role_changed_at=? WHERE id=?",(role,stamp,existing["id"])); row=db.execute("SELECT * FROM memberships WHERE id=?",(existing["id"],)).fetchone(); self.audit(db,org,actor["id"],"membership_reactivated","membership",existing["id"])
+        else:
+            record_id="mem_"+uuid.uuid4().hex; db.execute("INSERT INTO memberships VALUES (?,?,?,?,?,?,?,?)",(record_id,"sourcepack.cloud.membership.v1",org,user_id,role,"active",stamp,stamp)); row=db.execute("SELECT * FROM memberships WHERE id=?",(record_id,)).fetchone(); self.audit(db,org,actor["id"],"membership_added","membership",record_id)
+        return self._membership_record(row)
+    def create_service_in(self, db: sqlite3.Connection, actor: sqlite3.Row, org: str, name: str) -> dict:
+        self._authorized(db,actor,org,"services:write"); sid="svc_"+uuid.uuid4().hex; stamp=now()
+        record={"schema_version":"sourcepack.cloud.service_identity.v1","id":sid,"organization_id":org,"display_name":name,"status":"active","created_at":stamp}
+        db.execute("INSERT INTO service_identities VALUES (?,?,?,?,?,?)",(sid,"sourcepack.cloud.service_identity.v1",org,name,"active",stamp)); self.audit(db,org,actor["id"],"service_created","service",sid)
+        return record
+    def create_service_token(self, actor: sqlite3.Row, org: str, service_id: str, route: str, key: str, body: bytes, expires_hours: int) -> tuple[int, dict]:
+        """Issue a service token once; replays disclose only its non-secret metadata."""
+        digest=hashlib.sha256(body).hexdigest(); db=self.db()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            row=db.execute("SELECT body_sha256,response_status,response_json FROM idempotency WHERE organization_id=? AND actor_kind=? AND actor_id=? AND method='POST' AND route=? AND key=?", (org,actor["actor_kind"],actor["id"],route,key)).fetchone()
+            if row:
+                if row["body_sha256"] != digest: db.rollback(); return 409,envelope(error="idempotency_conflict")
+                metadata=json.loads(row["response_json"]); db.rollback()
+                return row["response_status"],envelope(data={**metadata["data"],"raw_token_disclosed":False,"raw_token_unavailable":True})
+            self._authorized(db,actor,org,"services:write")
+            if not db.execute("SELECT 1 FROM service_identities WHERE id=? AND organization_id=? AND status='active'",(service_id,org)).fetchone(): raise LookupError
+            raw=secrets.token_urlsafe(32); expires=(datetime.now(timezone.utc)+timedelta(hours=expires_hours)).isoformat(); token_id="stok_"+uuid.uuid4().hex
+            metadata={"schema_version":"sourcepack.cloud.service_token.v1","id":token_id,"service_id":service_id,"expires_at":expires}
+            db.execute("INSERT INTO service_tokens VALUES (?,?,?,?,?,?)",(token_id,"sourcepack.cloud.credential.v1",service_id,hash_value(raw),expires,None)); self.audit(db,org,actor["id"],"service_token_created","service_token",token_id)
+            stored=envelope(data=metadata)
+            db.execute("INSERT INTO idempotency VALUES (?,?,?,?,?,?,?,?,?,?)",(org,actor["actor_kind"],actor["id"],"POST",route,key,digest,201,json.dumps(stored,separators=(",",":"),sort_keys=True),now()))
+            db.commit(); return 201,envelope(data={**metadata,"token":raw,"raw_token_disclosed":True})
+        except Exception:
+            db.rollback(); raise
+        finally: db.close()
+    def assign_service_in(self, db: sqlite3.Connection, actor: sqlite3.Row, org: str, sid: str, repo: str) -> dict:
+        self._authorized(db,actor,org,"services:write"); stamp=now(); aid="asn_"+uuid.uuid4().hex
+        if not db.execute("SELECT 1 FROM repositories WHERE id=? AND organization_id=? AND status='active'",(repo,org)).fetchone() or not db.execute("SELECT 1 FROM service_identities WHERE id=? AND organization_id=? AND status='active'",(sid,org)).fetchone(): raise LookupError
+        previous=db.execute("SELECT id FROM repository_assignments WHERE repository_id=? AND service_id=?",(repo,sid)).fetchone()
+        if previous: aid=previous["id"]; db.execute("UPDATE repository_assignments SET status='active',creator_id=?,created_at=? WHERE id=?",(actor["id"],stamp,aid))
+        else: db.execute("INSERT INTO repository_assignments VALUES (?,?,?,?,?,?,?,?)",(aid,"sourcepack.cloud.repository_assignment.v1",org,repo,sid,actor["id"],"active",stamp))
+        self.audit(db,org,actor["id"],"service_assigned","repository_assignment",aid)
+        return {"schema_version":"sourcepack.cloud.repository_assignment.v1","id":aid,"organization_id":org,"repository_id":repo,"service_id":sid,"status":"active","created_at":stamp}
     def add_membership(self, actor: str, org: str, user_id: str, role: str) -> dict:
         if role not in ROLE_PERMISSIONS: raise ValueError("invalid_role")
         db=self.db()
@@ -235,6 +316,10 @@ def envelope(*, data: object | None=None, error: str | None=None, request_id: st
     result={"schema_version":API_SCHEMA,"ok":error is None,"request_id":request_id or str(uuid.uuid4())}; result["data" if error is None else "error"] = data if error is None else {"code":error,"message":"The request could not be completed."}; return result
 
 
+def valid_idempotency_key(key: str | None) -> bool:
+    return bool(key and 16 <= len(key) <= 128 and all(33 <= ord(char) <= 126 for char in key))
+
+
 def make_handler(database: str | Path) -> type[BaseHTTPRequestHandler]:
     store=Store(database)
     class Handler(BaseHTTPRequestHandler):
@@ -242,17 +327,28 @@ def make_handler(database: str | Path) -> type[BaseHTTPRequestHandler]:
         def log_message(self, format: str, *args: object) -> None: return
         def send(self,status:int,payload:dict)->None:
             body=json.dumps(payload,separators=(",",":"),sort_keys=True).encode(); self.send_response(status); self.send_header("Content-Type","application/json; charset=utf-8"); self.send_header("Content-Length",str(len(body))); self.send_header("Cache-Control","no-store"); self.end_headers(); self.wfile.write(body)
+        def bounded_body(self, absent_length: int) -> bytes | None:
+            """Read only a declared body whose length is valid for this handler."""
+            raw_length=self.headers.get("Content-Length")
+            try: size=absent_length if raw_length is None else int(raw_length)
+            except ValueError: self.send(400,envelope(error="malformed_json")); return None
+            if size < 0: self.send(400,envelope(error="malformed_json")); return None
+            if size > self.max_body: self.send(413,envelope(error="payload_too_large")); return None
+            body=self.rfile.read(size)
+            if len(body) != size: self.send(400,envelope(error="malformed_json")); return None
+            return body
         def body(self)->dict|None:
             if self.headers.get("Content-Type","").split(";",1)[0]!="application/json": self.send(415,envelope(error="unsupported_content_type")); return None
             try:
-                size=int(self.headers.get("Content-Length","-1")); assert 0<=size<=self.max_body
+                self.request_body=self.bounded_body(-1)
+                if self.request_body is None: return None
                 def pairs(items):
                     d={}
                     for k,v in items:
                         if k in d: raise ValueError
                         d[k]=v
                     return d
-                value=json.loads(self.rfile.read(size).decode(),object_pairs_hook=pairs); assert isinstance(value,dict); return value
+                value=json.loads(self.request_body.decode(),object_pairs_hook=pairs); assert isinstance(value,dict); return value
             except Exception: self.send(400,envelope(error="malformed_json")); return None
         def auth(self):
             actor=store.actor(self.headers.get("Authorization"))
@@ -261,6 +357,13 @@ def make_handler(database: str | Path) -> type[BaseHTTPRequestHandler]:
         def membership_actor(self, actor):
             if actor["actor_kind"] != "user": self.send(404,envelope(error="not_found")); return None
             return actor
+        def create(self, actor, org: str, path: str, mutation) -> None:
+            key=self.headers.get("Idempotency-Key")
+            if not valid_idempotency_key(key): self.send(400,envelope(error="invalid_idempotency_key")); return
+            try:
+                status,payload=store.idempotent_create(actor,org,path,key,self.request_body,mutation); self.send(status,payload)
+            except ValueError as exc:self.send(409 if str(exc)=="duplicate_membership" else 400,envelope(error=str(exc) if str(exc)=="duplicate_membership" else "invalid_request"))
+            except (PermissionError,LookupError):self.send(404,envelope(error="not_found"))
         def do_GET(self)->None:
             path=urlparse(self.path).path
             if path=="/api/v1/health": self.send(200,envelope(data={"status":"ok"})); return
@@ -310,21 +413,24 @@ def make_handler(database: str | Path) -> type[BaseHTTPRequestHandler]:
             if len(parts)==6 and parts[3]=="organizations" and parts[5]=="repositories":
                 name=data.get("display_name")
                 if not isinstance(name,str) or not name.strip(): self.send(400,envelope(error="invalid_request")); return
-                try:self.send(201,envelope(data=store.create_repository(actor["id"],parts[4],name)))
-                except PermissionError:self.send(404,envelope(error="not_found"))
+                self.create(actor,parts[4],path,lambda db: store.create_repository_in(db,actor,parts[4],name))
                 return
             if len(parts)==6 and parts[3]=="organizations" and parts[5]=="members":
                 if not self.membership_actor(actor): return
                 if set(data)!={"user_id","role"} or not isinstance(data.get("user_id"),str) or not isinstance(data.get("role"),str): self.send(400,envelope(error="invalid_request")); return
-                try:self.send(201,envelope(data=store.add_membership(actor["id"],parts[4],data["user_id"],data["role"])))
-                except ValueError as exc:self.send(409 if str(exc)=="duplicate_membership" else 400,envelope(error=str(exc) if str(exc)=="duplicate_membership" else "invalid_request"))
-                except (PermissionError,LookupError):self.send(404,envelope(error="not_found"))
+                self.create(actor,parts[4],path,lambda db: store.add_membership_in(db,actor,parts[4],data["user_id"],data["role"]))
                 return
             if len(parts)==6 and parts[3]=="organizations" and parts[5]=="services":
                 if set(data)!={"display_name"} or not isinstance(data.get("display_name"),str):self.send(400,envelope(error="invalid_request"));return
+                self.create(actor,parts[4],path,lambda db: store.create_service_in(db,actor,parts[4],data["display_name"]))
+                return
+            if len(parts)==8 and parts[3]=="organizations" and parts[5]=="services" and parts[7]=="tokens":
+                if set(data) != {"expires_hours"} or not isinstance(data.get("expires_hours"),int) or not 1 <= data["expires_hours"] <= 8760: self.send(400,envelope(error="invalid_request")); return
+                key=self.headers.get("Idempotency-Key")
+                if not valid_idempotency_key(key): self.send(400,envelope(error="invalid_idempotency_key")); return
                 try:
-                    service, token=store.create_service(actor["id"],parts[4],data["display_name"]); self.send(201,envelope(data={**service,"token":token}))
-                except PermissionError:self.send(404,envelope(error="not_found"))
+                    status,payload=store.create_service_token(actor,parts[4],parts[6],path,key,self.request_body,data["expires_hours"]); self.send(status,payload)
+                except (PermissionError,LookupError): self.send(404,envelope(error="not_found"))
                 return
             if len(parts)==9 and parts[3]=="organizations" and parts[5]=="repositories" and parts[7] in {"deactivate","reactivate"}:
                 self.send(404,envelope(error="not_found")); return
@@ -338,8 +444,7 @@ def make_handler(database: str | Path) -> type[BaseHTTPRequestHandler]:
                 return
             if len(parts)==8 and parts[3]=="organizations" and parts[5]=="services" and parts[7]=="assignments":
                 if set(data)!={"repository_id"} or not isinstance(data.get("repository_id"),str):self.send(400,envelope(error="invalid_request"));return
-                try:self.send(201,envelope(data=store.assign_service(actor["id"],parts[4],parts[6],data["repository_id"])))
-                except (PermissionError,LookupError,sqlite3.IntegrityError):self.send(404,envelope(error="not_found"))
+                self.create(actor,parts[4],path,lambda db: store.assign_service_in(db,actor,parts[4],parts[6],data["repository_id"]))
                 return
             self.send(404,envelope(error="not_found"))
         def do_DELETE(self)->None:
@@ -355,15 +460,16 @@ def make_handler(database: str | Path) -> type[BaseHTTPRequestHandler]:
                 content_type=self.headers.get("Content-Type")
                 if content_type and content_type.split(";",1)[0] != "application/json": self.send(415,envelope(error="unsupported_content_type")); return
                 try:
-                    size=int(self.headers.get("Content-Length","0"))
-                    if size:
+                    delete_body=self.bounded_body(0)
+                    if delete_body is None: return
+                    if delete_body:
                         def pairs(items):
                             result={}
                             for key,value in items:
                                 if key in result: raise ValueError
                                 result[key]=value
                             return result
-                        if _json:=json.loads(self.rfile.read(size).decode(),object_pairs_hook=pairs): raise ValueError
+                        if _json:=json.loads(delete_body.decode(),object_pairs_hook=pairs): raise ValueError
                 except Exception: self.send(400,envelope(error="malformed_json")); return
                 try:store.remove_member(actor["id"],parts[4],parts[6]);self.send(200,envelope(data={"removed":True}))
                 except ValueError:self.send(409,envelope(error="final_owner"))

@@ -2772,6 +2772,13 @@ def run_cli(args_list=None):
     policy_resolve.add_argument("--org-policy-mode", choices=("optional", "required"), default="optional")
     policy_remove = policy_subs.add_parser("remove")
     policy_remove.add_argument("policy_id")
+    cloud_cmd = subs.add_parser("cloud", help="explicit optional hosted-control-plane commands")
+    cloud_subs = cloud_cmd.add_subparsers(dest="cloud_command")
+    for name in ("status", "login", "logout", "repo-list", "policy-pull", "policy-show"):
+        item = cloud_subs.add_parser(name); item.add_argument("--json", action="store_true")
+    register = cloud_subs.add_parser("repo-register"); register.add_argument("display_name"); register.add_argument("--json", action="store_true")
+    for name in ("report", "evidence", "replay", "overrides"):
+        item = cloud_subs.add_parser("upload-" + name); item.add_argument("path"); item.add_argument("--json", action="store_true")
     fleet_command.register(subs)
     reset_cmd = subs.add_parser("reset")
     reset_cmd.add_argument("repo", nargs="?", default=".")
@@ -2781,6 +2788,9 @@ def run_cli(args_list=None):
     try:
         if args.command == "schema":
             return cli_schema(args)
+        if args.command == "cloud":
+            from .cloud import cli_cloud
+            return cli_cloud(args)
         if args.command == "doctor":
             return doctor(strict=getattr(args, "strict", False))
         if args.command == "exec":

@@ -9,7 +9,7 @@ REMEDIATION_SCHEMA_VERSION = "sourcepack.remediation.v1"
 
 def _prompt_field(value: Any) -> str:
     """Render repository-controlled finding fields as inert prompt data."""
-    return json.dumps(str(value), ensure_ascii=False)
+    return json.dumps(str(value), ensure_ascii=True)
 
 
 def remediation_for_finding(finding: dict[str, Any]) -> dict[str, Any] | None:

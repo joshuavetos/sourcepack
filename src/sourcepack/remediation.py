@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
 REMEDIATION_SCHEMA_VERSION = "sourcepack.remediation.v1"
+
+
+def _prompt_field(value: Any) -> str:
+    """Render repository-controlled finding fields as inert prompt data."""
+    return json.dumps(str(value), ensure_ascii=False)
 
 
 def remediation_for_finding(finding: dict[str, Any]) -> dict[str, Any] | None:
@@ -26,15 +32,15 @@ def remediation_for_finding(finding: dict[str, Any]) -> dict[str, Any] | None:
     lines = [
         "Revise the proposed change using only repository facts supported by SourcePack evidence.",
         "",
-        f"Finding: {reason_code}",
+        f"Finding: {_prompt_field(reason_code)}",
     ]
     if path:
-        lines.append(f"Path: {path}")
-    lines.append(f"Problem: {message}")
+        lines.append(f"Path: {_prompt_field(path)}")
+    lines.append(f"Problem: {_prompt_field(message)}")
     if evidence:
-        lines.append(f"Repository evidence: {evidence}")
+        lines.append(f"Repository evidence: {_prompt_field(evidence)}")
     if suggestion:
-        lines.append(f"Suggested correction: {suggestion}")
+        lines.append(f"Suggested correction: {_prompt_field(suggestion)}")
 
     lines.extend(
         [

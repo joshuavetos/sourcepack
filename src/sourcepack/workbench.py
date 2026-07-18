@@ -5,25 +5,28 @@ import json
 import mimetypes
 import secrets
 import socket
-import subprocess
-import sys
 import urllib.parse
 import webbrowser
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .baseline import validate_baseline
-from .git import metadata as git_metadata
+from .baseline import baseline_report_fields, validate_baseline
+from .git import metadata as git_metadata, run_git
 from .overrides import OVERRIDE_SCHEMA_VERSION, override_applies
 from .paths import sourcepack_paths
-from .policy import resolve_effective_policy
+from .policy import PolicyMode, resolve_effective_policy
+from .judgment import git_worktree_dirty, judge_repo_change, utc_now
+from .reports.json import write_user_report
 
 STATIC_ROOT = Path(__file__).with_name("workbench_static")
 REQUEST_TIMEOUT_SECONDS = 120
 ALLOWED_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 DASHBOARD_PREFIX = "/api/dashboard/v1/"
+WORKBENCH_REVIEW_ROUTE = "/api/workbench/v1/review"
 TRAFFIC_REPORT_SCHEMA_VERSION = "traffic_report.v1"
 WORKBENCH_EXCERPT_FILE_LIMIT_BYTES = 128 * 1024
 
@@ -108,6 +111,79 @@ def _report_payload(repo: Path) -> dict[str, Any]:
     return {"schema_version": "sourcepack.dashboard.report.v1", "ok": True, "status": "success", "report_path": ".sourcepack/reports/latest.json", "report": report, "proposed_change": _bounded_changed_file_excerpt(repo, report)}
 
 
+def _hook_is_sourcepack(text: str) -> bool:
+    return "# === SOURCEPACK BEGIN ===" in text and "# === SOURCEPACK END ===" in text
+
+
+def _sourcepack_status_payload(repo: Path) -> dict[str, Any]:
+    repo = repo.resolve()
+    paths = sourcepack_paths(repo)
+    current = paths["base"].exists()
+    baseline_status = validate_baseline(repo)
+    baseline = baseline_status["state"] in {"present", "stale"}
+    last = None
+    if baseline_status.get("packet_path"):
+        receipt = repo / baseline_status["packet_path"] / "receipt.json"
+        if receipt.exists():
+            try:
+                last = json.loads(receipt.read_text(encoding="utf-8")).get("generated_at")
+            except Exception:
+                last = None
+    cp = run_git(repo, ["rev-parse", "--show-toplevel"])
+    git_repo = cp.returncode == 0
+    root = Path(cp.stdout.strip()) if git_repo else repo
+    pre = root / ".git" / "hooks" / "pre-commit"
+    post = root / ".git" / "hooks" / "post-commit"
+    hook_installed = False
+    post_hook_installed = False
+    strict = False
+    if pre.exists():
+        text = pre.read_text(encoding="utf-8", errors="ignore")
+        hook_installed = _hook_is_sourcepack(text)
+        strict = "strict mode blocks YELLOW LIGHT" in text
+    if post.exists():
+        post_hook_installed = "# === SOURCEPACK POST-COMMIT BEGIN" in post.read_text(encoding="utf-8", errors="ignore")
+    ignored = False
+    cig = run_git(repo, ["check-ignore", ".sourcepack/"])
+    if cig.returncode == 0:
+        ignored = True
+    elif (repo / ".gitignore").exists():
+        ignored = any(line.strip() in {".sourcepack", ".sourcepack/"} for line in (repo / ".gitignore").read_text(errors="ignore").splitlines())
+    last_report = None
+    last_light = None
+    if paths["latest_json"].exists():
+        try:
+            lr = json.loads(paths["latest_json"].read_text(encoding="utf-8"))
+            last_report = lr.get("verdict")
+            last_light = lr.get("light")
+        except Exception:
+            pass
+    dirty, dirty_state = git_worktree_dirty(repo)
+    prompt_exists = paths["prompt"].exists()
+    automatic = current and baseline and hook_installed and post_hook_installed and ignored
+    data = {
+        "schema_version": "sourcepack_status.v1",
+        "sourcepack_version": __version__,
+        "generated_at": utc_now(),
+        "automatic_mode_enabled": automatic,
+        "local_storage_exists": current,
+        "baseline_exists": baseline,
+        "prompt_context_exists": prompt_exists,
+        "pre_commit_hook_installed": hook_installed,
+        "post_commit_hook_installed": post_hook_installed,
+        "hook_strict_mode": strict,
+        "hook_policy": "RED blocks, YELLOW blocks" if strict else "RED blocks, YELLOW warns",
+        "sourcepack_gitignored": ignored,
+        "last_report_verdict": last_report,
+        "last_report_light": last_light,
+        "dirty_worktree": dirty if dirty_state is None else None,
+        "git_repo": git_repo,
+        "last_baseline_update": last,
+    }
+    data.update(baseline_report_fields(baseline_status))
+    return {"ok": True, "returncode": 0, "stderr": "", "status": data}
+
+
 def _dashboard_payload(repo: Path, section: str) -> dict[str, Any]:
     try:
         if not repo.is_dir():
@@ -174,37 +250,39 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return path == root or root in path.parents
 
 
-def _run_sourcepack(repo: Path, args: list[str], timeout: int = REQUEST_TIMEOUT_SECONDS, output_key: str | None = None) -> dict[str, Any]:
-    cmd = [sys.executable, "-m", "sourcepack.cli", *args]
-    try:
-        cp = subprocess.run(
-            cmd,
-            cwd=repo,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "ok": False,
-            "timeout": True,
-            "error": "sourcepack_command_timeout",
-            "message": f"SourcePack command timed out after {timeout} seconds.",
-            "stdout": exc.stdout or "",
-            "stderr": exc.stderr or "",
-        }
-    result: dict[str, Any] = {"ok": cp.returncode == 0, "returncode": cp.returncode, "stderr": cp.stderr}
-    if output_key is not None and cp.stdout.strip():
-        try:
-            result[output_key] = json.loads(cp.stdout)
-        except json.JSONDecodeError:
-            result["stdout"] = cp.stdout
-            result["parse_error"] = "invalid_json_stdout"
-    else:
-        result["stdout"] = cp.stdout
-    return result
+
+def run_bounded_workbench_review(repo: Path) -> dict[str, Any]:
+    """Run the same CLI-independent judgment path used by `sourcepack diff .`.
+
+    The CLI calls sourcepack.judgment.judge_repo_change() and then writes the
+    canonical user report. Workbench reuses that same function directly, with
+    no shell, no client-supplied repo path, and no command input.
+    """
+    started_at = __import__("time").time()
+    stages = [
+        "Reading repository state",
+        "Acquiring proposed diff",
+        "Checking repository evidence",
+        "Writing canonical report",
+        "Loading result",
+    ]
+    root = repo.resolve()
+    judgment = judge_repo_change(root, policy_mode=PolicyMode.LOCAL)
+    write_user_report(root, judgment.report, "diff")
+    payload = _report_payload(root)
+    return {
+        "schema_version": "sourcepack.workbench.review_operation.v1",
+        "ok": True,
+        "status": "completed",
+        "operation": "bounded_canonical_review",
+        "verdict": judgment.verdict,
+        "exit_code": judgment.exit_code(),
+        "canonical_report_path": ".sourcepack/reports/latest.json",
+        "stages": stages,
+        "elapsed_seconds": round(__import__("time").time() - started_at, 3),
+        "report": payload.get("report"),
+        "report_payload": payload,
+    }
 
 
 class WorkbenchHandler(BaseHTTPRequestHandler):
@@ -224,6 +302,15 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_review_method_not_allowed(self) -> None:
+        body = json.dumps({"schema_version": "sourcepack.workbench.review_operation.v1", "ok": False, "status": "failed", "error": {"code": "method_not_allowed", "message": "Use POST to run a bounded Workbench review."}}, indent=2).encode("utf-8")
+        self.send_response(405)
+        self.send_header("Allow", "POST")
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -263,11 +350,16 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(200, _dashboard_payload(self.repo_root, section))
             return
+        if requested == WORKBENCH_REVIEW_ROUTE:
+            if not self._require_api_token():
+                return
+            self._send_review_method_not_allowed()
+            return
         if requested.startswith("/api/"):
             if not self._require_api_token():
                 return
             if requested == "/api/status":
-                self._send_json(200, _run_sourcepack(self.repo_root, ["status", str(self.repo_root), "--json"], output_key="status"))
+                self._send_json(200, _sourcepack_status_payload(self.repo_root))
                 return
             if requested == "/api/latest":
                 latest = self.repo_root / ".sourcepack" / "reports" / "latest.json"
@@ -295,10 +387,80 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             return
         if not self._require_api_token():
             return
-        if requested == "/api/review":
-            self._send_json(200, _run_sourcepack(self.repo_root, ["diff", str(self.repo_root), "--json"], output_key="review"))
+        if requested in {WORKBENCH_REVIEW_ROUTE, "/api/review"}:
+            self._handle_review_post()
             return
         self._send_json(404, {"ok": False, "error": "not_found"})
+
+    def _handle_review_unsupported_method(self) -> None:
+        requested = urllib.parse.urlparse(self.path).path
+        if requested != WORKBENCH_REVIEW_ROUTE:
+            self.send_error(501)
+            return
+        if not self._require_api_token():
+            return
+        self._send_review_method_not_allowed()
+
+    def do_PUT(self) -> None:
+        self._handle_review_unsupported_method()
+
+    def do_PATCH(self) -> None:
+        self._handle_review_unsupported_method()
+
+    def do_DELETE(self) -> None:
+        self._handle_review_unsupported_method()
+
+    def do_OPTIONS(self) -> None:
+        self._handle_review_unsupported_method()
+
+    def _handle_review_post(self) -> None:
+        if self.headers.get("Origin") not in {None, f"http://{self.headers.get('Host')}", "null"}:
+            self._send_json(403, {"schema_version": "sourcepack.workbench.review_operation.v1", "ok": False, "status": "failed", "error": {"code": "csrf_rejected", "message": "Review requests must come from the Workbench same-origin session."}})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            self._send_json(400, {"schema_version": "sourcepack.workbench.review_operation.v1", "ok": False, "status": "failed", "error": {"code": "bounded_request_only", "message": "Review requests must be empty or the empty JSON object."}})
+            return
+        if length < 0 or length > 2048:
+            self._send_json(400, {"schema_version": "sourcepack.workbench.review_operation.v1", "ok": False, "status": "failed", "error": {"code": "bounded_request_only", "message": "Review requests must be empty or the empty JSON object."}})
+            return
+        body = self.rfile.read(length) if length else b""
+        if body.strip():
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self._send_json(400, {"schema_version": "sourcepack.workbench.review_operation.v1", "ok": False, "status": "failed", "error": {"code": "bounded_request_only", "message": "Review requests must be empty or the empty JSON object."}})
+                return
+            if payload != {}:
+                self._send_json(400, {"schema_version": "sourcepack.workbench.review_operation.v1", "ok": False, "status": "failed", "error": {"code": "bounded_request_only", "message": "Review requests must be empty or the empty JSON object."}})
+                return
+        if not self.server.review_lock.acquire(blocking=False):  # type: ignore[attr-defined]
+            self._send_json(409, {"schema_version": "sourcepack.workbench.review_operation.v1", "ok": False, "status": "busy", "error": {"code": "review_already_running", "message": "A SourcePack review is already running for this Workbench."}})
+            return
+        lock_released_by_future = False
+        def release_review_lock(_future: Any) -> None:
+            nonlocal lock_released_by_future
+            if lock_released_by_future:
+                return
+            lock_released_by_future = True
+            try:
+                self.server.review_lock.release()  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
+        try:
+            future = self.server.review_executor.submit(run_bounded_workbench_review, self.repo_root)  # type: ignore[attr-defined]
+        except Exception:
+            release_review_lock(None)
+            self._send_json(500, {"schema_version": "sourcepack.workbench.review_operation.v1", "ok": False, "status": "failed", "error": {"code": "review_execution_failed", "message": "SourcePack could not start the bounded review."}})
+            return
+        future.add_done_callback(release_review_lock)
+        try:
+            self._send_json(200, future.result(timeout=self.server.review_timeout_seconds))  # type: ignore[attr-defined]
+        except TimeoutError:
+            self._send_json(504, {"schema_version": "sourcepack.workbench.review_operation.v1", "ok": False, "status": "timed_out", "timeout_seconds": self.server.review_timeout_seconds, "error": {"code": "review_timeout", "message": f"SourcePack review timed out after {self.server.review_timeout_seconds} seconds and is still finishing in the background."}})  # type: ignore[attr-defined]
+        except Exception:
+            self._send_json(500, {"schema_version": "sourcepack.workbench.review_operation.v1", "ok": False, "status": "failed", "error": {"code": "review_execution_failed", "message": "SourcePack could not complete the bounded review."}})
 
     def _serve_static(self, requested: str) -> None:
         relative = urllib.parse.unquote(requested).lstrip("/\\") or "index.html"
@@ -332,6 +494,15 @@ class WorkbenchServer(ThreadingHTTPServer):
         super().__init__(server_address, handler_class)
         self.repo_root = repo_root
         self.session_token = session_token
+        self.review_lock = threading.Lock()
+        self.review_executor = ThreadPoolExecutor(max_workers=1)
+        self.review_timeout_seconds = REQUEST_TIMEOUT_SECONDS
+
+    def server_close(self) -> None:
+        # Nonblocking shutdown: queued reviews are cancelled where possible, but
+        # Python cannot forcibly terminate an already running in-process review.
+        self.review_executor.shutdown(wait=False, cancel_futures=True)
+        super().server_close()
 
 
 class IPv6WorkbenchServer(WorkbenchServer):

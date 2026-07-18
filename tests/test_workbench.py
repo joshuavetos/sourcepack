@@ -334,3 +334,217 @@ def test_ipv6_loopback_uses_ipv6_server_and_url_host():
     assert workbench._server_class_for_host("::1") is IPv6WorkbenchServer
     assert workbench._server_class_for_host("127.0.0.1") is WorkbenchServer
     assert workbench._url_host("::1") == "[::1]"
+
+
+@pytest.mark.parametrize("method", ["GET", "PUT", "PATCH", "DELETE", "OPTIONS"])
+def test_review_endpoint_requires_auth_and_returns_405_for_unsupported_methods(tmp_path, method):
+    server, thread = start_server(tmp_path)
+    try:
+        assert request(server, method, "/api/workbench/v1/review")[0] == 403
+        status, body, headers = request(server, method, "/api/workbench/v1/review", {"X-SourcePack-Token": "test-token"})
+        assert status == 405
+        assert headers["Allow"] == "POST"
+        assert json.loads(body)["error"]["code"] == "method_not_allowed"
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+
+def _post_review(server, body=None, headers=None):
+    merged = {"X-SourcePack-Token": "test-token"}
+    if headers:
+        merged.update(headers)
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    conn.request("POST", "/api/workbench/v1/review", body=body, headers=merged)
+    response = conn.getresponse(); payload = response.read(); out_headers = dict(response.getheaders()); conn.close()
+    return response.status, payload, out_headers
+
+
+def test_api_status_preserves_structured_status_contract(tmp_path):
+    server, thread = start_server(tmp_path)
+    try:
+        status, body, _ = request(server, "GET", "/api/status", {"X-SourcePack-Token": "test-token"})
+        data = json.loads(body)
+        assert status == 200
+        assert data["ok"] is True
+        assert data["returncode"] == 0
+        assert data["stderr"] == ""
+        assert data["status"]["schema_version"] == "sourcepack_status.v1"
+        assert "automatic_mode_enabled" in data["status"]
+        assert "baseline_exists" in data["status"]
+        assert "git_repo" in data["status"]
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+
+def test_legacy_api_review_alias_uses_bounded_review(tmp_path, monkeypatch):
+    used = []
+    def fake_review(repo, policy_mode):
+        used.append(Path(repo))
+        return type("J", (), {"verdict":"PASS", "report":{"schema_version":"traffic_report.v1", "verdict":"PASS", "repo_path":str(repo)}, "exit_code":lambda self: 0})()
+    monkeypatch.setattr(workbench, "judge_repo_change", fake_review)
+    server, thread = start_server(tmp_path)
+    try:
+        status, body, _ = request(server, "POST", "/api/review", {"X-SourcePack-Token":"test-token"})
+        data = json.loads(body)
+        assert status == 200
+        assert data["status"] == "completed"
+        assert data["verdict"] == "PASS"
+        assert used == [tmp_path]
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+def test_review_endpoint_rejects_all_client_parameters_and_malformed_lengths(tmp_path):
+    server, thread = start_server(tmp_path)
+    try:
+        invalid_bodies = [
+            b'{"repository_path":"/tmp/other"}', b'{"command":"rm -rf ."}', b'[]', b'"hello"',
+            b'1', b'true', b'false', b'null', b'{"anything":true}', b'{', b'x' * 2050,
+        ]
+        for body in invalid_bodies:
+            status, raw, _ = _post_review(server, body=body, headers={"Content-Type": "application/json"})
+            assert status == 400
+            assert json.loads(raw)["error"]["code"] == "bounded_request_only"
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+        conn.putrequest("POST", "/api/workbench/v1/review")
+        conn.putheader("X-SourcePack-Token", "test-token")
+        conn.putheader("Content-Length", "not-a-number")
+        conn.endheaders()
+        response = conn.getresponse(); data = json.loads(response.read()); conn.close()
+        assert response.status == 400
+        assert data["error"]["code"] == "bounded_request_only"
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+
+def test_review_endpoint_uses_fixed_repo_writes_latest_and_fail_is_completed(tmp_path, monkeypatch):
+    used = []
+    outside = tmp_path.parent / "outside-report-target"
+    def fake_review(repo, policy_mode):
+        used.append(Path(repo))
+        return type("J", (), {"verdict":"FAIL", "report":{"schema_version":"traffic_report.v1", "verdict":"FAIL", "repo_path":str(outside), "blockers":[{"id":"x", "reason_code":"unsupported_dependency"}], "warnings":[]}, "exit_code":lambda self: 1})()
+    monkeypatch.setattr(workbench, "judge_repo_change", fake_review)
+    server, thread = start_server(tmp_path)
+    try:
+        status, body, _ = request(server, "POST", "/api/workbench/v1/review", {"X-SourcePack-Token":"test-token"})
+        data = json.loads(body)
+        assert status == 200 and data["ok"] is True and data["status"] == "completed" and data["verdict"] == "FAIL"
+        assert used == [tmp_path]
+        assert (tmp_path / ".sourcepack" / "reports" / "latest.json").is_file()
+        assert not (outside / ".sourcepack" / "reports" / "latest.json").exists()
+        assert json.loads((tmp_path / ".sourcepack" / "reports" / "latest.json").read_text())["verdict"] == "FAIL"
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+
+def test_review_endpoint_pass_and_run_again_fresh(tmp_path, monkeypatch):
+    verdicts = iter(["FAIL", "PASS"])
+    def fake_review(repo, policy_mode):
+        verdict = next(verdicts)
+        return type("J", (), {"verdict":verdict, "report":{"schema_version":"traffic_report.v1", "verdict":verdict, "repo_path":str(repo), "blockers":[] if verdict == "PASS" else [{"id":"x"}], "warnings":[]}, "exit_code":lambda self: 0 if verdict == "PASS" else 1})()
+    monkeypatch.setattr(workbench, "judge_repo_change", fake_review)
+    server, thread = start_server(tmp_path)
+    try:
+        headers={"X-SourcePack-Token":"test-token"}
+        assert json.loads(request(server, "POST", "/api/workbench/v1/review", headers)[1])["verdict"] == "FAIL"
+        assert json.loads(request(server, "POST", "/api/workbench/v1/review", headers)[1])["verdict"] == "PASS"
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+
+def test_review_timeout_keeps_lock_until_worker_finishes_then_allows_fresh_review(tmp_path, monkeypatch):
+    import time
+    first_can_finish = threading.Event()
+    calls = 0
+    def fake_review(repo, policy_mode):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_can_finish.wait(timeout=2)
+            verdict = "FAIL"
+        else:
+            verdict = "PASS"
+        return type("J", (), {"verdict":verdict, "report":{"schema_version":"traffic_report.v1", "verdict":verdict, "repo_path":str(repo)}, "exit_code":lambda self: 0 if verdict == "PASS" else 1})()
+    monkeypatch.setattr(workbench, "judge_repo_change", fake_review)
+    server, thread = start_server(tmp_path); server.review_timeout_seconds = 0.05
+    try:
+        timed_out = []
+        t=threading.Thread(target=lambda: timed_out.append(_post_review(server)[0]))
+        t.start(); time.sleep(0.1)
+        assert timed_out == [504]
+        status, body, _ = _post_review(server)
+        assert status == 409 and json.loads(body)["status"] == "busy"
+        first_can_finish.set()
+        t.join(timeout=2)
+        deadline = time.time() + 2
+        while server.review_lock.locked() and time.time() < deadline:
+            time.sleep(0.01)
+        status, body, _ = _post_review(server)
+        data = json.loads(body)
+        assert status == 200 and data["verdict"] == "PASS"
+        assert json.loads((tmp_path / ".sourcepack" / "reports" / "latest.json").read_text())["verdict"] == "PASS"
+    finally:
+        first_can_finish.set(); server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+
+def test_workbench_review_preserves_repository_sources_and_git_index(tmp_path, monkeypatch):
+    repo = tmp_path
+    (repo / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\n", encoding="utf-8")
+    (repo / "requirements.txt").write_text("flask\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "app.py", "requirements.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    before_files = {name: (repo / name).read_bytes() for name in ("app.py", "requirements.txt")}
+    before_index = subprocess.run(["git", "ls-files", "-s"], cwd=repo, check=True, text=True, stdout=subprocess.PIPE).stdout
+    def fake_review(repo_path, policy_mode):
+        return type("J", (), {"verdict":"PASS", "report":{"schema_version":"traffic_report.v1", "verdict":"PASS", "repo_path":str(repo_path)}, "exit_code":lambda self: 0})()
+    monkeypatch.setattr(workbench, "judge_repo_change", fake_review)
+    server, thread = start_server(repo)
+    try:
+        assert _post_review(server)[0] == 200
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=5)
+    assert {name: (repo / name).read_bytes() for name in before_files} == before_files
+    assert subprocess.run(["git", "ls-files", "-s"], cwd=repo, check=True, text=True, stdout=subprocess.PIPE).stdout == before_index
+    status = subprocess.run(["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=repo, check=True, text=True, stdout=subprocess.PIPE).stdout.splitlines()
+    assert all(line.endswith(".sourcepack/reports/latest.json") or line.startswith("?? .sourcepack/") for line in status)
+
+
+def test_workbench_bounded_review_uses_fixed_repo_without_cli_shell_or_outbound_http(tmp_path, monkeypatch):
+    import os
+    import urllib.request
+    import subprocess as subprocess_module
+    observed = []
+    def guarded_popen(args, *popen_args, **kwargs):
+        if kwargs.get("shell") is True:
+            raise AssertionError("bounded Workbench review must not use shell=True")
+        if isinstance(args, (list, tuple)) and "sourcepack.cli" in [str(part) for part in args]:
+            raise AssertionError("bounded Workbench review must not invoke python -m sourcepack.cli")
+        observed.append((tuple(str(part) for part in args) if isinstance(args, (list, tuple)) else str(args), kwargs.get("shell")))
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return Completed()
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Workbench wrapper must not use os.system or outbound HTTP")
+    monkeypatch.setattr(subprocess_module, "Popen", guarded_popen)
+    monkeypatch.setattr(os, "system", forbidden)
+    monkeypatch.setattr(urllib.request, "urlopen", forbidden)
+    used = []
+    def fake_review(repo, policy_mode):
+        used.append(Path(repo))
+        return type("J", (), {"verdict":"PASS", "report":{"schema_version":"traffic_report.v1", "verdict":"PASS", "repo_path":str(repo)}, "exit_code":lambda self: 0})()
+    monkeypatch.setattr(workbench, "judge_repo_change", fake_review)
+    data = workbench.run_bounded_workbench_review(tmp_path)
+    assert data["ok"] is True and data["verdict"] == "PASS"
+    assert used == [tmp_path.resolve()]
+    assert all(shell is not True for _args, shell in observed)
+
+
+def test_workbench_server_close_shuts_down_executor(tmp_path):
+    server = WorkbenchServer(("127.0.0.1", 0), WorkbenchHandler, tmp_path, "test-token")
+    server.server_close()
+    with pytest.raises(RuntimeError):
+        server.review_executor.submit(lambda: None)

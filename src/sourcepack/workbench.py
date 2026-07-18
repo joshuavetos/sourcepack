@@ -267,7 +267,7 @@ def run_bounded_workbench_review(repo: Path) -> dict[str, Any]:
         "Loading result",
     ]
     root = repo.resolve()
-    judgment = judge_repo_change(root, policy_mode=PolicyMode.LOCAL)
+    judgment = judge_repo_change(root, policy_mode=PolicyMode.LOCAL, allow_missing_baseline_init=False)
     write_user_report(root, judgment.report, "diff")
     payload = _report_payload(root)
     return {

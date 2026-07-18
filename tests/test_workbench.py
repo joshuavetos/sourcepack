@@ -378,7 +378,7 @@ def test_api_status_preserves_structured_status_contract(tmp_path):
 
 def test_legacy_api_review_alias_uses_bounded_review(tmp_path, monkeypatch):
     used = []
-    def fake_review(repo, policy_mode):
+    def fake_review(repo, policy_mode, **kwargs):
         used.append(Path(repo))
         return type("J", (), {"verdict":"PASS", "report":{"schema_version":"traffic_report.v1", "verdict":"PASS", "repo_path":str(repo)}, "exit_code":lambda self: 0})()
     monkeypatch.setattr(workbench, "judge_repo_change", fake_review)
@@ -419,7 +419,7 @@ def test_review_endpoint_rejects_all_client_parameters_and_malformed_lengths(tmp
 def test_review_endpoint_uses_fixed_repo_writes_latest_and_fail_is_completed(tmp_path, monkeypatch):
     used = []
     outside = tmp_path.parent / "outside-report-target"
-    def fake_review(repo, policy_mode):
+    def fake_review(repo, policy_mode, **kwargs):
         used.append(Path(repo))
         return type("J", (), {"verdict":"FAIL", "report":{"schema_version":"traffic_report.v1", "verdict":"FAIL", "repo_path":str(outside), "blockers":[{"id":"x", "reason_code":"unsupported_dependency"}], "warnings":[]}, "exit_code":lambda self: 1})()
     monkeypatch.setattr(workbench, "judge_repo_change", fake_review)
@@ -438,7 +438,7 @@ def test_review_endpoint_uses_fixed_repo_writes_latest_and_fail_is_completed(tmp
 
 def test_review_endpoint_pass_and_run_again_fresh(tmp_path, monkeypatch):
     verdicts = iter(["FAIL", "PASS"])
-    def fake_review(repo, policy_mode):
+    def fake_review(repo, policy_mode, **kwargs):
         verdict = next(verdicts)
         return type("J", (), {"verdict":verdict, "report":{"schema_version":"traffic_report.v1", "verdict":verdict, "repo_path":str(repo), "blockers":[] if verdict == "PASS" else [{"id":"x"}], "warnings":[]}, "exit_code":lambda self: 0 if verdict == "PASS" else 1})()
     monkeypatch.setattr(workbench, "judge_repo_change", fake_review)
@@ -455,7 +455,7 @@ def test_review_timeout_keeps_lock_until_worker_finishes_then_allows_fresh_revie
     import time
     first_can_finish = threading.Event()
     calls = 0
-    def fake_review(repo, policy_mode):
+    def fake_review(repo, policy_mode, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -497,7 +497,7 @@ def test_workbench_review_preserves_repository_sources_and_git_index(tmp_path, m
     subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     before_files = {name: (repo / name).read_bytes() for name in ("app.py", "requirements.txt")}
     before_index = subprocess.run(["git", "ls-files", "-s"], cwd=repo, check=True, text=True, stdout=subprocess.PIPE).stdout
-    def fake_review(repo_path, policy_mode):
+    def fake_review(repo_path, policy_mode, **kwargs):
         return type("J", (), {"verdict":"PASS", "report":{"schema_version":"traffic_report.v1", "verdict":"PASS", "repo_path":str(repo_path)}, "exit_code":lambda self: 0})()
     monkeypatch.setattr(workbench, "judge_repo_change", fake_review)
     server, thread = start_server(repo)
@@ -533,7 +533,7 @@ def test_workbench_bounded_review_uses_fixed_repo_without_cli_shell_or_outbound_
     monkeypatch.setattr(os, "system", forbidden)
     monkeypatch.setattr(urllib.request, "urlopen", forbidden)
     used = []
-    def fake_review(repo, policy_mode):
+    def fake_review(repo, policy_mode, **kwargs):
         used.append(Path(repo))
         return type("J", (), {"verdict":"PASS", "report":{"schema_version":"traffic_report.v1", "verdict":"PASS", "repo_path":str(repo)}, "exit_code":lambda self: 0})()
     monkeypatch.setattr(workbench, "judge_repo_change", fake_review)
@@ -542,6 +542,26 @@ def test_workbench_bounded_review_uses_fixed_repo_without_cli_shell_or_outbound_
     assert used == [tmp_path.resolve()]
     assert all(shell is not True for _args, shell in observed)
 
+
+
+def test_workbench_review_does_not_create_missing_baseline_in_clean_repo(tmp_path):
+    repo = tmp_path
+    (repo / "app.py").write_text("print('hello')\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "app.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    data = workbench.run_bounded_workbench_review(repo)
+
+    assert data["ok"] is True
+    assert data["verdict"] == "FAIL"
+    assert data["report"]["baseline_state"] == "missing"
+    assert {finding["id"] for finding in data["report"]["findings"]} == {"baseline_missing"}
+    assert not (repo / ".sourcepack" / "baseline" / "active.json").exists()
+    assert not (repo / ".sourcepack" / "baseline" / "builds").exists()
+    assert (repo / ".sourcepack" / "reports" / "latest.json").is_file()
 
 def test_workbench_server_close_shuts_down_executor(tmp_path):
     server = WorkbenchServer(("127.0.0.1", 0), WorkbenchHandler, tmp_path, "test-token")

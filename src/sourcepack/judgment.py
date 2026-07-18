@@ -1657,7 +1657,7 @@ def untracked_files_as_diff(repo: str | Path) -> str:
         chunks.extend(f"+{line}" for line in lines)
     return "\n".join(chunks) + ("\n" if chunks else "")
 
-def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, ci: bool = False, base_ref: str | None = None, head_ref: str | None = None, org_policy: str | Path | None = None, org_policy_mode: str = "optional") -> dict:
+def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, ci: bool = False, base_ref: str | None = None, head_ref: str | None = None, org_policy: str | Path | None = None, org_policy_mode: str = "optional", allow_missing_baseline_init: bool = True) -> dict:
     if (base_ref is None) != (head_ref is None):
         return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", "--base-ref and --head-ref must be provided together.")])
     repo_arg = Path(repo_path).resolve(); cp = run_git(repo_arg, ["rev-parse", "--show-toplevel"])
@@ -1721,6 +1721,10 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             rep.update(baseline_report_fields(baseline_status)); return rep
         if diff_text.strip() or (dirty_now and not _only_sourcepack_gitignore_change(repo)):
             rep = traffic_report("FAIL", "baseline missing while changes are present.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists while changes are present.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
+            rep = _apply_policy_finishers(repo, None, diff_text, rep, policy_result)
+            rep.update(baseline_report_fields(baseline_status)); return rep
+        if not allow_missing_baseline_init:
+            rep = traffic_report("FAIL", "trusted baseline is missing.", [normalized_finding("baseline_missing", "error", "baseline", "No trusted SourcePack baseline exists; this review path will not initialize or trust one automatically.")], ["baseline", "diff"], "run sourcepack baseline only after deciding the current repo state should be trusted.")
             rep = _apply_policy_finishers(repo, None, diff_text, rep, policy_result)
             rep.update(baseline_report_fields(baseline_status)); return rep
         try:
@@ -2269,10 +2273,10 @@ class Judgment:
         return policy_exit_code(self.verdict, self.policy_mode)
 
 
-def judge_repo_change(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, policy_mode: PolicyMode | str = PolicyMode.LOCAL, base_ref: str | None = None, head_ref: str | None = None, org_policy: str | Path | None = None, org_policy_mode: str = "optional") -> Judgment:
+def judge_repo_change(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, policy_mode: PolicyMode | str = PolicyMode.LOCAL, base_ref: str | None = None, head_ref: str | None = None, org_policy: str | Path | None = None, org_policy_mode: str = "optional", allow_missing_baseline_init: bool = True) -> Judgment:
     """Judge repository changes without CLI parsing, stdout rendering, or cli.py imports."""
     mode = normalize_policy_mode(policy_mode)
-    report = build_repo_change_report(Path(repo_path).resolve(), staged=staged, patch_text=patch_text, ci=(mode is PolicyMode.CI), base_ref=base_ref, head_ref=head_ref, org_policy=org_policy, org_policy_mode=org_policy_mode)
+    report = build_repo_change_report(Path(repo_path).resolve(), staged=staged, patch_text=patch_text, ci=(mode is PolicyMode.CI), base_ref=base_ref, head_ref=head_ref, org_policy=org_policy, org_policy_mode=org_policy_mode, allow_missing_baseline_init=allow_missing_baseline_init)
     if mode is PolicyMode.CI:
         report["ci"] = True
     return Judgment(str(Path(repo_path).resolve()), mode, report)

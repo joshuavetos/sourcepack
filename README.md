@@ -13,7 +13,7 @@
 ![License](https://img.shields.io/github/license/joshuavetos/sourcepack)
 ![Status](https://img.shields.io/badge/status-public%20alpha-orange)
 
-**SourcePack blocks AI-generated code changes that rely on repository facts the local codebase does not support.**
+**SourcePack blocks AI-generated code changes that rely on fake repo facts.**
 
 It checks proposed diffs against locally verifiable evidence such as tracked files, dependency manifests, scripts, commands, protected paths, trusted baseline artifacts, policy, and recorded execution evidence.
 
@@ -47,9 +47,11 @@ Verdict: FAIL
 
 SourcePack focuses on repository assumptions that can be tested locally:
 
-- edits to files that do not exist
-- undeclared imports or dependencies
-- missing scripts and unsupported commands
+- AI coding agents can edit files that do not exist.
+- They can import undeclared dependencies.
+- They can reference missing scripts or unsupported commands.
+- They can reshape project structure based on prompt assumptions.
+- SourcePack catches those locally verifiable failures before commit or in CI.
 - unsupported project ecosystems
 - unsafe or protected paths
 - malformed or binary diffs
@@ -111,10 +113,11 @@ See [`docs/baseline-lifecycle.md`](docs/baseline-lifecycle.md).
 
 ## Reports, Workbench, CI, and evidence
 
-A normal local run writes HTML, JSON, and Markdown reports under `.sourcepack/reports/`.
+A normal local run writes HTML, JSON, and Markdown reports under `.sourcepack/reports/`. The canonical SourcePack report path is `.sourcepack/reports/latest.json`. Use `sourcepack report path` to print the current report path and `sourcepack report open` to open the rendered report.
 
 ```bash
 sourcepack diff .
+sourcepack report path
 sourcepack report open
 sourcepack ui .
 ```
@@ -126,7 +129,7 @@ Minimal CI usage:
 ```yaml
 - uses: actions/checkout@v4
 - run: python -m pip install sourcepack
-- run: sourcepack diff . --ci
+- run: sourcepack diff . --ci --json
 ```
 
 SourcePack also supports replay, evidence bundles, local execution evidence, repository policy, finding identities, overrides, decision ledgers, fleet summaries, and committed-range inspection.
@@ -161,6 +164,16 @@ SourcePack is in the v1.10 public-alpha series.
 Core judgment behavior, packaging, reports, demos, policy resolution, replay, local execution evidence, CI behavior, evidence bundles, and the local Workbench are implemented. Public-alpha work continues around compatibility, packaging, integration coverage, and UX polish.
 
 `sourcepack doctor --strict` checks local production-readiness prerequisites and packaged assets. Hosted GitHub Actions remain the source of truth for hosted checks.
+
+## What SourcePack does not claim
+
+- does not prove code correctness
+- does not prove security
+- does not prove runtime success
+- does not prove semantic validity
+- does not prove external API truth
+- does not prove dependency safety
+- does not prove user intent
 
 ## Public proof links
 

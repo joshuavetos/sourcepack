@@ -1,5 +1,4 @@
 import subprocess
-import shutil
 from unittest.mock import patch
 from sourcepack.cli import copy_to_clipboard
 

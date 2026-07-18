@@ -10,19 +10,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Final, Iterable
-from xml.sax.saxutils import escape as xml_escape
 from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git, run_git_bytes as canonical_run_git_bytes
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
-from .baseline import BaselineLockError, acquire_baseline_lock, baseline_corrupt_result, baseline_report_fields, build_current_baseline, protected_baseline_path, release_baseline_lock, resolve_active_baseline, validate_baseline
+from .baseline import BaselineLockError, baseline_report_fields, build_current_baseline, validate_baseline
 from .ecosystems.python import PY_IMPORT_ALIASES
 from .packet import PacketWriter, SourceScanner
-from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_paths
+from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs
 from .reports.json import normalized_finding, traffic_report, write_user_report
-from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code, load_policy_config, finding_ignored_by_policy, policy_path_matches, resolve_effective_policy, EFFECTIVE_POLICY_SCHEMA_VERSION
+from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code, load_policy_config, finding_ignored_by_policy, policy_path_matches, resolve_effective_policy
 from .execution_ledger import execution_findings
 from .commands import resolve_command
 from .dependencies import resolve_js_import, resolve_python_import
@@ -387,7 +386,7 @@ def _looks_like_ai_file_ref(ref: str) -> bool:
 def extract_refs(text: str) -> set[str]:
     refs: set[str] = set()
     token = r"(?:\./)?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9_.-]+:?|Dockerfile"
-    patterns = [rf"[`'\"]({token})[`'\"]", rf"(?m)^\s*[-*]\s+({token})\b", rf"\b(?:edit|open|update|modify|change|in|file)\s+({token})\b", rf"\b((?:\./)?(?:src|sourcepack|tests|test|frontend|backend|docs|app|lib|packages|public|config|scripts)[\\/][A-Za-z0-9_./\\-]+\.[A-Za-z0-9_.-]+:?)\b"]
+    patterns = [rf"[`'\"]({token})[`'\"]", rf"(?m)^\s*[-*]\s+({token})\b", rf"\b(?:edit|open|update|modify|change|in|file)\s+({token})\b", r"\b((?:\./)?(?:src|sourcepack|tests|test|frontend|backend|docs|app|lib|packages|public|config|scripts)[\\/][A-Za-z0-9_./\\-]+\.[A-Za-z0-9_.-]+:?)\b"]
     for pattern in patterns:
         for candidate in re.findall(pattern, text, re.I):
             normalized = _normalize_ai_ref(candidate)

@@ -1,14 +1,13 @@
 import contextlib
 import io
 import json
-import os
 import subprocess
 import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from sourcepack.cli import run_cli, validate_baseline, judge_patch, judge_patch_text, build_current_baseline, extract_js_import_specifiers_from_text
+from sourcepack.cli import run_cli, validate_baseline, judge_patch, judge_patch_text, extract_js_import_specifiers_from_text
 
 
 def capture_cli(args):

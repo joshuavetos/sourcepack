@@ -14,7 +14,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 SCHEMA_VERSION = "sourcepack.real_corpus_validation.v2"
 TOOL_ROOT = Path(__file__).resolve().parents[1]
@@ -592,7 +592,7 @@ def _ledger_artifact_exists(repo: Path) -> bool:
     return (repo / ".sourcepack" / "evidence" / "ledger.jsonl").exists()
 
 def verify_scenario_state(repo: Path, scenario: Scenario, mr: MutationResult) -> MutationResult:
-    if (mr.status == "applied" and mr.applied != True) or (mr.status != "applied" and mr.applied == True):
+    if (mr.status == "applied" and not mr.applied) or (mr.status != "applied" and mr.applied):
         return mutation_validation_failed(mr, "mutation_status_applied_inconsistent")
     if mr.status != "applied":
         return mr
@@ -816,7 +816,7 @@ def run_harness(args: argparse.Namespace) -> tuple[dict[str,Any], int]:
                     mr=MutationResult("baseline_failed",False,reason="sourcepack_baseline_failed"); row=empty_result(entry,s,repo_path,mr,["baseline creation failed"])
                 else:
                     mr=verify_scenario_state(work, s, apply_mutation(work,s))
-                    if not (mr.status == "applied" and mr.applied == True): row=empty_result(entry,s,repo_path,mr,[mr.reason or mr.status])
+                    if not (mr.status == "applied" and mr.applied): row=empty_result(entry,s,repo_path,mr,[mr.reason or mr.status])
                     else:
                         try:
                             code,out,err,valid,report,_ = evaluate(work,s,min(args.timeout,s.timeout_seconds))

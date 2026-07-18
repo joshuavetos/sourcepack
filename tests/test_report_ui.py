@@ -1,4 +1,6 @@
-import json, subprocess, sys
+import json
+import subprocess
+import sys
 from sourcepack.reports.html import render_report_html
 from sourcepack.reports.json import traffic_report, write_user_report
 

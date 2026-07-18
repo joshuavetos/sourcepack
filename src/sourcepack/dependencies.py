@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-import ast, json, re, sys, tomllib
+import ast
+import json
+import re
+import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from .ecosystems.python import PY_IMPORT_ALIASES

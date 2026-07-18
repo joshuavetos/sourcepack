@@ -6,10 +6,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import threading
 import venv
 import zipfile
-from http.client import HTTPConnection
 from email.parser import Parser
 from pathlib import Path, PurePosixPath
 

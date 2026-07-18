@@ -1,4 +1,6 @@
-import json, subprocess, sys
+import json
+import subprocess
+import sys
 
 
 def run_cli(tmp_path,*args):

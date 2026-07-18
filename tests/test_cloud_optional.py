@@ -13,7 +13,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from sourcepack.cli import run_cli
-from sourcepack.cloud import CloudClient, CloudConfig, CloudError, canonical_json_bytes, pull_policy
+from sourcepack.cloud import CloudClient, CloudConfig, canonical_json_bytes, pull_policy
 from sourcepack.hosted import Store, hash_password, hash_value, initialize_database, make_handler, verify_password
 
 

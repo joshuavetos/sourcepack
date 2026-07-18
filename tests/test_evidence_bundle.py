@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 from sourcepack.cli import run_cli
-from sourcepack.decision_ledger import append_event, append_report_events, filter_events, new_event, read_events, artifact_for
+from sourcepack.decision_ledger import append_event, append_report_events, filter_events, new_event, artifact_for
 from sourcepack.evidence_bundle import BUNDLE_SCHEMA_VERSION, compute_bundle_id, create_bundle, verify_bundle
 from sourcepack.overrides import create_override
 from sourcepack.reports.json import normalized_finding, traffic_report

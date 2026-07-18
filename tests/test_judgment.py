@@ -1,4 +1,3 @@
-import pytest
 from sourcepack.judgment import render_ai_instructions
 
 def test_render_ai_instructions_empty():

@@ -656,3 +656,120 @@ def test_hosted_audit_mutations_share_transaction_boundaries(tmp_path: Path) -> 
     with store.db() as db:
         event = db.execute("SELECT organization_id,actor_id,resource_type,resource_id FROM audit_events WHERE action='credential_revoked'").fetchone()
     assert tuple(event) == (organization, owner, "credential", event[3])
+
+
+def _auth_current_request(url: str, token: str) -> tuple[int, dict]:
+    request = Request(url + "/api/v1/auth/current", headers={"Authorization": "Bearer " + token}, method="DELETE")
+    try:
+        with urlopen(request) as response:
+            return response.status, json.loads(response.read())
+    except HTTPError as error:
+        return error.code, json.loads(error.read())
+
+
+def _refresh_request(url: str, refresh_token: str) -> tuple[int, dict]:
+    request = Request(url + "/api/v1/auth/refresh", data=json.dumps({"refresh_token": refresh_token}).encode(), headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(request) as response:
+            return response.status, json.loads(response.read())
+    except HTTPError as error:
+        return error.code, json.loads(error.read())
+
+
+def _credential_revoke_audits(store: Store) -> list[sqlite3.Row]:
+    with store.db() as db:
+        return db.execute("SELECT action,resource_type,resource_id,detail_json FROM audit_events WHERE action='credential_revoked' ORDER BY organization_id").fetchall()
+
+
+def test_cli_logout_revokes_hosted_credential_and_deletes_local_credentials(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    database = tmp_path / "cloud.sqlite"; store = Store(database)
+    owner, organization = store.bootstrap("owner@example.test", "password", "One")
+    other = "org_" + uuid.uuid4().hex
+    with store.db() as db:
+        stamp = "2026-01-01T00:00:00+00:00"
+        db.execute("INSERT INTO organizations VALUES (?,?,?,?,?)", (other, "sourcepack.cloud.organization.v1", "Two", stamp, "active"))
+        db.execute("INSERT INTO memberships VALUES (?,?,?,?,?,?,?,?)", ("mem_" + uuid.uuid4().hex, "sourcepack.cloud.membership.v1", other, owner, "owner", "active", stamp, stamp))
+    tokens = store.login("owner@example.test", "password")
+    server, url = _serve(make_handler(database))
+    try:
+        from sourcepack.cloud import credential_path, save_credentials
+        CloudConfig(url, organization_id=organization).save(); save_credentials(tokens["access_token"], tokens["refresh_token"])
+        assert run_cli(["cloud", "logout", "--json"]) == 0
+        captured = capsys.readouterr()
+        assert json.loads(captured.out) == {"status": "server_revocation_success"}
+        assert captured.err == ""
+        assert not credential_path().exists()
+        assert store.actor("Bearer " + tokens["access_token"]) is None
+        status, response = _refresh_request(url, tokens["refresh_token"])
+        assert status == 401 and response["error"]["code"] == "authentication_rejected"
+        audits = _credential_revoke_audits(store)
+        assert len(audits) == 2
+        assert {audit["resource_type"] for audit in audits} == {"credential"}
+        forbidden = [tokens["access_token"], tokens["refresh_token"], hash_value(tokens["access_token"]), hash_value(tokens["refresh_token"]), "Authorization", "Bearer"]
+        output = captured.out + captured.err + json.dumps(response) + "\n".join(audit["detail_json"] for audit in audits)
+        assert not any(secret in output for secret in forbidden)
+        assert run_cli(["cloud", "logout", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out) == {"status": "local_logout_success"}
+        assert len(_credential_revoke_audits(store)) == 2
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def test_cli_logout_with_credentials_and_missing_config_is_unconfirmed(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    from sourcepack.cloud import credential_path, save_credentials
+    access = "missing-config-access-token"; refresh = "missing-config-refresh-token"
+    save_credentials(access, refresh)
+    assert run_cli(["cloud", "logout", "--json"]) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"status": "local_logout_remote_revocation_unconfirmed"}
+    assert captured.err == ""
+    assert not credential_path().exists()
+    combined = captured.out + captured.err
+    forbidden = [access, refresh, hash_value(access), hash_value(refresh), "Authorization", "Bearer"]
+    assert not any(secret in combined for secret in forbidden)
+    assert run_cli(["cloud", "logout", "--json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"status": "local_logout_success"}
+    assert captured.err == ""
+
+
+def test_cli_logout_already_revoked_or_invalid_credentials_cleanup_exit_zero(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    database = tmp_path / "cloud.sqlite"; store = Store(database)
+    _, organization = store.bootstrap("owner@example.test", "password", "One")
+    tokens = store.login("owner@example.test", "password")
+    server, url = _serve(make_handler(database))
+    try:
+        from sourcepack.cloud import credential_path, save_credentials
+        CloudConfig(url, organization_id=organization).save()
+        assert store.revoke("Bearer " + tokens["access_token"])
+        save_credentials(tokens["access_token"], tokens["refresh_token"])
+        assert run_cli(["cloud", "logout", "--json"]) == 0
+        captured = capsys.readouterr()
+        assert json.loads(captured.out) == {"status": "local_logout_success"}
+        assert captured.err == "" and not credential_path().exists()
+        save_credentials("invalid-access-token", "invalid-refresh-token")
+        assert run_cli(["cloud", "logout", "--json"]) == 0
+        captured = capsys.readouterr()
+        assert json.loads(captured.out) == {"status": "local_logout_success"}
+        assert captured.err == "" and not credential_path().exists()
+        combined = captured.out + captured.err
+        assert "invalid-access-token" not in combined and "invalid-refresh-token" not in combined and "Authorization" not in combined
+        assert len(_credential_revoke_audits(store)) == 1
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def test_cli_logout_unavailable_server_deletes_local_credentials_and_warns(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    from sourcepack.cloud import credential_path, save_credentials
+    access = "offline-access-token"; refresh = "offline-refresh-token"
+    CloudConfig("http://127.0.0.1:9", request_timeout=0.1).save(); save_credentials(access, refresh)
+    assert run_cli(["cloud", "logout"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "remote revocation unconfirmed" in captured.err
+    assert not credential_path().exists()
+    assert access not in captured.err and refresh not in captured.err and "Authorization" not in captured.err and "Bearer" not in captured.err

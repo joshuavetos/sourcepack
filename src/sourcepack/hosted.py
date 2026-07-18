@@ -115,14 +115,19 @@ class Store:
             db.execute("UPDATE credentials SET revoked_at=? WHERE id=?",(now(),row["id"]))
             return self.issue_tokens(db,row["user_id"])
     def revoke(self, authorization: str) -> bool:
-        """Revoke an access credential and audit it for each active organization membership."""
-        if not authorization.startswith("Bearer "): return False
+        """Revoke one access/refresh credential row and audit active memberships atomically."""
+        if not authorization.startswith("Bearer "):
+            return False
+        token_hash = hash_value(authorization[7:])
         with self.db() as db:
-            credential = db.execute("SELECT id,user_id FROM credentials WHERE token_hash=? AND revoked_at IS NULL", (hash_value(authorization[7:]),)).fetchone()
+            db.execute("BEGIN IMMEDIATE")
+            credential = db.execute("SELECT id,user_id,refresh_hash FROM credentials WHERE token_hash=? AND revoked_at IS NULL", (token_hash,)).fetchone()
             if not credential:
                 return False
             stamp = now()
-            db.execute("UPDATE credentials SET revoked_at=? WHERE id=?", (stamp, credential["id"]))
+            updated = db.execute("UPDATE credentials SET revoked_at=? WHERE id=? AND token_hash=? AND refresh_hash=? AND revoked_at IS NULL", (stamp, credential["id"], token_hash, credential["refresh_hash"]))
+            if updated.rowcount != 1:
+                return False
             organizations = db.execute("SELECT organization_id FROM memberships WHERE user_id=? AND status='active'", (credential["user_id"],)).fetchall()
             for organization in organizations:
                 self.audit(db, organization["organization_id"], credential["user_id"], "credential_revoked", "credential", credential["id"])

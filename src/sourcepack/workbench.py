@@ -25,6 +25,7 @@ REQUEST_TIMEOUT_SECONDS = 120
 ALLOWED_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 DASHBOARD_PREFIX = "/api/dashboard/v1/"
 TRAFFIC_REPORT_SCHEMA_VERSION = "traffic_report.v1"
+WORKBENCH_EXCERPT_FILE_LIMIT_BYTES = 128 * 1024
 
 
 def _dashboard_error(section: str, code: str, message: str, status: str = "error") -> dict[str, Any]:
@@ -47,13 +48,64 @@ def _read_canonical_report(repo: Path) -> tuple[dict[str, Any] | None, dict[str,
     return report, None
 
 
+def _safe_report_paths(report: dict[str, Any]) -> list[str]:
+    raw = report.get("raw_patch_judgment") if isinstance(report.get("raw_patch_judgment"), dict) else {}
+    paths: list[str] = []
+    for key in ("modified_files", "new_files", "deleted_files", "missing_modified_files"):
+        values = raw.get(key) if isinstance(raw, dict) else None
+        if isinstance(values, list):
+            for value in values:
+                if isinstance(value, str) and value not in paths:
+                    paths.append(value)
+    for finding in report.get("findings", []):
+        if isinstance(finding, dict) and isinstance(finding.get("path"), str) and finding["path"] not in paths:
+            paths.append(finding["path"])
+    return paths[:8]
+
+
+def _bounded_changed_file_excerpt(repo: Path, report: dict[str, Any]) -> dict[str, Any]:
+    paths = _safe_report_paths(report)
+    terms = sorted({str(finding.get("evidence") or "").lower() for finding in report.get("findings", []) if isinstance(finding, dict) and finding.get("evidence")})
+    excerpts: list[dict[str, Any]] = []
+    root = repo.resolve()
+    for rel in paths:
+        if not rel or Path(rel).is_absolute() or rel.startswith(("..", "/", "\\")):
+            continue
+        target = (root / rel).resolve()
+        if not _is_relative_to(target, root) or not target.is_file():
+            continue
+        try:
+            data = target.open("rb").read(WORKBENCH_EXCERPT_FILE_LIMIT_BYTES + 1)
+        except OSError:
+            excerpts.append({"path": rel, "source": "current_worktree_file_listed_by_canonical_report", "status": "omitted", "reason": "file_unreadable", "lines": []})
+            continue
+        status = "truncated" if len(data) > WORKBENCH_EXCERPT_FILE_LIMIT_BYTES else "available"
+        if status == "truncated":
+            data = data[:WORKBENCH_EXCERPT_FILE_LIMIT_BYTES]
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            excerpts.append({"path": rel, "source": "current_worktree_file_listed_by_canonical_report", "status": "omitted", "reason": "file_not_utf8", "lines": []})
+            continue
+        lines = text.splitlines()
+        selected: list[int] = []
+        for index, line in enumerate(lines):
+            low = line.lower()
+            if any(term and term in low for term in terms):
+                selected.extend(range(max(0, index - 1), min(len(lines), index + 2)))
+        if not selected:
+            selected = list(range(min(len(lines), 8)))
+        selected = sorted(set(selected))[:12]
+        excerpts.append({"path": rel, "source": "current_worktree_file_listed_by_canonical_report", "status": status, "byte_limit": WORKBENCH_EXCERPT_FILE_LIMIT_BYTES, "lines": [{"number": i + 1, "text": lines[i]} for i in selected]})
+    return {"schema_version": "sourcepack.dashboard.proposed_change.v1", "source": "traffic_report.raw_patch_judgment plus bounded current worktree excerpt", "paths": paths, "excerpts": excerpts}
+
 def _report_payload(repo: Path) -> dict[str, Any]:
     report, error = _read_canonical_report(repo)
     if error:
         return error
     if report is None:
         return {"schema_version": "sourcepack.dashboard.report.v1", "ok": True, "status": "empty", "error": {"code": "report_unavailable", "message": "No canonical report is available."}, "report": None}
-    return {"schema_version": "sourcepack.dashboard.report.v1", "ok": True, "status": "success", "report_path": ".sourcepack/reports/latest.json", "report": report}
+    return {"schema_version": "sourcepack.dashboard.report.v1", "ok": True, "status": "success", "report_path": ".sourcepack/reports/latest.json", "report": report, "proposed_change": _bounded_changed_file_excerpt(repo, report)}
 
 
 def _dashboard_payload(repo: Path, section: str) -> dict[str, Any]:

@@ -10,10 +10,12 @@
     section { border: 1px solid #bdcad3; border-radius: .4rem; padding: 1rem; } pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f4f7f9; padding: .75rem; border-radius: .25rem; }
     .state { font-weight: 700; } button { padding: .45rem .7rem; cursor: pointer; } button:focus-visible { outline: 3px solid #075fcc; outline-offset: 2px; }
     .raw { display: none; } .raw.visible { display: block; } .message { margin: .5rem 0; }
+    .remediation { border-top: 2px solid #d7e0e7; margin-top: 1rem; padding-top: 1rem; } .remediation[hidden] { display: none; }
+    .remediation h3 { margin-bottom: .35rem; } .copy-status { min-height: 1.3em; }
   </style>
 </head>
 <body>
-  <header><h1>SourcePack Workbench</h1><p>Local, read-only dashboard. It does not run replay, generate reports, or change repository state.</p></header>
+  <header><h1>SourcePack Workbench</h1><p>Local dashboard for canonical SourcePack artifacts. Dashboard views are read-only and do not modify repository state.</p></header>
   <main class="grid" id="sections"></main>
   <script>
     const definitions = [
@@ -28,15 +30,32 @@
       const heading = document.createElement('h2'); heading.textContent = title;
       const state = document.createElement('p'); state.className = 'state'; state.textContent = 'Loading…';
       const detail = document.createElement('pre'); detail.className = 'message';
+      const remediation = document.createElement('div'); remediation.className = 'remediation'; remediation.hidden = true;
+      const remediationHeading = document.createElement('h3'); remediationHeading.textContent = 'Agent correction instruction';
+      const remediationText = document.createElement('pre');
+      const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = 'Copy correction prompt';
+      const copyStatus = document.createElement('p'); copyStatus.className = 'copy-status'; copyStatus.setAttribute('aria-live', 'polite');
+      copy.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(remediationText.textContent || ''); copyStatus.textContent = 'Copied.'; }
+        catch (_) { copyStatus.textContent = 'Copy failed. Select the prompt text manually.'; }
+      });
+      remediation.append(remediationHeading, remediationText, copy, copyStatus);
       const toggle = document.createElement('button'); toggle.type = 'button'; toggle.textContent = 'Show raw JSON';
       const raw = document.createElement('pre'); raw.className = 'raw'; toggle.addEventListener('click', () => { raw.classList.toggle('visible'); toggle.textContent = raw.classList.contains('visible') ? 'Hide raw JSON' : 'Show raw JSON'; });
-      section.append(heading, state, detail, toggle, raw); root.append(section); return {state, detail, raw};
+      section.append(heading, state, detail, remediation, toggle, raw); root.append(section); return {state, detail, remediation, remediationText, raw};
     }
     function summarize(data) {
       if (data.status === 'empty') return data.error?.message || 'No data is available.';
       if (data.status === 'unsupported') return data.error?.message || 'Artifact version is unsupported.';
       if (!data.ok) return data.error?.message || 'Dashboard data could not be read.';
-      if (data.report) return `Verdict: ${data.report.verdict ?? 'not recorded'}\nBlockers: ${(data.report.blockers || []).length}\nWarnings: ${(data.report.warnings || []).length}\n\n${JSON.stringify(data.report, null, 2)}`;
+      if (data.report) {
+        const findings = data.report.findings || [];
+        const lines = [`Verdict: ${data.report.verdict ?? 'not recorded'}`, `Blockers: ${(data.report.blockers || []).length}`, `Warnings: ${(data.report.warnings || []).length}`];
+        for (const finding of findings) {
+          lines.push('', `${finding.severity?.toUpperCase() || 'FINDING'}  ${finding.id || 'unknown'}`, finding.path ? `Path: ${finding.path}` : '', finding.message || '', finding.evidence ? `Evidence: ${finding.evidence}` : '');
+        }
+        return lines.filter(Boolean).join('\n');
+      }
       if (data.overview || data.repository) return JSON.stringify(data, null, 2);
       return JSON.stringify(Object.fromEntries(Object.entries(data).filter(([key]) => !['schema_version', 'ok', 'status'].includes(key))), null, 2);
     }
@@ -47,6 +66,8 @@
         const data = await response.json(); view.raw.textContent = JSON.stringify(data, null, 2);
         view.state.textContent = `${data.status || 'failure'}${data.error?.code ? `: ${data.error.code}` : ''}`;
         view.detail.textContent = summarize(data);
+        const prompt = id === 'report' ? data.report?.remediation?.agent_prompt : '';
+        if (prompt) { view.remediationText.textContent = prompt; view.remediation.hidden = false; }
       } catch (_) { view.state.textContent = 'failure'; view.detail.textContent = 'Dashboard data could not be loaded.'; }
     }
     definitions.forEach(([id, title]) => load(id, title));

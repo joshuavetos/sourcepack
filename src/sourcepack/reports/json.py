@@ -13,6 +13,7 @@ from sourcepack.reports.markdown import LIGHT_BY_VERDICT, render_traffic
 from sourcepack.reason_codes import normalize_reason_code, is_canonical_reason_code
 from sourcepack.evidence import REPLAY_BUNDLE_SCHEMA_VERSION, attach_evidence_to_finding, evidence_summary, make_evidence, make_evidence_item
 from sourcepack.finding_identity import attach_finding_id
+from sourcepack.remediation import attach_remediation, report_remediation
 
 SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
 
@@ -116,6 +117,7 @@ def normalize_finding_evidence(finding: dict) -> dict:
 def traffic_report(verdict: str, headline: str | None = None, findings: list[dict] | None = None, checked_categories: list[str] | None = None, next_action: str | None = None, report_path: str = ".sourcepack/reports/latest.json", reason_type: str | None = None, not_checked: list[str] | None = None) -> dict:
     findings = [attach_finding_id(normalize_finding_evidence(f)) for f in (findings or [])]
     findings = sorted(findings, key=lambda f: (SEVERITY_ORDER.get(f.get("severity", "info"), 9), f.get("id", ""), f.get("path") or ""))
+    findings = attach_remediation(findings)
     blockers = [f for f in findings if f.get("severity") == "error"]
     warnings = [f for f in findings if f.get("severity") == "warn"]
     light = LIGHT_BY_VERDICT.get(verdict, "YELLOW LIGHT")
@@ -151,7 +153,7 @@ def traffic_report(verdict: str, headline: str | None = None, findings: list[dic
     partial = sorted({f["category"] for f in findings if f.get("checked_status") == "partially_checked"} | ({"execution_claim_check"} if any(f.get("category") == "execution" for f in findings) else set()))
     checked_names = sorted(set(checked_categories) | {f["category"] for f in findings if f.get("checked_status") == "checked"})
     confidence_summary = {"basis": "local evidence coverage, not AI confidence", "checked": checked_names, "partially_checked": partial, "not_checked": not_checked, "limitations": ["SourcePack does not prove code correctness", "SourcePack does not prove security", "SourcePack does not verify external API behavior unless local evidence exists"]}
-    base_report = {"schema_version": "traffic_report.v1", "sourcepack_version": __version__, "verdict": verdict, "light": light, "headline": headline, "reason_type": reason_type, "commit_policy": commit_policy, "blockers": blockers, "warnings": warnings, "uncertainties": [f for f in warnings if f.get("category") == "uncertainty"], "checked_categories": checked_names, "checked": checked_names, "partially_checked": partial, "unavailable_evidence": evidence["missing_evidence"], "unsupported_evidence": [f for f in findings if f.get("id") == "unsupported_ecosystem"], "not_checked": not_checked, "confidence_summary": confidence_summary, "evidence": evidence, "next_action": next_action, "report_path": report_path, "findings": findings}
+    base_report = {"schema_version": "traffic_report.v1", "sourcepack_version": __version__, "verdict": verdict, "light": light, "headline": headline, "reason_type": reason_type, "commit_policy": commit_policy, "blockers": blockers, "warnings": warnings, "uncertainties": [f for f in warnings if f.get("category") == "uncertainty"], "checked_categories": checked_names, "checked": checked_names, "partially_checked": partial, "unavailable_evidence": evidence["missing_evidence"], "unsupported_evidence": [f for f in findings if f.get("id") == "unsupported_ecosystem"], "not_checked": not_checked, "confidence_summary": confidence_summary, "evidence": evidence, "next_action": next_action, "report_path": report_path, "findings": findings, "remediation": report_remediation(findings)}
     evidence_items = _dedupe_evidence_items([_finding_evidence_item(f) for f in findings])
     reason_code_evidence = {}
     for item in evidence_items:

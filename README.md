@@ -71,11 +71,10 @@ SourcePack does not reject code merely because AI produced it.
 python -m pip install sourcepack
 sourcepack demo
 sourcepack init . --auto
-sourcepack diff .
-sourcepack report open
+sourcepack ui .
 ```
 
-`sourcepack init . --auto` creates or refreshes local SourcePack state only after you decide the current repository state should be trusted. Do not use initialization to bless a failed AI patch.
+`sourcepack init . --auto` creates or refreshes local SourcePack state only after you decide the current repository state should be trusted. Do not use initialization to bless a failed AI patch. Then launch SourcePack Workbench, click **Run Review**, inspect findings and evidence, copy the deterministic remediation prompt, let an external coding agent edit the repository, and click **Run Review Again**.
 
 ## What SourcePack catches
 
@@ -116,13 +115,13 @@ See [`docs/baseline-lifecycle.md`](docs/baseline-lifecycle.md).
 A normal local run writes HTML, JSON, and Markdown reports under `.sourcepack/reports/`. The canonical SourcePack report path is `.sourcepack/reports/latest.json`. Use `sourcepack report path` to print the current report path and `sourcepack report open` to open the rendered report.
 
 ```bash
+sourcepack ui .
 sourcepack diff .
 sourcepack report path
 sourcepack report open
-sourcepack ui .
 ```
 
-The read-only Workbench binds only to loopback and reads canonical SourcePack artifacts without modifying Git state, policy, baselines, reports, overrides, or decision ledgers.
+SourcePack Workbench can run a bounded local review using the same `sourcepack.judgment.judge_repo_change()` path used by `sourcepack diff .`, then write the canonical report artifacts under `.sourcepack/reports/`. It cannot run arbitrary commands, edit code, invoke Codex, or silently trust a baseline. CLI review commands remain available for automation, CI, and advanced use.
 
 Minimal CI usage:
 

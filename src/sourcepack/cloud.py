@@ -10,6 +10,7 @@ import json
 import os
 import getpass
 import stat
+import socket
 import urllib.error
 import urllib.request
 import uuid
@@ -113,7 +114,7 @@ class CloudClient:
             except Exception: payload = None
             code = payload.get("error", {}).get("code") if isinstance(payload, dict) else "cloud_server_error"
             raise CloudError(code or "cloud_server_error", exc.code) from None
-        except TimeoutError as exc: raise CloudError("cloud_request_timeout") from exc
+        except (TimeoutError, socket.timeout) as exc: raise CloudError("cloud_request_timeout") from exc
         except urllib.error.URLError as exc: raise CloudError("cloud_network_unavailable") from exc
         if not isinstance(payload, dict) or payload.get("schema_version") != API_ENVELOPE_SCHEMA:
             raise CloudError("cloud_invalid_response")
@@ -177,7 +178,7 @@ def credential_path() -> Path:
     return default_config_path().with_name("credentials.json")
 
 
-def load_access_token() -> str | None:
+def load_credentials() -> dict[str, str | None] | None:
     path = credential_path()
     if not path.is_file() or stat.S_IMODE(path.stat().st_mode) & 0o077:
         return None
@@ -185,8 +186,18 @@ def load_access_token() -> str | None:
         data = _json_no_duplicates(path.read_bytes())
     except (OSError, ValueError, json.JSONDecodeError):
         return None
-    token = data.get("access_token") if isinstance(data, dict) else None
-    return token if isinstance(token, str) else None
+    if not isinstance(data, dict) or data.get("schema_version") != "sourcepack.cloud.credential.v1":
+        return None
+    access = data.get("access_token")
+    refresh = data.get("refresh_token")
+    if not isinstance(access, str) or not access:
+        return None
+    return {"access_token": access, "refresh_token": refresh if isinstance(refresh, str) else None}
+
+
+def load_access_token() -> str | None:
+    credentials = load_credentials()
+    return credentials["access_token"] if credentials else None
 
 
 def save_credentials(access_token: str, refresh_token: str | None) -> None:
@@ -208,7 +219,40 @@ def cli_cloud(args: Any) -> int:
         print(json.dumps(payload, sort_keys=True) if args.json else payload["status"])
         return 0
     if command == "logout":
-        clear_credentials(); print(json.dumps({"status": "logged_out"}) if args.json else "Logged out."); return 0
+        credentials = load_credentials()
+        status = "local_logout_success"
+        exit_code = 0
+        if credentials:
+            try:
+                config = CloudConfig.load()
+            except (OSError, ValueError, json.JSONDecodeError, DuplicateKeyError):
+                config = None
+            if config is None:
+                status = "local_logout_remote_revocation_unconfirmed"
+                exit_code = 1
+            else:
+                try:
+                    CloudClient(config, credentials["access_token"]).request("DELETE", "auth/current")
+                    status = "server_revocation_success"
+                except CloudError as exc:
+                    if exc.code in {"cloud_request_timeout", "cloud_network_unavailable"}:
+                        status = "local_logout_remote_revocation_unconfirmed"
+                        exit_code = 1
+                    elif exc.status in {401, 403} or exc.code in {"authentication_required", "authentication_rejected", "cloud_authentication_rejected"}:
+                        status = "local_logout_success"
+                    else:
+                        status = "local_logout_remote_revocation_unconfirmed"
+                        exit_code = 1
+        clear_credentials()
+        if args.json:
+            print(json.dumps({"status": status}, sort_keys=True))
+        elif status == "server_revocation_success":
+            print("Logged out; remote credential revoked.")
+        elif status == "local_logout_remote_revocation_unconfirmed":
+            print("WARNING: local logout completed; remote revocation unconfirmed.", file=os.sys.stderr)
+        else:
+            print("Logged out locally.")
+        return exit_code
     config = CloudConfig.load()
     if command == "login":
         api_url = config.api_base_url if config else input("API base URL: ").strip().rstrip("/")

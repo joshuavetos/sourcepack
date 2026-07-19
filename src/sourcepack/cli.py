@@ -36,10 +36,7 @@ from .commands import report as report_command
 from .policy import PolicyMode, exit_code as policy_exit_code, validate_policy_config, resolve_effective_policy
 from .replay import reconstruct_replay, render_replay_human
 
-try:
-    from . import __version__
-except Exception:
-    __version__ = "1.10.0-alpha"
+from . import __version__
 
 DEFAULT_IGNORED_DIRS = {
     ".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",

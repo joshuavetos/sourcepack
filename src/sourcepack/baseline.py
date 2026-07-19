@@ -10,7 +10,6 @@ from pathlib import Path
 from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, metadata as canonical_git_metadata, run_git, run_git_bytes
 from .paths import ensure_sourcepack_dirs, sourcepack_paths
 
-from . import __version__
 
 
 DEFAULT_SOURCEPACKIGNORE = "# SourcePack ignore rules\n.env\nnode_modules/\ndist/\nbuild/\n"

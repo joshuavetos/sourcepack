@@ -1,0 +1,35 @@
+name: Deploy SourcePack showcase
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-showcase
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Upload showcase artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs/showcase
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

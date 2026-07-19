@@ -49,7 +49,8 @@ def _artifact_disk_path(path: str | Path, *, repo: str | Path | None = None) -> 
 def artifact_for(path: str | Path, *, schema_version: str | None = None, repo: str | Path | None = None) -> dict[str, Any]:
     artifact_path = Path(path)
     disk_path = _artifact_disk_path(artifact_path, repo=repo)
-    item: dict[str, Any] = {"path": str(artifact_path), "sha256": None, "schema_version": schema_version}
+    serialized_path = artifact_path.as_posix() if not artifact_path.is_absolute() else str(artifact_path)
+    item: dict[str, Any] = {"path": serialized_path, "sha256": None, "schema_version": schema_version}
     if disk_path.is_file():
         item["sha256"] = sha256_file(disk_path)
     return item

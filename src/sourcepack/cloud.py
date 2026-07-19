@@ -51,6 +51,10 @@ def default_config_path() -> Path:
     return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "sourcepack" / "cloud.json"
 
 
+def _strict_local_file_permissions_supported() -> bool:
+    return os.name != "nt"
+
+
 @dataclass(frozen=True)
 class CloudConfig:
     api_base_url: str
@@ -82,7 +86,7 @@ class CloudConfig:
     def save(self, path: Path | None = None) -> Path:
         path = path or default_config_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists() and stat.S_IMODE(path.stat().st_mode) & 0o077:
+        if _strict_local_file_permissions_supported() and path.exists() and stat.S_IMODE(path.stat().st_mode) & 0o077:
             raise ValueError("cloud_configuration_permissions_unsafe")
         data = {"schema_version": CLOUD_CONFIG_SCHEMA, **self.__dict__, "upload_categories": list(self.upload_categories)}
         path.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
@@ -180,7 +184,9 @@ def credential_path() -> Path:
 
 def load_credentials() -> dict[str, str | None] | None:
     path = credential_path()
-    if not path.is_file() or stat.S_IMODE(path.stat().st_mode) & 0o077:
+    if not path.is_file():
+        return None
+    if _strict_local_file_permissions_supported() and stat.S_IMODE(path.stat().st_mode) & 0o077:
         return None
     try:
         data = _json_no_duplicates(path.read_bytes())

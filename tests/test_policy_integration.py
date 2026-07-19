@@ -1,7 +1,18 @@
 import json
+import os
+import pytest
 import subprocess
 import sys
+from pathlib import Path
 
+def symlink_if_supported(link: Path, target: Path) -> bool:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            return False
+        raise
+    return True
 
 
 def run(repo, *args):
@@ -769,7 +780,8 @@ def test_resolution_failure_identity_ignores_org_policy_path_spelling(tmp_path):
     link = tmp_path.parent / "bad-org-link.json"
     if link.exists() or link.is_symlink():
         link.unlink()
-    link.symlink_to(bad)
+    if not symlink_if_supported(link, bad):
+        pytest.skip("Windows symlink privilege is unavailable (WinError 1314)")
 
     real_id, _, _ = resolution_failure_finding_id(tmp_path, "--org-policy", str(bad))
     link_id, _, _ = resolution_failure_finding_id(tmp_path, "--org-policy", str(link))

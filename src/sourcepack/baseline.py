@@ -255,9 +255,11 @@ def _gitignore_change_is_exact_sourcepack_addition(repo: str | Path) -> bool:
     before = before_cp.stdout
     if any(line.strip() in {b".sourcepack", b".sourcepack/", b".sourcepack/*"} for line in before.splitlines()):
         return False
-    newline = b"\r\n" if b"\r\n" in before else b"\n"
-    separator = b"" if before.endswith((b"\n", b"\r\n")) or not before else newline
-    return current in {before + separator + b".sourcepack" + newline, before + separator + b".sourcepack/" + newline}
+    before_lines = before.splitlines()
+    current_lines = current.splitlines()
+    if not current.endswith((b"\n", b"\r\n")):
+        return False
+    return current_lines in (before_lines + [b".sourcepack"], before_lines + [b".sourcepack/"])
 
 
 def _bootstrap_file_change_is_exact(repo: Path, rel: str, expected: str) -> bool:

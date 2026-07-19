@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import sqlite3
 import hashlib
 import http.client
@@ -54,7 +55,10 @@ def test_cloud_config_and_canonical_json_are_deterministic(monkeypatch, tmp_path
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     config = CloudConfig("https://cloud.example", uploads_enabled=True, upload_categories=("report",))
     path = config.save()
-    assert path.stat().st_mode & 0o077 == 0
+    if os.name == "nt":
+        assert path.is_file()
+    else:
+        assert path.stat().st_mode & 0o077 == 0
     assert CloudConfig.load() == config
     assert canonical_json_bytes({"z": 1, "a": [True]}) == b'{"a":[true],"z":1}'
 

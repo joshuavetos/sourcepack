@@ -1,7 +1,18 @@
 import json
+import os
+import pytest
 import subprocess
 import sys
 from pathlib import Path
+
+def symlink_if_supported(link: Path, target: Path) -> bool:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            return False
+        raise
+    return True
 
 
 def run_cli(cwd, *args):
@@ -66,9 +77,9 @@ def test_boundary_rejects_inside_relative_symlink_missing_directory_malformed_an
     assert cp.returncode != 0 and data["organization_policy_status"] == "trust_boundary_violation"
     link = tmp_path.parent / "link-org.json"
     if link.exists() or link.is_symlink(): link.unlink()
-    link.symlink_to(inside)
-    cp, data = resolve_json(tmp_path, "--org-policy", str(link))
-    assert cp.returncode != 0 and data["organization_policy_status"] == "trust_boundary_violation"
+    if symlink_if_supported(link, inside):
+        cp, data = resolve_json(tmp_path, "--org-policy", str(link))
+        assert cp.returncode != 0 and data["organization_policy_status"] == "trust_boundary_violation"
     missing = tmp_path.parent / "missing-org.json"
     cp, data = resolve_json(tmp_path, "--org-policy", str(missing))
     assert cp.returncode != 0 and data["organization_policy_status"] == "invalid"
@@ -82,11 +93,30 @@ def test_boundary_rejects_inside_relative_symlink_missing_directory_malformed_an
     assert cp.returncode != 0 and "org_policy_unsupported_schema" in data["errors"]
 
 
+def test_unavailable_windows_symlink_privilege_does_not_skip_mixed_policy_cases(tmp_path, monkeypatch):
+    class SymlinkPrivilegeError(OSError):
+        winerror = 1314
+
+    def denied(self, target):
+        raise SymlinkPrivilegeError("privilege not held")
+
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(Path, "symlink_to", denied)
+
+    link = tmp_path / "link-org.json"
+    assert symlink_if_supported(link, tmp_path / "target-org.json") is False
+
+    missing = tmp_path.parent / "missing-org-after-denied-symlink.json"
+    cp, data = resolve_json(tmp_path, "--org-policy", str(missing))
+    assert cp.returncode != 0 and data["organization_policy_status"] == "invalid"
+
+
 def test_external_symlink_to_valid_policy_and_spelling_do_not_change_identity(tmp_path):
     real = tmp_path.parent / "real-org.json"; write_org(real, {"protected_paths": ["src/**"]})
     link = tmp_path.parent / "valid-org-link.json"
     if link.exists() or link.is_symlink(): link.unlink()
-    link.symlink_to(real)
+    if not symlink_if_supported(link, real):
+        pytest.skip("Windows symlink privilege is unavailable (WinError 1314)")
     cp1, data1 = resolve_json(tmp_path, "--org-policy", str(real))
     cp2, data2 = resolve_json(tmp_path, "--org-policy", str(link))
     assert cp1.returncode == cp2.returncode == 0
@@ -220,7 +250,8 @@ def test_external_policy_valid_from_subdirectory_and_symlink_back_inside_rejecte
     link = tmp_path.parent / "outside-link-to-internal-org.json"
     if link.exists() or link.is_symlink():
         link.unlink()
-    link.symlink_to(internal)
+    if not symlink_if_supported(link, internal):
+        pytest.skip("Windows symlink privilege is unavailable (WinError 1314)")
     cp = run_cli(tmp_path, "policy", "resolve", str(nested), "--json", "--org-policy", str(link))
     data = json.loads(cp.stdout)
     assert cp.returncode != 0

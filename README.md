@@ -1,5 +1,13 @@
 # SourcePack
 
+<p align="center">
+  <img
+    src="docs/assets/sourcepack-showcase-hero.png"
+    alt="SourcePack showing an unsupported FastAPI dependency being blocked and a Flask correction passing"
+    width="100%"
+  >
+</p>
+
 ![PyPI](https://img.shields.io/pypi/v/sourcepack)
 ![Python](https://img.shields.io/pypi/pyversions/sourcepack)
 ![License](https://img.shields.io/github/license/joshuavetos/sourcepack)

@@ -49,3 +49,9 @@ def test_readme_backtick_reason_codes_are_canonical_or_allowlisted() -> None:
     codes = set(re.findall(r"`([a-z][a-z0-9_]+)`", text))
     likely_codes = {code for code in codes if "_" in code}
     assert likely_codes <= set(canonical_reason_codes()) | PUBLIC_REASON_CODE_ALLOWLIST
+
+
+def test_change_supported_remains_presentation_only() -> None:
+    assert "change_supported" not in set(canonical_reason_codes())
+    assert "change_supported" not in documented_codes()
+    assert "change_supported" in PUBLIC_REASON_CODE_ALLOWLIST

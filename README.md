@@ -28,7 +28,7 @@ python -m pip install sourcepack
 sourcepack demo
 ```
 
-The demo creates a small local repository, applies an unsupported FastAPI change, and runs SourcePack against it.
+The demo creates a small local repository, applies an unsupported FastAPI change, and runs SourcePack against it. The Workbench review flow then makes the same loop judge-visible: unsupported FastAPI produces `FAIL` / `unsupported_dependency`; changing the endpoint back to repository-supported Flask produces PASS / change_supported.
 
 Expected decisive output:
 
@@ -112,7 +112,7 @@ See [`docs/baseline-lifecycle.md`](docs/baseline-lifecycle.md).
 
 ## Reports, Workbench, CI, and evidence
 
-A normal local run writes HTML, JSON, and Markdown reports under `.sourcepack/reports/`. The canonical SourcePack report path is `.sourcepack/reports/latest.json`. Use `sourcepack report path` to print the current report path and `sourcepack report open` to open the rendered report.
+A normal local run writes HTML, JSON, and Markdown reports under `.sourcepack/reports/`. The canonical SourcePack JSON report path is `.sourcepack/reports/latest.json`. Use `sourcepack report path` to print the rendered HTML report path and `sourcepack report open` to regenerate and open that rendered report.
 
 ```bash
 sourcepack ui .

@@ -28,7 +28,7 @@ python -m pip install sourcepack
 sourcepack demo
 ```
 
-The demo creates a small local repository, applies an unsupported FastAPI change, and runs SourcePack against it. The Workbench review flow then makes the same loop judge-visible: unsupported FastAPI produces `FAIL` / `unsupported_dependency`; changing the endpoint back to repository-supported Flask produces PASS / change_supported.
+The demo creates a small local repository, applies an unsupported FastAPI change, and runs SourcePack against it. The Workbench review flow then makes the same loop judge-visible: unsupported FastAPI produces `FAIL` / `unsupported_dependency`; changing the endpoint back to repository-supported Flask produces `PASS` / `change_supported`.
 
 Expected decisive output:
 

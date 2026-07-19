@@ -76,7 +76,7 @@ unsupported_dependency: sourcepack/server.py imports fastapi, but fastapi is not
 Verdict: FAIL
 ```
 
-The human signal is `RED LIGHT`, the formal judgment is `FAIL`, and the machine-readable reason code is `unsupported_dependency`. In the packaged Workbench demonstration, correcting that change back to repository-supported Flask yields PASS with the judge-facing reason change_supported.
+The human signal is `RED LIGHT`, the formal judgment is `FAIL`, and the machine-readable reason code is `unsupported_dependency`. In the packaged Workbench demonstration, correcting that change back to repository-supported Flask yields `PASS` with the judge-facing reason `change_supported`.
 
 ## Repository inspection path
 

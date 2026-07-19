@@ -2,9 +2,9 @@
 
 This document is a release-readiness checklist and provenance template. It does not publish artifacts, create tags, or grant release approval.
 
-## 1.10.0a2 public-alpha release note
+## 1.10.0a3 public-alpha release note
 
-1.10.0a2 is a public alpha intended for end-to-end outside evaluation. This release-prep note covers accepted hardening for release-smoke automation and failure-injection coverage, policy/SARIF handling, `sourcepack policy validate [repo] [--json]`, `sourcepack replay <report-or-bundle-path> [--json]` with stable `sourcepack.replay.v1` output, GitHub Action UX and composite Action integration coverage, the committed trusted baseline and self-dogfooding gate, ugly-repo fixtures, baseline lifecycle fixtures, and local-evidence trust-boundary hardening.
+1.10.0a3 is a public alpha intended for end-to-end outside evaluation. This release-prep note covers accepted hardening for release-smoke automation and failure-injection coverage, policy/SARIF handling, `sourcepack policy validate [repo] [--json]`, `sourcepack replay <report-or-bundle-path> [--json]` with stable `sourcepack.replay.v1` output, GitHub Action UX and composite Action integration coverage, the committed trusted baseline and self-dogfooding gate, ugly-repo fixtures, baseline lifecycle fixtures, and local-evidence trust-boundary hardening.
 
 SourcePack remains bounded to locally verifiable repository evidence and does not claim to prove code correctness, security, dependency safety or reputation, runtime success, semantic validity, external API truth, or user intent.
 
@@ -12,7 +12,7 @@ SourcePack remains bounded to locally verifiable repository evidence and does no
 
 - Branch: `work` from `git branch --show-current`.
 - Commit SHA: missing; record the final release commit after merge.
-- Package version: `1.10.0a2` from `pyproject.toml`.
+- Package version: `1.10.0a3` from `pyproject.toml`.
 - Wheel artifact: missing in current checkout; produce with `python -m build` and record the generated `dist/*.whl` path.
 - Sdist artifact: missing in current checkout; produce with `python -m build` and record the generated `dist/*.tar.gz` path.
 - Reviewer/approver: missing; record only after maintainer approval.

@@ -58,6 +58,13 @@ def _supported_evidence(repo: Path, report: dict[str, Any], dependency: str) -> 
     return {"dependency": dependency.lower(), "evidence": "requirements.txt declares flask"}
 
 
+def _showcase_remediation_instruction(supported_dependency: str, unsupported_dependency: str) -> str:
+    return (
+        "Revise the change to use the repository-supported "
+        f"{supported_dependency} dependency instead of {unsupported_dependency}."
+    )
+
+
 def build_showcase_data() -> dict[str, Any]:
     checkout = Path.cwd().resolve()
     with tempfile.TemporaryDirectory(prefix="sourcepack-showcase-") as tmp:
@@ -103,7 +110,9 @@ def build_showcase_data() -> dict[str, Any]:
                 "repository_declared_dependency": supported_flask["dependency"],
                 "missing_evidence": "fastapi dependency declaration",
                 "remediation_summary": remediation.get("summary"),
-                "remediation_agent_instruction": remediation.get("agent_prompt"),
+                "remediation_agent_instruction": _showcase_remediation_instruction(
+                    supported_flask["dependency"], "fastapi"
+                ),
             },
             "pass": {
                 "verdict": passed.verdict,

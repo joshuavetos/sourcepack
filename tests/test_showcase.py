@@ -34,7 +34,7 @@ def test_generator_invokes_real_canonical_sourcepack_judgment(monkeypatch):
     assert data["pass"]["verdict"] == "PASS"
 
 
-def test_generated_fail_and_remediation_fields_are_canonical():
+def test_generated_fail_fields_are_canonical_and_remediation_instruction_uses_supported_evidence():
     data = load_data()
     fresh = generate_showcase_data.build_showcase_data()
 
@@ -45,8 +45,14 @@ def test_generated_fail_and_remediation_fields_are_canonical():
     assert data["fail"]["missing_evidence"] == "fastapi dependency declaration"
     assert data["fail"]["message"] == fresh["fail"]["message"]
     assert data["fail"]["remediation_summary"] == fresh["fail"]["remediation_summary"]
-    assert data["fail"]["remediation_agent_instruction"] == fresh["fail"]["remediation_agent_instruction"]
-    assert "fastapi" in data["fail"]["remediation_agent_instruction"]
+    instruction = data["fail"]["remediation_agent_instruction"]
+
+    assert instruction == fresh["fail"]["remediation_agent_instruction"]
+    assert "flask" in instruction.lower()
+    assert "repository-supported flask dependency" in instruction.lower()
+    assert "instead of fastapi" in instruction.lower()
+    assert "repository evidence" not in instruction.lower()
+    assert 'fastapi"' not in instruction.lower()
 
 
 def test_request_uses_existing_framework_and_correction_preserves_health_endpoint():

@@ -4,7 +4,7 @@
     "missing_dependency": "fastapi",
     "missing_evidence": "fastapi dependency declaration",
     "reason_code": "unsupported_dependency",
-    "remediation_agent_instruction": "Revise the proposed change using only repository facts supported by SourcePack evidence.\n\nFinding: \"unsupported_dependency\"\nProblem: \"fastapi is imported but not declared in scanned dependency files.\"\nRepository evidence: \"fastapi\"\nSuggested correction: \"Either remove fastapi usage or add it intentionally to the appropriate dependency manifest.\"\n\nRequirements:\n- Preserve the user's requested behavior where the repository supports it.\n- Do not modify manifests, trusted baseline state, policy, or protected SourcePack artifacts merely to silence the finding.\n- Prefer files, dependencies, commands, and patterns already supported by the repository evidence.\n- Run the relevant tests or checks after revising the change.\n- Return the corrected patch and briefly state how it addresses this finding.",
+    "remediation_agent_instruction": "Revise the change to use the repository-supported flask dependency instead of fastapi.",
     "remediation_summary": "Either remove fastapi usage or add it intentionally to the appropriate dependency manifest.",
     "repository_declared_dependency": "flask",
     "repository_evidence": "fastapi",

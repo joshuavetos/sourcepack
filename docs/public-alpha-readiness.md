@@ -13,8 +13,8 @@ SourcePack remains bounded to locally verifiable repository evidence and does no
 - Branch: `work` from `git branch --show-current`.
 - Commit SHA: missing; record the final release commit after merge.
 - Package version: `1.10.0a3` from `pyproject.toml`.
-- Wheel artifact: missing in current checkout; produce with `python -m build` and record the generated `dist/*.whl` path.
-- Sdist artifact: missing in current checkout; produce with `python -m build` and record the generated `dist/*.tar.gz` path.
+- Wheel artifact: produced during release validation with `python -m build`; record the final uploaded `dist/*.whl` path at publish time.
+- Sdist artifact: produced during release validation with `python -m build`; record the final uploaded `dist/*.tar.gz` path at publish time.
 - Reviewer/approver: missing; record only after maintainer approval.
 - Date: missing; record only when release approval occurs.
 
@@ -27,11 +27,11 @@ SourcePack remains bounded to locally verifiable repository evidence and does no
 
 ## Packaging/release-smoke acceptance
 
-- Wheel built: missing; run `python -m build`.
-- Sdist built: missing; run `python -m build`.
-- Clean wheel install smoke passed: missing; run `python scripts/release_smoke.py` after building artifacts.
-- Clean sdist install smoke passed: missing; run `python scripts/release_smoke.py` after building artifacts.
-- Console commands passed outside editable install: missing; run `python scripts/release_smoke.py`.
+- Wheel built: verify with `python -m build` before publishing.
+- Sdist built: verify with `python -m build` before publishing.
+- Clean wheel install smoke passed: verify with `python scripts/release_smoke.py`.
+- Clean sdist install smoke passed: verify with `python scripts/release_smoke.py`.
+- Console commands passed outside editable install: verify with `python scripts/release_smoke.py`.
 
 ## Baseline lifecycle docs
 
@@ -43,12 +43,12 @@ SourcePack remains bounded to locally verifiable repository evidence and does no
 
 - Reason-code documentation updated: yes, tracked in `docs/reason-codes.md`.
 - Human report wording reviewed: missing; run `python tools/golden_demo.py --clean` and review generated report wording.
-- JSON-only mode preserved: missing in this checklist; verify with `sourcepack diff . --json` or the relevant pytest coverage before release.
+- JSON-only mode preserved: verify with `sourcepack diff . --json` or the relevant pytest coverage before release.
 
 ## Behavior matrix status
 
-- `python tools/behavior_matrix.py`: missing; run `python tools/behavior_matrix.py`.
-- `python tools/behavior_matrix.py --json`: missing; run `python tools/behavior_matrix.py --json`.
+- `python tools/behavior_matrix.py`: verify before publishing.
+- `python tools/behavior_matrix.py --json`: verify before publishing.
 
 ## Real-corpus status
 
@@ -59,13 +59,13 @@ SourcePack remains bounded to locally verifiable repository evidence and does no
 
 ## Full pytest status
 
-- `python -m pytest -q`: missing; run `python -m pytest -q`.
+- `python -m pytest -q`: verify before publishing.
 
 ## Install status
 
-- Editable install: missing; run `python -m pip install -e .`.
-- Wheel install: missing; run `python scripts/release_smoke.py` after building artifacts.
-- Sdist install: missing; run `python scripts/release_smoke.py` after building artifacts.
+- Editable install: verify with `python -m pip install -e .` when preparing a development checkout.
+- Wheel install: verify with `python scripts/release_smoke.py`.
+- Sdist install: verify with `python scripts/release_smoke.py`.
 
 ## Unsupported ecosystem policy
 

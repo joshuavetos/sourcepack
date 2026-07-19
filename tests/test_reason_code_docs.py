@@ -32,7 +32,10 @@ def test_reason_code_docs_preserve_non_claims() -> None:
     ]:
         assert phrase in text
 
-PUBLIC_REASON_CODE_ALLOWLIST = {"input_schema_version"}
+# ``change_supported`` is a Workbench presentation label for canonical PASS
+# with no blocking findings. It must not be added to canonical reason-code
+# registries or emitted as a report finding.
+PUBLIC_REASON_CODE_ALLOWLIST = {"change_supported", "input_schema_version"}
 
 
 def test_public_docs_do_not_reference_new_command_reason_code() -> None:
@@ -46,3 +49,9 @@ def test_readme_backtick_reason_codes_are_canonical_or_allowlisted() -> None:
     codes = set(re.findall(r"`([a-z][a-z0-9_]+)`", text))
     likely_codes = {code for code in codes if "_" in code}
     assert likely_codes <= set(canonical_reason_codes()) | PUBLIC_REASON_CODE_ALLOWLIST
+
+
+def test_change_supported_remains_presentation_only() -> None:
+    assert "change_supported" not in set(canonical_reason_codes())
+    assert "change_supported" not in documented_codes()
+    assert "change_supported" in PUBLIC_REASON_CODE_ALLOWLIST

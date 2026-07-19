@@ -7,6 +7,7 @@ name = "sourcepack"
 version = "1.10.0a3"
 description = "Local-first guardrail for unsupported AI repository assumptions before commit."
 readme = "README.md"
+authors = [{name = "Joshua Vetos"}]
 requires-python = ">=3.11"
 dependencies = ["jsonschema>=4.18,<5", "argon2-cffi>=23.1,<26"]
 license = "MIT"
@@ -20,6 +21,10 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 
+[project.urls]
+Homepage = "https://github.com/joshuavetos/sourcepack"
+Repository = "https://github.com/joshuavetos/sourcepack"
+Issues = "https://github.com/joshuavetos/sourcepack/issues"
 
 [project.scripts]
 sourcepack = "sourcepack.cli:main"

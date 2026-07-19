@@ -135,3 +135,32 @@ def test_readme_first_five_minutes_and_public_alpha_limits() -> None:
         "- does not prove dependency safety",
         "- does not prove user intent",
     ])
+
+
+def test_demo_and_workbench_walkthrough_are_separate() -> None:
+    text = readme()
+    demo_section = text.split("## Try the demo", 1)[1].split("## Install and use", 1)[0]
+    demo_intro = demo_section.split("Expected decisive output:", 1)[0]
+    workbench_paragraph = demo_section.split("A separate Workbench walkthrough", 1)[1].split("- `RED LIGHT`", 1)[0]
+
+    assert "prints the generated packet and judgment paths" in demo_intro
+    assert "Workbench review flow" not in demo_intro
+    assert "Flask" not in demo_intro
+    assert "change_supported" not in demo_intro
+    assert "does not launch or prepare Workbench" in workbench_paragraph
+    assert "manually prepared revision using repository-supported Flask" in workbench_paragraph
+    assert "presentation label `change_supported`" in workbench_paragraph
+
+
+def test_build_week_separates_packaged_demo_from_workbench_walkthrough() -> None:
+    text = (ROOT / "BUILD_WEEK.md").read_text(encoding="utf-8")
+    fast_path = text.split("## Fast judge path", 1)[1].split("## Workbench correction walkthrough", 1)[0]
+    walkthrough = text.split("## Workbench correction walkthrough", 1)[1].split("## Repository inspection path", 1)[0]
+
+    assert "sourcepack demo" in fast_path
+    assert "change_supported" not in fast_path
+    assert "repository-supported Flask" not in fast_path
+    assert "does not launch or prepare Workbench" in walkthrough
+    assert "separate manually prepared scenario" in walkthrough
+    assert "canonical `PASS`" in walkthrough
+    assert "Workbench presentation label `change_supported`" in walkthrough

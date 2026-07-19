@@ -78,6 +78,10 @@ Verdict: FAIL
 
 The human signal is `RED LIGHT`, the formal judgment is `FAIL`, and the machine-readable reason code is `unsupported_dependency`.
 
+## Workbench correction walkthrough
+
+The packaged `sourcepack demo` command does not launch or prepare Workbench. A separate manually prepared scenario documented in [`docs/workbench-review-flow.md`](docs/workbench-review-flow.md) shows unsupported FastAPI producing `FAIL` / `unsupported_dependency`, followed by a repository-supported Flask revision producing canonical `PASS` and the Workbench presentation label `change_supported`.
+
 ## Repository inspection path
 
 For a real repository:

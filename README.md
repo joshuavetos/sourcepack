@@ -28,7 +28,7 @@ python -m pip install sourcepack
 sourcepack demo
 ```
 
-The demo creates a small local repository, applies an unsupported FastAPI change, and runs SourcePack against it.
+The demo creates a small packaged repository, applies an unsupported FastAPI change, runs SourcePack against it, and prints the generated packet and judgment paths.
 
 Expected decisive output:
 
@@ -38,6 +38,8 @@ unsupported_dependency: sourcepack/server.py imports fastapi, but fastapi is not
 
 Verdict: FAIL
 ```
+
+A separate Workbench walkthrough demonstrates the full correction loop: unsupported FastAPI produces `FAIL` / `unsupported_dependency`, and a manually prepared revision using repository-supported Flask produces `PASS` with the presentation label `change_supported`. This scenario is documented in [`docs/workbench-review-flow.md`](docs/workbench-review-flow.md); `sourcepack demo` does not launch or prepare Workbench.
 
 - `RED LIGHT` is the human stop signal.
 - `Verdict: FAIL` is the formal judgment.
@@ -112,7 +114,7 @@ See [`docs/baseline-lifecycle.md`](docs/baseline-lifecycle.md).
 
 ## Reports, Workbench, CI, and evidence
 
-A normal local run writes HTML, JSON, and Markdown reports under `.sourcepack/reports/`. The canonical SourcePack report path is `.sourcepack/reports/latest.json`. Use `sourcepack report path` to print the current report path and `sourcepack report open` to open the rendered report.
+A normal local run writes HTML, JSON, and Markdown reports under `.sourcepack/reports/`. The canonical SourcePack JSON report path is `.sourcepack/reports/latest.json`. Use `sourcepack report path` to print the rendered HTML report path and `sourcepack report open` to regenerate and open that rendered report.
 
 ```bash
 sourcepack ui .

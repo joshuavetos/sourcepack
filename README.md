@@ -21,6 +21,16 @@ A simple example: an AI assistant adds FastAPI code to a repository that does no
 
 SourcePack is a local-first public-alpha guardrail. It does not prove code correctness, security, runtime success, semantic validity, dependency safety, external API truth, or user intent.
 
+## See SourcePack catch an AI mistake
+
+Follow one AI-generated change from plausible patch to evidence-backed block and verified correction.
+
+[Open the interactive showcase](https://joshuavetos.github.io/sourcepack/)
+
+No installation required.
+
+The browser showcase is a static walkthrough that uses SourcePack-generated fixture data. It does not execute SourcePack in the browser, and it is separate from both the packaged `sourcepack demo` and the local Workbench correction walkthrough.
+
 ## Try the demo
 
 ```bash

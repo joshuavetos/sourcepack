@@ -1,0 +1,30 @@
+{
+  "fail": {
+    "message": "fastapi is imported but not declared in scanned dependency files.",
+    "missing_dependency": "fastapi",
+    "missing_evidence": "fastapi dependency declaration",
+    "reason_code": "unsupported_dependency",
+    "remediation_agent_instruction": "Revise the proposed change using only repository facts supported by SourcePack evidence.\n\nFinding: \"unsupported_dependency\"\nProblem: \"fastapi is imported but not declared in scanned dependency files.\"\nRepository evidence: \"fastapi\"\nSuggested correction: \"Either remove fastapi usage or add it intentionally to the appropriate dependency manifest.\"\n\nRequirements:\n- Preserve the user's requested behavior where the repository supports it.\n- Do not modify manifests, trusted baseline state, policy, or protected SourcePack artifacts merely to silence the finding.\n- Prefer files, dependencies, commands, and patterns already supported by the repository evidence.\n- Run the relevant tests or checks after revising the change.\n- Return the corrected patch and briefly state how it addresses this finding.",
+    "remediation_summary": "Either remove fastapi usage or add it intentionally to the appropriate dependency manifest.",
+    "repository_declared_dependency": "flask",
+    "repository_evidence": "fastapi",
+    "verdict": "FAIL"
+  },
+  "pass": {
+    "blocking_finding_count": 0,
+    "supported_dependency": "flask",
+    "supported_dependency_evidence": "requirements.txt declares flask",
+    "verdict": "PASS"
+  },
+  "presentation": {
+    "derived_from": "canonical PASS with zero blocking findings",
+    "label": "change_supported"
+  },
+  "scenario": {
+    "ai_fastapi_code": "from fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.get('/health')\ndef health():\n    return {'status': 'ok'}\n",
+    "corrected_flask_code": "from flask import Flask, jsonify\n\napp = Flask(__name__)\n\n\n@app.get('/health')\ndef health():\n    return jsonify(status='ok')\n",
+    "human_request": "Add a health endpoint using the repository\u2019s existing web framework.",
+    "original_flask_code": "from flask import Flask\n\napp = Flask(__name__)\n"
+  },
+  "schema_version": "sourcepack.showcase.v1"
+}

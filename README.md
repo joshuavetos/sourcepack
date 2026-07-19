@@ -1,5 +1,3 @@
-# SourcePack
-
 <p align="center">
   <img
     src="docs/assets/sourcepack-showcase-hero.png"

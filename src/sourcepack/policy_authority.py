@@ -11,7 +11,10 @@ POLICY_AUTHORITY_ERROR = "repository_policy_modified_in_proposed_state"
 
 
 def _normalize_path(value: object) -> str:
-    return str(value or "").replace("\\", "/").lstrip("./")
+    path = str(value or "").replace("\\", "/")
+    while path.startswith("./"):
+        path = path[2:]
+    return path
 
 
 def is_policy_authority_path(value: object) -> bool:

@@ -1,0 +1,85 @@
+name: Hardening Software Validation
+
+on:
+  pull_request:
+    branches: [hardening-v1]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hardening-software-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  software-validation:
+    name: software validation (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.11']
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install -e .
+          python -m pip install pytest build twine
+
+      - name: Compile SourcePack modules
+        run: |
+          python -m py_compile src/sourcepack/cli.py
+          python -m py_compile src/sourcepack/git.py
+          python -m py_compile src/sourcepack/baseline.py
+          python -m py_compile src/sourcepack/diff_parser.py
+          python -m py_compile src/sourcepack/judgment.py
+          python -m py_compile src/sourcepack/policy.py
+          python -m py_compile tools/behavior_matrix.py
+          python -m py_compile tools/golden_demo.py
+
+      - name: Unit tests
+        run: python -m unittest
+
+      - name: Behavior matrix tests
+        run: pytest -q tests/test_behavior_matrix.py
+
+      - name: Golden demo tests
+        run: pytest -q tests/test_golden_demo.py
+
+      - name: README truth tests
+        run: pytest -q tests/test_readme_truth.py
+
+      - name: Full pytest suite
+        run: pytest -q
+
+      - name: Behavior matrix
+        run: python tools/behavior_matrix.py
+
+      - name: Behavior matrix JSON
+        run: python tools/behavior_matrix.py --json
+
+      - name: Golden demos
+        run: python tools/golden_demo.py --clean
+
+      - name: Doctor
+        run: sourcepack doctor
+
+      - name: Demo
+        run: sourcepack demo
+
+      - name: Release smoke
+        run: python tools/release_smoke.py

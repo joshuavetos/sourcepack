@@ -7,7 +7,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-COMMAND_SCHEMA_VERSION = "sourcepack.command_resolver.v1"
+from sourcepack.analysis import AnalysisStatus
+
+COMMAND_SCHEMA_VERSION = "sourcepack.command_resolver.v2"
 COMPOSE_FILES = ("compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml")
 
 
@@ -18,9 +20,24 @@ class CommandResolution:
     command: str
     evidence_source: str | None = None
     message: str = ""
+    analysis_status: str | None = None
+    evidence_class: str | None = None
+    trust_status: str | None = None
+    modified_by_patch: bool = False
 
     def to_dict(self) -> dict:
-        return {"schema_version": COMMAND_SCHEMA_VERSION, "verdict": self.verdict, "reason_code": self.reason_code, "command": self.command, "evidence_source": self.evidence_source, "message": self.message}
+        return {
+            "schema_version": COMMAND_SCHEMA_VERSION,
+            "verdict": self.verdict,
+            "reason_code": self.reason_code,
+            "command": self.command,
+            "evidence_source": self.evidence_source,
+            "message": self.message,
+            "analysis_status": self.analysis_status,
+            "evidence_class": self.evidence_class,
+            "trust_status": self.trust_status,
+            "modified_by_patch": self.modified_by_patch,
+        }
 
 
 def _safe(root: Path, rel: str) -> Path | None:
@@ -32,11 +49,20 @@ def _safe(root: Path, rel: str) -> Path | None:
     return p
 
 
-def _read_json(path: Path) -> dict | None:
+def _read_json(path: Path) -> tuple[dict | None, bool]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None, False
+    return parsed if isinstance(parsed, dict) else None, isinstance(parsed, dict)
+
+
+def _read_json_from_text(text: str) -> tuple[dict | None, bool]:
+    try:
+        parsed = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return None, False
+    return parsed if isinstance(parsed, dict) else None, isinstance(parsed, dict)
 
 
 def _make_targets(text: str) -> set[str]:
@@ -56,18 +82,48 @@ def resolve_command(root: str | Path, command: str, *, added_manifests: dict[str
     root = Path(root).resolve(); added_manifests = added_manifests or {}; command = command.strip()
     parts = command.split()
     if not parts:
-        return CommandResolution("WARN", "command_check_inconclusive", command, message="empty command")
+        return CommandResolution(
+            "WARN", "command_check_inconclusive", command, message="empty command",
+            analysis_status=AnalysisStatus.UNKNOWN.value,
+            evidence_class="analysis_state", trust_status="unknown",
+        )
     if len(parts) >= 3 and parts[0] == "npm" and parts[1] == "run":
         script = parts[2]
         pj = _safe(root, "package.json")
         if "package.json" in added_manifests:
-            data = _read_json_from_text(added_manifests["package.json"])
-            if script in (data.get("scripts") or {}):
-                return CommandResolution("WARN", "declared_command", command, "package.json", "script added in patch")
+            proposed, valid = _read_json_from_text(added_manifests["package.json"])
+            if not valid:
+                return CommandResolution(
+                    "FAIL", "manifest_parse_failure", command, "package.json",
+                    "proposed command evidence could not be parsed",
+                    AnalysisStatus.UNREVIEWABLE.value, "analysis_state", "invalid", True,
+                )
+            if script in (proposed.get("scripts") or {}):
+                return CommandResolution(
+                    "WARN", "declared_command", command, "package.json", "script added in patch",
+                    AnalysisStatus.UNKNOWN.value, "proposed_state", "untrusted_until_accepted", True,
+                )
         if not pj or not pj.exists():
-            return CommandResolution("WARN", "command_manifest_missing", command, "package.json", "package.json missing")
-        data = _read_json(pj) or {}
-        return CommandResolution("PASS", None, command, "package.json", "script present") if script in (data.get("scripts") or {}) else CommandResolution("FAIL", "unsupported_command", command, "package.json", "npm script missing")
+            return CommandResolution(
+                "WARN", "command_manifest_missing", command, "package.json", "package.json missing",
+                AnalysisStatus.UNKNOWN.value, "analysis_state", "missing", False,
+            )
+        data, valid = _read_json(pj)
+        if not valid:
+            return CommandResolution(
+                "FAIL", "manifest_parse_failure", command, "package.json",
+                "command evidence could not be parsed",
+                AnalysisStatus.UNREVIEWABLE.value, "analysis_state", "invalid", False,
+            )
+        if script in (data.get("scripts") or {}):
+            return CommandResolution(
+                "PASS", None, command, "package.json", "script present",
+                AnalysisStatus.SUPPORTED.value, "command_manifest", "trusted_preexisting", False,
+            )
+        return CommandResolution(
+            "FAIL", "unsupported_command", command, "package.json", "npm script missing",
+            AnalysisStatus.UNSUPPORTED.value, "command_manifest", "trusted_preexisting", False,
+        )
     if len(parts) >= 3 and parts[0] == "docker" and parts[1] == "compose":
         for name in COMPOSE_FILES:
             p = _safe(root, name)
@@ -128,14 +184,11 @@ def resolve_command(root: str | Path, command: str, *, added_manifests: dict[str
         if re.search(r"@nox\.session(?:\([^)]*\))?\s*\ndef\s+" + re.escape(session) + r"\b", text):
             return CommandResolution("PASS", None, command, "noxfile.py", "session present")
         return CommandResolution("WARN", "command_check_inconclusive", command, "noxfile.py", "dynamic or missing nox session")
-    return CommandResolution("WARN", "command_check_inconclusive", command, message="command parser unsupported")
-
-
-def _read_json_from_text(text: str) -> dict:
-    try:
-        return json.loads(text)
-    except Exception:
-        return {}
+    return CommandResolution(
+        "WARN", "command_check_inconclusive", command, message="command parser unsupported",
+        analysis_status=AnalysisStatus.UNKNOWN.value,
+        evidence_class="analysis_state", trust_status="unknown",
+    )
 
 
 def _simple_taskfile_parse(text: str) -> dict:

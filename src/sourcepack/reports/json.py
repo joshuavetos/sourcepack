@@ -16,17 +16,53 @@ from sourcepack.finding_identity import attach_finding_id
 from sourcepack.remediation import attach_remediation, report_remediation
 
 SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
+PROVENANCE_FIELDS = (
+    "analysis_status",
+    "evidence_class",
+    "trust_status",
+    "source_path",
+    "source_kind",
+    "source_sha256",
+    "baseline_or_proposed",
+    "modified_by_patch",
+    "extraction_method",
+    "evidence_span",
+    "checked_status",
+    "missing_evidence",
+    "required_evidence_class",
+)
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-def normalized_finding(fid: str, severity: str, category: str, message: str, path: str | None = None, evidence: str | None = None, suggestion: str | None = None) -> dict:
+
+def normalized_finding(
+    fid: str,
+    severity: str,
+    category: str,
+    message: str,
+    path: str | None = None,
+    evidence: str | None = None,
+    suggestion: str | None = None,
+    **provenance,
+) -> dict:
     code = normalize_reason_code(fid)
     if severity in {"error", "warn"} and not is_canonical_reason_code(code):
         raise ValueError(f"unknown SourcePack reason code: {fid}")
-    return {"id": code, "severity": severity, "category": category, "path": path, "message": message, "evidence": evidence, "suggestion": suggestion}
-
+    finding = {
+        "id": code,
+        "severity": severity,
+        "category": category,
+        "path": path,
+        "message": message,
+        "evidence": evidence,
+        "suggestion": suggestion,
+    }
+    for field in PROVENANCE_FIELDS:
+        if field in provenance and provenance[field] is not None:
+            finding[field] = provenance[field]
+    return finding
 
 
 def _finding_evidence_item(finding: dict) -> dict:
@@ -36,6 +72,14 @@ def _finding_evidence_item(finding: dict) -> dict:
     observed = finding.get("evidence") if finding.get("evidence") is not None else path
     source_type = str(finding.get("evidence_class") or category or "finding")
     uncertainty = finding.get("message") if finding.get("severity") == "warn" and category == "uncertainty" else None
+    metadata = {
+        "finding_id": fid,
+        "severity": finding.get("severity"),
+        "category": category,
+    }
+    for field in PROVENANCE_FIELDS:
+        if field in finding:
+            metadata[field] = finding.get(field)
     item = make_evidence_item(
         fid or category,
         source_type,
@@ -45,7 +89,7 @@ def _finding_evidence_item(finding: dict) -> dict:
         supports=[fid] if fid else [],
         contradicts=[fid] if finding.get("severity") == "error" and fid else [],
         uncertainty=uncertainty,
-        metadata={"finding_id": fid, "severity": finding.get("severity"), "category": category},
+        metadata=metadata,
     )
     return item.to_dict()
 
@@ -88,6 +132,7 @@ def build_replay_bundle(report: dict, *, generated_at: str | None = None, exit_c
         "environment_metadata": report.get("environment_metadata", {}),
     }
 
+
 def normalize_finding_evidence(finding: dict) -> dict:
     if finding.get("evidence_class"):
         return finding
@@ -97,9 +142,9 @@ def normalize_finding_evidence(finding: dict) -> dict:
     if category == "dependency" or fid in {"unsupported_dependency", "declared_dependency", "dependency_scope_review"}:
         status = "missing" if fid == "unsupported_dependency" else "partially_checked" if fid in {"declared_dependency", "dependency_scope_review"} else "checked"
         return attach_evidence_to_finding(finding, "dependency_manifest", source, status, missing_evidence=source if status == "missing" else None, required_evidence_class="dependency_manifest")
-    if category == "command" or fid in {"unsupported_command", "declared_command", "command_manifest_missing", "command_check_inconclusive", "command_manifest_uncertain"}:
-        status = "missing" if fid in {"unsupported_command", "command_manifest_missing"} else "partially_checked" if fid in {"declared_command", "command_check_inconclusive", "command_manifest_uncertain"} else "checked"
-        return attach_evidence_to_finding(finding, "command_manifest", source, status, missing_evidence=source if status == "missing" else None, required_evidence_class="command_manifest")
+    if category == "command" or fid in {"unsupported_command", "declared_command", "command_manifest_missing", "command_check_inconclusive", "command_manifest_uncertain", "manifest_parse_failure"}:
+        status = "missing" if fid in {"unsupported_command", "command_manifest_missing"} else "partially_checked" if fid in {"declared_command", "command_check_inconclusive", "command_manifest_uncertain"} else "unavailable" if fid == "manifest_parse_failure" else "checked"
+        return attach_evidence_to_finding(finding, "command_manifest", source, status, missing_evidence=source if status in {"missing", "unavailable"} else None, required_evidence_class="command_manifest")
     if category == "execution" or fid.startswith("execution_"):
         status = "checked" if fid == "execution_evidence_present" else "unavailable" if fid == "execution_evidence_missing" else "partially_checked"
         return attach_evidence_to_finding(finding, "execution_ledger", source, status, missing_evidence=source if status == "unavailable" else None, required_evidence_class="execution_ledger", supports_claim="local_execution")

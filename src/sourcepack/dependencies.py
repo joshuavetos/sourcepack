@@ -166,13 +166,24 @@ def resolve_python_import(root: str | Path, imported: str, *, added_dependencies
     )
 
 
-def resolve_js_import(root: str | Path, spec: str) -> DependencyResolution:
+def resolve_js_import(
+    root: str | Path,
+    spec: str,
+    *,
+    added_dependencies: set[str] | None = None,
+) -> DependencyResolution:
     root = Path(root)
     pkg = normalize_js_package(spec)
     if pkg.startswith(".") or pkg.startswith("/"):
         return DependencyResolution(
             "PASS", None, spec, "relative import", "local relative import",
             AnalysisStatus.SUPPORTED.value, "current_worktree", "local_observation", False,
+        )
+    normalized_added = {normalize_js_package(dep) for dep in (added_dependencies or set())}
+    if pkg in normalized_added:
+        return DependencyResolution(
+            "WARN", "declared_dependency", pkg, "patch", "dependency added in same patch",
+            AnalysisStatus.UNKNOWN.value, "proposed_state", "untrusted_until_accepted", True,
         )
     declared, invalid = _js_dependency_inventory(root)
     if invalid:

@@ -17,3 +17,11 @@ if _pythonpath:
         os.environ["PYTHONPATH"] = os.pathsep.join([_src_root, *_parts])
 else:
     os.environ["PYTHONPATH"] = _src_root
+
+# Repository policy is authority, so a proposed policy edit cannot govern the
+# same judgment that introduces it. Install the guard before judgment imports
+# resolve_effective_policy by value.
+from . import policy as _policy
+from .policy_authority import install_policy_authority_guard as _install_policy_authority_guard
+
+_install_policy_authority_guard(_policy)

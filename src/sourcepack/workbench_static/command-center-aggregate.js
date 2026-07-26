@@ -51,6 +51,61 @@
     mission.appendChild(section);
   }
 
+  function actionSpec(id) {
+    const specs = {
+      run_review: { label: "Run review", kind: "review" },
+      resolve_findings: { label: "Inspect findings", kind: "view", target: "review" },
+      repair_policy: { label: "Open policy", kind: "view", target: "policy" },
+      create_baseline: { label: "Copy baseline command", kind: "copy", value: "sourcepack baseline ." },
+      refresh_baseline: { label: "Copy baseline command", kind: "copy", value: "sourcepack baseline ." },
+      install_hooks: { label: "Copy hook command", kind: "copy", value: "sourcepack install-hook ." },
+      build_adversarial_runner: { label: "Open lab", kind: "view", target: "lab" },
+      add_integration_adapter: { label: "Open integrations", kind: "view", target: "integrations" },
+      build_improvement_loop: { label: "Open agents", kind: "view", target: "agents" },
+    };
+    return specs[id] || { label: "Inspect", kind: "view", target: "mission" };
+  }
+
+  function priorityRow(item) {
+    const spec = actionSpec(item.id);
+    return `<div class="row"><b>${esc(item.priority || "P?")} · ${esc(item.id || "action")}</b><small>${esc(item.reason || "No reason recorded")}</small><button class="btn command-center-action" data-action-id="${esc(item.id || "")}" style="margin-top:9px">${esc(spec.label)}</button></div>`;
+  }
+
+  async function copyCommand(value) {
+    try {
+      await navigator.clipboard.writeText(value);
+      showToast("Copied: " + value);
+    } catch {
+      showToast("Clipboard unavailable. Command: " + value);
+    }
+  }
+
+  async function dispatchPriorityAction(id) {
+    const spec = actionSpec(id);
+    if (spec.kind === "review") {
+      await runReview();
+      return;
+    }
+    if (spec.kind === "copy") {
+      await copyCommand(spec.value);
+      return;
+    }
+    setView(spec.target);
+  }
+
+  function bindPriorityActions() {
+    document.querySelectorAll(".command-center-action").forEach((button) => {
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          await dispatchPriorityAction(button.dataset.actionId || "");
+        } finally {
+          button.disabled = false;
+        }
+      });
+    });
+  }
+
   function renderCommandCenter() {
     const snapshot = state.commandCenter || {};
     const scores = snapshot.scores || {};
@@ -71,8 +126,9 @@
       .join("");
 
     document.getElementById("command-center-priorities").innerHTML = priorities.length
-      ? priorities.map((item) => row(`${item.priority || "P?"} · ${item.id || "action"}`, item.reason || "No reason recorded")).join("")
+      ? priorities.map(priorityRow).join("")
       : '<p class="empty">No queued actions.</p>';
+    bindPriorityActions();
 
     document.getElementById("capability-mini").innerHTML = capabilities.length
       ? capabilities.map((item) => row(item.surface || item.name || item.id, `${item.status || "UNKNOWN"} · ${item.evidence || "No evidence"}`)).join("")

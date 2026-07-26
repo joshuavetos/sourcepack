@@ -32,6 +32,30 @@ def test_mission_control_uses_live_capabilities_and_activity() -> None:
     assert "Agent Gateway" in text
 
 
+def test_priority_queue_exposes_only_safe_user_actions() -> None:
+    text = CLIENT.read_text(encoding="utf-8")
+
+    for token in (
+        "dispatchPriorityAction",
+        "bindPriorityActions",
+        "runReview()",
+        'setView(spec.target)',
+        'navigator.clipboard.writeText(value)',
+        'sourcepack baseline .',
+        'sourcepack install-hook .',
+    ):
+        assert token in text
+
+    for forbidden in (
+        "/api/command-center/v1/action",
+        "exec(",
+        "spawn(",
+        "subprocess",
+        "shell=True",
+    ):
+        assert forbidden not in text
+
+
 def test_mission_control_preserves_single_snapshot_boundary() -> None:
     text = CLIENT.read_text(encoding="utf-8")
 

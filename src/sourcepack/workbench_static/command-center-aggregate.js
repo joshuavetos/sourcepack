@@ -33,6 +33,71 @@
     delete state.error;
   }
 
+  function statusClass(status) {
+    if (status === "LIVE") return "live";
+    if (["READY", "PARTIAL", "NEEDS_SETUP", "DEGRADED"].includes(status)) return "partial";
+    return "planned";
+  }
+
+  function ensureMissionControlPanels() {
+    const mission = document.getElementById("view-mission");
+    if (!mission || document.getElementById("command-center-intelligence")) return;
+    const section = document.createElement("section");
+    section.id = "command-center-intelligence";
+    section.className = "grid2";
+    section.innerHTML = `
+      <article class="panel"><h3>Operational scores</h3><div class="grid2" id="command-center-scores"></div></article>
+      <article class="panel"><h3>Priority queue</h3><div class="list" id="command-center-priorities"></div></article>`;
+    mission.appendChild(section);
+  }
+
+  function renderCommandCenter() {
+    const snapshot = state.commandCenter || {};
+    const scores = snapshot.scores || {};
+    const priorities = Array.isArray(snapshot.priority_actions) ? snapshot.priority_actions : [];
+    const capabilities = Array.isArray(snapshot.capabilities) ? snapshot.capabilities : [];
+    const activity = Array.isArray(snapshot.activity) ? snapshot.activity : [];
+
+    ensureMissionControlPanels();
+
+    const scoreNames = [
+      ["Trust", scores.trust],
+      ["Automation", scores.automation],
+      ["Product breadth", scores.product_breadth],
+      ["Report depth", scores.report_depth],
+    ];
+    document.getElementById("command-center-scores").innerHTML = scoreNames
+      .map(([name, value]) => row(name, `${Number(value || 0)} / 100`))
+      .join("");
+
+    document.getElementById("command-center-priorities").innerHTML = priorities.length
+      ? priorities.map((item) => row(`${item.priority || "P?"} · ${item.id || "action"}`, item.reason || "No reason recorded")).join("")
+      : '<p class="empty">No queued actions.</p>';
+
+    document.getElementById("capability-mini").innerHTML = capabilities.length
+      ? capabilities.map((item) => row(item.surface || item.name || item.id, `${item.status || "UNKNOWN"} · ${item.evidence || "No evidence"}`)).join("")
+      : '<p class="empty">No capability state available.</p>';
+
+    document.getElementById("timeline").innerHTML = activity.length
+      ? activity.map((item) => `<div class="event"><span class="dot" style="background:var(--cyan)"></span><div><b>${esc(item.type || "event")}</b><small>${esc(item.message || "")}</small></div><time>snapshot</time></div>`).join("")
+      : '<p class="empty">No activity recorded.</p>';
+
+    const agentModules = capabilities
+      .filter((item) => ["Agent Gateway", "Mission Control"].includes(item.surface))
+      .map((item) => module(item.name, item.status, item.evidence, statusClass(item.status)));
+    if (agentModules.length) document.getElementById("agent-modules").innerHTML = agentModules.join("");
+
+    const labModules = capabilities
+      .filter((item) => item.surface === "Adversarial Lab")
+      .map((item) => module(item.name, item.status, item.evidence, statusClass(item.status)));
+    if (labModules.length) document.getElementById("lab-modules").innerHTML = labModules.join("");
+
+    const integrationModules = capabilities
+      .filter((item) => item.surface === "Integration Hub")
+      .map((item) => module(item.name, item.status, item.evidence, statusClass(item.status)));
+    if (integrationModules.length) document.getElementById("integration-modules").innerHTML = integrationModules.join("");
+  }
+
   loadAll = async function loadCommandCenterSnapshot() {
     const refresh = document.getElementById("refresh");
     refresh.disabled = true;
@@ -40,6 +105,7 @@
       const payload = await api(SNAPSHOT_ROUTE);
       mapSnapshot(payload.snapshot || {});
       render();
+      renderCommandCenter();
     } catch (error) {
       state.error = error.message;
       render();

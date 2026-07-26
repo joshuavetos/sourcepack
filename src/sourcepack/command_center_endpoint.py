@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 COMMAND_CENTER_ROUTE = "/api/command-center/v1/snapshot"
 COMMAND_CENTER_CLIENT = "/command-center-aggregate.js"
+WORKBENCH_RELEASE_MARKER = "<!-- SourcePack Workbench -->"
 _INSTALL_MARKER = "_sourcepack_command_center_route_installed"
 
 
@@ -58,9 +59,10 @@ def install_command_center_route(workbench_module: ModuleType | None = None) -> 
             return original_serve_static(self, requested)
         index_path = workbench_module.STATIC_ROOT / "index.html"
         body = index_path.read_text(encoding="utf-8")
-        marker = f'<script src="{COMMAND_CENTER_CLIENT}"></script>'
-        if marker not in body:
-            body = body.replace("</body>", f"{marker}\n</body>")
+        client_marker = f'<script src="{COMMAND_CENTER_CLIENT}"></script>'
+        injected = f"{WORKBENCH_RELEASE_MARKER}\n{client_marker}"
+        if client_marker not in body:
+            body = body.replace("</body>", f"{injected}\n</body>")
         encoded = body.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")

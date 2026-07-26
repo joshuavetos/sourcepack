@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from sourcepack.command_center_endpoint import (
+    COMMAND_CENTER_CLIENT,
     COMMAND_CENTER_ROUTE,
     install_command_center_route,
 )
@@ -12,12 +14,16 @@ from sourcepack.command_center_endpoint import (
 
 class _FakeHandler:
     original_calls = 0
+    original_static_calls = 0
 
     def __init__(self, path: str, authorized: bool = True):
         self.path = path
         self.repo_root = Path(".")
         self.authorized = authorized
         self.sent = None
+        self.response_status = None
+        self.response_headers: dict[str, str] = {}
+        self.wfile = BytesIO()
 
     def _require_api_token(self) -> bool:
         return self.authorized
@@ -25,15 +31,27 @@ class _FakeHandler:
     def _send_json(self, status: int, payload: dict) -> None:
         self.sent = (status, payload)
 
+    def send_response(self, status: int) -> None:
+        self.response_status = status
+
+    def send_header(self, name: str, value: str) -> None:
+        self.response_headers[name] = value
+
+    def end_headers(self) -> None:
+        return None
+
     def do_GET(self) -> None:
         type(self).original_calls += 1
 
+    def _serve_static(self, requested: str) -> None:
+        type(self).original_static_calls += 1
 
-def _module():
+
+def _module(static_root: Path | None = None):
     class Handler(_FakeHandler):
         pass
 
-    return SimpleNamespace(WorkbenchHandler=Handler)
+    return SimpleNamespace(WorkbenchHandler=Handler, STATIC_ROOT=static_root or Path("."))
 
 
 def test_installed_route_returns_authenticated_snapshot() -> None:
@@ -74,11 +92,38 @@ def test_non_command_center_route_preserves_original_handler() -> None:
     assert module.WorkbenchHandler.original_calls == before + 1
 
 
+def test_index_injects_aggregate_client_once(tmp_path: Path) -> None:
+    (tmp_path / "index.html").write_text("<body>Command Center</body>", encoding="utf-8")
+    module = _module(tmp_path)
+    install_command_center_route(module)
+    handler = module.WorkbenchHandler("/")
+
+    handler._serve_static("/")
+
+    body = handler.wfile.getvalue().decode("utf-8")
+    assert handler.response_status == 200
+    assert body.count(f'<script src="{COMMAND_CENTER_CLIENT}"></script>') == 1
+    assert body.endswith("</body>")
+
+
+def test_non_index_asset_preserves_original_static_handler() -> None:
+    module = _module()
+    install_command_center_route(module)
+    handler = module.WorkbenchHandler("/app.css")
+
+    before = module.WorkbenchHandler.original_static_calls
+    handler._serve_static("/app.css")
+
+    assert module.WorkbenchHandler.original_static_calls == before + 1
+
+
 def test_installation_is_idempotent() -> None:
     module = _module()
     install_command_center_route(module)
-    first = module.WorkbenchHandler.do_GET
+    first_get = module.WorkbenchHandler.do_GET
+    first_static = module.WorkbenchHandler._serve_static
 
     install_command_center_route(module)
 
-    assert module.WorkbenchHandler.do_GET is first
+    assert module.WorkbenchHandler.do_GET is first_get
+    assert module.WorkbenchHandler._serve_static is first_static

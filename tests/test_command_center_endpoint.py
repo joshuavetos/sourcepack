@@ -8,6 +8,7 @@ from unittest.mock import patch
 from sourcepack.command_center_endpoint import (
     COMMAND_CENTER_CLIENT,
     COMMAND_CENTER_ROUTE,
+    WORKBENCH_RELEASE_MARKER,
     install_command_center_route,
 )
 
@@ -103,6 +104,8 @@ def test_index_injects_aggregate_client_once(tmp_path: Path) -> None:
     body = handler.wfile.getvalue().decode("utf-8")
     assert handler.response_status == 200
     assert body.count(f'<script src="{COMMAND_CENTER_CLIENT}"></script>') == 1
+    assert body.count(WORKBENCH_RELEASE_MARKER) == 1
+    assert "SourcePack Workbench" in body
     assert body.endswith("</body>")
 
 

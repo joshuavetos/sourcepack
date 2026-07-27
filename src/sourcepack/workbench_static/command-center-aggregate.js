@@ -51,24 +51,11 @@
     mission.appendChild(section);
   }
 
-  function actionSpec(id) {
-    const specs = {
-      run_review: { label: "Run review", kind: "review" },
-      resolve_findings: { label: "Inspect findings", kind: "view", target: "review" },
-      repair_policy: { label: "Open policy", kind: "view", target: "policy" },
-      create_baseline: { label: "Copy baseline command", kind: "copy", value: "sourcepack baseline ." },
-      refresh_baseline: { label: "Copy baseline command", kind: "copy", value: "sourcepack baseline ." },
-      install_hooks: { label: "Copy hook command", kind: "copy", value: "sourcepack install-hook ." },
-      build_adversarial_runner: { label: "Open lab", kind: "view", target: "lab" },
-      add_integration_adapter: { label: "Open integrations", kind: "view", target: "integrations" },
-      build_improvement_loop: { label: "Open agents", kind: "view", target: "agents" },
-    };
-    return specs[id] || { label: "Inspect", kind: "view", target: "mission" };
-  }
-
   function priorityRow(item) {
-    const spec = actionSpec(item.id);
-    return `<div class="row"><b>${esc(item.priority || "P?")} · ${esc(item.id || "action")}</b><small>${esc(item.reason || "No reason recorded")}</small><button class="btn command-center-action" data-action-id="${esc(item.id || "")}" style="margin-top:9px">${esc(spec.label)}</button></div>`;
+    const label = item.label || "Unavailable action";
+    const supported = ["run_review", "copy_command", "navigate"].includes(item.action_type);
+    const disabled = supported ? "" : " disabled";
+    return `<div class="row"><b>${esc(item.priority || "P?")} · ${esc(item.id || "action")}</b><small>${esc(item.reason || "No reason recorded")}</small><button class="btn command-center-action" data-action-id="${esc(item.id || "")}" style="margin-top:9px"${disabled}>${esc(label)}</button></div>`;
   }
 
   async function copyCommand(value) {
@@ -80,25 +67,34 @@
     }
   }
 
-  async function dispatchPriorityAction(id) {
-    const spec = actionSpec(id);
-    if (spec.kind === "review") {
+  async function dispatchPriorityAction(item) {
+    if (item.action_type === "run_review") {
       await runReview();
       return;
     }
-    if (spec.kind === "copy") {
-      await copyCommand(spec.value);
+    if (item.action_type === "copy_command" && item.command) {
+      await copyCommand(item.command);
       return;
     }
-    setView(spec.target);
+    if (item.action_type === "navigate" && item.target_surface) {
+      setView(item.target_surface);
+      return;
+    }
+    showToast("Action unavailable: unsupported snapshot metadata");
   }
 
-  function bindPriorityActions() {
+  function bindPriorityActions(priorities) {
+    const actionsById = new Map(priorities.map((item) => [item.id, item]));
     document.querySelectorAll(".command-center-action").forEach((button) => {
       button.addEventListener("click", async () => {
+        const item = actionsById.get(button.dataset.actionId || "");
+        if (!item) {
+          showToast("Action unavailable: priority metadata missing");
+          return;
+        }
         button.disabled = true;
         try {
-          await dispatchPriorityAction(button.dataset.actionId || "");
+          await dispatchPriorityAction(item);
         } finally {
           button.disabled = false;
         }
@@ -128,7 +124,7 @@
     document.getElementById("command-center-priorities").innerHTML = priorities.length
       ? priorities.map(priorityRow).join("")
       : '<p class="empty">No queued actions.</p>';
-    bindPriorityActions();
+    bindPriorityActions(priorities);
 
     document.getElementById("capability-mini").innerHTML = capabilities.length
       ? capabilities.map((item) => row(item.surface || item.name || item.id, `${item.status || "UNKNOWN"} · ${item.evidence || "No evidence"}`)).join("")

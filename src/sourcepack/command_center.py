@@ -33,6 +33,38 @@ class Capability:
         }
 
 
+@dataclass(frozen=True)
+class PriorityActionSpec:
+    label: str
+    action_type: str
+    command: str | None = None
+    target_surface: str | None = None
+
+    def apply(self, *, action_id: str, priority: str, reason: str) -> dict[str, Any]:
+        return {
+            "id": action_id,
+            "priority": priority,
+            "label": self.label,
+            "action_type": self.action_type,
+            "command": self.command,
+            "target_surface": self.target_surface,
+            "reason": reason,
+        }
+
+
+_PRIORITY_ACTION_SPECS: dict[str, PriorityActionSpec] = {
+    "run_review": PriorityActionSpec("Run review", "run_review"),
+    "resolve_findings": PriorityActionSpec("Inspect findings", "navigate", target_surface="review"),
+    "repair_policy": PriorityActionSpec("Open policy", "navigate", target_surface="policy"),
+    "create_baseline": PriorityActionSpec("Copy baseline command", "copy_command", command="sourcepack baseline ."),
+    "refresh_baseline": PriorityActionSpec("Copy baseline command", "copy_command", command="sourcepack baseline ."),
+    "install_hooks": PriorityActionSpec("Copy hook command", "copy_command", command="sourcepack install-hook ."),
+    "build_adversarial_runner": PriorityActionSpec("Open lab", "navigate", target_surface="lab"),
+    "add_integration_adapter": PriorityActionSpec("Open integrations", "navigate", target_surface="integrations"),
+    "build_improvement_loop": PriorityActionSpec("Open agents", "navigate", target_surface="agents"),
+}
+
+
 def _status_value(payload: dict[str, Any], key: str, default: Any = None) -> Any:
     status = payload.get("status")
     return status.get(key, default) if isinstance(status, dict) else default
@@ -177,30 +209,44 @@ def _score(
     }
 
 
+def _priority_action(*, action_id: str, priority: str, reason: str) -> dict[str, Any]:
+    try:
+        spec = _PRIORITY_ACTION_SPECS[action_id]
+    except KeyError as exc:
+        raise ValueError(f"Unknown Command Center priority action: {action_id}") from exc
+    return spec.apply(action_id=action_id, priority=priority, reason=reason)
+
+
 def _priority_actions(
     capabilities: list[Capability],
     *,
     report: dict[str, Any] | None,
     baseline: dict[str, Any],
     policy: dict[str, Any],
-) -> list[dict[str, str]]:
-    actions: list[dict[str, str]] = []
+) -> list[dict[str, Any]]:
+    queued: list[tuple[str, str, str]] = []
     if baseline.get("state") == "missing":
-        actions.append({"priority": "P0", "id": "create_baseline", "reason": "No trusted repository baseline exists."})
+        queued.append(("P0", "create_baseline", "No trusted repository baseline exists."))
     elif baseline.get("state") == "stale":
-        actions.append({"priority": "P0", "id": "refresh_baseline", "reason": "The trusted baseline is stale."})
+        queued.append(("P0", "refresh_baseline", "The trusted baseline is stale."))
     if policy.get("resolution_status") != "PASS":
-        actions.append({"priority": "P0", "id": "repair_policy", "reason": "Policy authority did not resolve successfully."})
+        queued.append(("P0", "repair_policy", "Policy authority did not resolve successfully."))
     if report is None:
-        actions.append({"priority": "P1", "id": "run_review", "reason": "No canonical patch review is available."})
+        queued.append(("P1", "run_review", "No canonical patch review is available."))
     elif report.get("verdict") in {"FAIL", "WARN"}:
-        actions.append({"priority": "P1", "id": "resolve_findings", "reason": f"Latest canonical verdict is {report.get('verdict')}."})
+        queued.append(("P1", "resolve_findings", f"Latest canonical verdict is {report.get('verdict')}."))
 
+    queued_ids = {action_id for _, action_id, _ in queued}
     for capability in capabilities:
-        if capability.action and capability.action not in {item["id"] for item in actions}:
+        if capability.action and capability.action not in queued_ids:
             priority = "P2" if capability.status in {"PARTIAL", "READY_TO_BUILD"} else "P3"
-            actions.append({"priority": priority, "id": capability.action, "reason": capability.evidence})
-    return actions[:8]
+            queued.append((priority, capability.action, capability.evidence))
+            queued_ids.add(capability.action)
+
+    return [
+        _priority_action(action_id=action_id, priority=priority, reason=reason)
+        for priority, action_id, reason in queued[:8]
+    ]
 
 
 def build_command_center_snapshot(

@@ -32,21 +32,26 @@ def test_mission_control_uses_live_capabilities_and_activity() -> None:
     assert "Agent Gateway" in text
 
 
-def test_priority_queue_exposes_only_safe_user_actions() -> None:
+def test_priority_queue_dispatches_only_backend_owned_safe_actions() -> None:
     text = CLIENT.read_text(encoding="utf-8")
 
     for token in (
-        "dispatchPriorityAction",
-        "bindPriorityActions",
-        "runReview()",
-        'setView(spec.target)',
-        'navigator.clipboard.writeText(value)',
-        'sourcepack baseline .',
-        'sourcepack install-hook .',
+        "dispatchPriorityAction(item)",
+        "bindPriorityActions(priorities)",
+        'item.action_type === "run_review"',
+        'item.action_type === "copy_command"',
+        'item.action_type === "navigate"',
+        "item.command",
+        "item.target_surface",
+        "navigator.clipboard.writeText(value)",
+        "unsupported snapshot metadata",
     ):
         assert token in text
 
     for forbidden in (
+        "function actionSpec",
+        "sourcepack baseline .",
+        "sourcepack install-hook .",
         "/api/command-center/v1/action",
         "exec(",
         "spawn(",

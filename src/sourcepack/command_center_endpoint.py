@@ -82,6 +82,32 @@ def _validate_report_error_derivations(snapshot: dict[str, Any]) -> None:
         raise ValueError("Command Center terminal error activity does not match report_error")
 
 
+def _validate_score_derivations(snapshot: dict[str, Any]) -> None:
+    """Reject displayed scores that disagree with the canonical scoring model."""
+    from .command_center import _capabilities, _score
+
+    artifacts = snapshot["artifacts"]
+    baseline = artifacts["baseline"]
+    policy = artifacts["policy"]
+    status = artifacts["status"]
+    report = artifacts["report"]
+    capabilities = _capabilities(
+        baseline=baseline,
+        policy=policy,
+        report=report,
+        status=status,
+    )
+    expected_scores = _score(
+        baseline=baseline,
+        policy=policy,
+        report=report,
+        status=status,
+        capabilities=capabilities,
+    )
+    if snapshot["scores"] != expected_scores:
+        raise ValueError("Command Center scores do not match the canonical scoring model")
+
+
 def command_center_payload(repo: str | Path) -> dict[str, Any]:
     """Build and validate the canonical Command Center snapshot."""
     from .command_center import build_command_center_snapshot
@@ -92,6 +118,7 @@ def command_center_payload(repo: str | Path) -> dict[str, Any]:
         validate_command_center_snapshot(snapshot)
         _validate_snapshot_derivations(snapshot)
         _validate_report_error_derivations(snapshot)
+        _validate_score_derivations(snapshot)
         return {
             "ok": True,
             "status": "success",

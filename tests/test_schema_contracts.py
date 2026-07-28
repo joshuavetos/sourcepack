@@ -218,6 +218,32 @@ def test_semantic_resolver_relationships_reject_impossible_combinations(tmp_path
         assert run_cli(["schema", "validate", "effective-policy.v1", _write(tmp_path / f"semantic-{index}.json", artifact)]) == 5
 
 
+def test_policy_authority_error_and_metadata_are_bidirectional(tmp_path: Path):
+    artifact = _independent_policy()
+    artifact.update({
+        "resolution_status": "FAIL",
+        "errors": ["repository_policy_modified_in_proposed_state"],
+        "rejected_weakening_attempts": [{"rule": "repository_policy_authority", "path": ".sourcepack/policy.json", "comparison_method": "trusted_prechange_policy_only", "reason": "proposed policy cannot govern itself"}],
+        "prechange_policy_authority": {"status": "FAIL", "reason": "repository_policy_modified_in_proposed_state", "changed_paths": [".sourcepack/policy.json"], "required_workflow": "accept the policy change separately"},
+    })
+    artifact["repository_policy_source"].update({"authority_basis": "trusted_prechange_state", "proposed_change_status": "rejected_for_current_judgment", "proposed_change_paths": [".sourcepack/policy.json"]})
+    assert run_cli(["schema", "validate", "effective-policy.v1", _write(tmp_path / "authority-complete.json", artifact)]) == 0
+
+    missing_metadata = json.loads(json.dumps(artifact))
+    del missing_metadata["prechange_policy_authority"]
+    for key in ("authority_basis", "proposed_change_status", "proposed_change_paths"):
+        del missing_metadata["repository_policy_source"][key]
+    assert run_cli(["schema", "validate", "effective-policy.v1", _write(tmp_path / "authority-missing.json", missing_metadata)]) == 5
+
+    pass_with_metadata = json.loads(json.dumps(artifact))
+    pass_with_metadata.update({"resolution_status": "PASS", "errors": [], "rejected_weakening_attempts": []})
+    assert run_cli(["schema", "validate", "effective-policy.v1", _write(tmp_path / "authority-pass.json", pass_with_metadata)]) == 5
+
+    partial_metadata = _independent_policy()
+    partial_metadata["repository_policy_source"]["authority_basis"] = "trusted_prechange_state"
+    assert run_cli(["schema", "validate", "effective-policy.v1", _write(tmp_path / "authority-partial.json", partial_metadata)]) == 5
+
+
 def test_semantic_organization_status_error_relationships_are_bidirectional(tmp_path: Path, capsys):
     invalid_source = {"supplied": True, "path": "bad.json", "resolved_path": "bad.json"}
     cases = [

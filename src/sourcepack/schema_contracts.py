@@ -170,6 +170,13 @@ def _semantic_errors(instance: Any) -> list[dict[str, str]]:
     authority_attempts = [item for item in weakening if isinstance(item, dict) and item.get("rule") == "repository_policy_authority"]
     if bool(authority_attempts) != authority_error:
         add("authority_error_mismatch", "/rejected_weakening_attempts", "policy-authority rejection and its proposed-state attempts are emitted together")
+    authority_record = "prechange_policy_authority" in instance
+    repo_source = instance.get("repository_policy_source") if isinstance(instance.get("repository_policy_source"), dict) else {}
+    authority_source_field_count = sum(key in repo_source for key in ("authority_basis", "proposed_change_status", "proposed_change_paths"))
+    if authority_record != authority_error:
+        add("authority_metadata_mismatch", "/prechange_policy_authority", "policy-authority error and prechange authority metadata are emitted together")
+    if (authority_source_field_count == 3) != authority_error or authority_source_field_count not in {0, 3}:
+        add("authority_metadata_mismatch", "/repository_policy_source", "policy-authority error and repository authority source metadata are emitted together")
     org_status = instance.get("organization_policy_status")
     org_mode = instance.get("organization_policy_mode")
     org_source = instance.get("organization_policy_source") if isinstance(instance.get("organization_policy_source"), dict) else {}
@@ -203,7 +210,7 @@ def _semantic_errors(instance: Any) -> list[dict[str, str]]:
             add("organization_status_resolution_mismatch", "/resolution_status", "invalid organization policy status emits FAIL")
         if not expected or not exclusive:
             add("organization_status_error_mismatch", "/errors", "organization failure status has only its matching canonical error family")
-    repo = instance.get("repository_policy_source") if isinstance(instance.get("repository_policy_source"), dict) else {}
+    repo = repo_source
     repo_status, repo_hash = repo.get("status"), instance.get("repository_policy_hash")
     repository_error = any(isinstance(item, str) and item.startswith("repository_policy_config_") for item in errors)
     if repo_status == "absent":

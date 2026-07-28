@@ -45,6 +45,13 @@ class CommandCenterStaticTests(unittest.TestCase):
                 self.assertIn(route, self.html)
         self.assertIn("X-SourcePack-Token", self.html)
 
+    def test_endpoint_payloads_have_dedicated_renderers(self) -> None:
+        for element_id in ("policy-studio", "policy-raw", "replay-theater", "replay-raw", "override-list", "raw-systems", "systems-raw"):
+            with self.subTest(element_id=element_id):
+                self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn("renderCommandCenterEndpoints(policyRes, baselineRes, replayRes, overridesRes, statusRes, overviewRes, reportRes)", self.html)
+        self.assertIn("JSON.stringify({status: statusRes, baseline: baselineRes, overview: overviewRes, report: reportRes}", self.html)
+
     def test_planned_integrations_are_not_presented_as_live(self) -> None:
         self.assertIn("READY TO BUILD", self.html)
         self.assertIn("PLANNED", self.html)

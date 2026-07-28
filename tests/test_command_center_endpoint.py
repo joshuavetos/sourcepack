@@ -5,10 +5,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from sourcepack.command_center_endpoint import (
     COMMAND_CENTER_CLIENT,
     COMMAND_CENTER_ROUTE,
     WORKBENCH_RELEASE_MARKER,
+    _validate_snapshot_derivations,
     command_center_handler,
     install_command_center_route,
 )
@@ -54,6 +57,32 @@ def _module(static_root: Path | None = None):
         pass
 
     return SimpleNamespace(WorkbenchHandler=Handler, STATIC_ROOT=static_root or Path("."))
+
+
+def _snapshot() -> dict:
+    return {
+        "posture": {
+            "verdict": "WARN",
+            "baseline_state": "present",
+            "policy_resolution_status": "PASS",
+            "automatic_mode_enabled": True,
+            "finding_count": 2,
+            "blocker_count": 1,
+            "warning_count": 1,
+        },
+        "artifacts": {
+            "baseline": {"state": "present"},
+            "policy": {"resolution_status": "PASS"},
+            "status": {"status": {"automatic_mode_enabled": True}},
+            "report": {
+                "verdict": "WARN",
+                "findings": [{"id": "f1"}, {"id": "f2"}],
+                "blockers": [{"id": "b1"}],
+                "warnings": [{"id": "w1"}],
+            },
+            "report_error": None,
+        },
+    }
 
 
 def test_handler_factory_returns_explicit_subclass(tmp_path: Path) -> None:
@@ -104,6 +133,51 @@ def test_non_command_center_route_delegates_to_base_handler() -> None:
     handler.do_GET()
 
     assert module.WorkbenchHandler.original_calls == before + 1
+
+
+def test_posture_derivations_match_embedded_artifacts() -> None:
+    _validate_snapshot_derivations(_snapshot())
+
+
+def test_posture_rejects_report_verdict_drift() -> None:
+    snapshot = _snapshot()
+    snapshot["posture"]["verdict"] = "PASS"
+
+    with pytest.raises(ValueError, match="verdict does not match canonical report"):
+        _validate_snapshot_derivations(snapshot)
+
+
+def test_posture_rejects_report_count_drift() -> None:
+    snapshot = _snapshot()
+    snapshot["posture"]["finding_count"] = 1
+
+    with pytest.raises(ValueError, match="finding_count does not match canonical report"):
+        _validate_snapshot_derivations(snapshot)
+
+
+def test_posture_rejects_artifact_state_drift() -> None:
+    snapshot = _snapshot()
+    snapshot["posture"]["baseline_state"] = "stale"
+
+    with pytest.raises(ValueError, match="baseline_state does not match embedded artifacts"):
+        _validate_snapshot_derivations(snapshot)
+
+
+def test_posture_without_report_requires_null_verdict_and_zero_counts() -> None:
+    snapshot = _snapshot()
+    snapshot["artifacts"]["report"] = None
+    snapshot["posture"].update(
+        verdict=None,
+        finding_count=0,
+        blocker_count=0,
+        warning_count=0,
+    )
+
+    _validate_snapshot_derivations(snapshot)
+
+    snapshot["posture"]["warning_count"] = 1
+    with pytest.raises(ValueError, match="warning_count does not match canonical report"):
+        _validate_snapshot_derivations(snapshot)
 
 
 def test_index_injects_aggregate_client_once(tmp_path: Path) -> None:

@@ -103,6 +103,25 @@ def _validate_capability_derivations(snapshot: dict[str, Any]) -> None:
         raise ValueError("Command Center capabilities do not match the canonical capability model")
 
 
+def _canonical_priority_actions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    from .command_center import Capability, _priority_actions
+
+    artifacts = snapshot["artifacts"]
+    capabilities = [Capability(**item) for item in _canonical_capabilities(snapshot)]
+    return _priority_actions(
+        capabilities,
+        report=artifacts["report"],
+        baseline=artifacts["baseline"],
+        policy=artifacts["policy"],
+    )
+
+
+def _validate_priority_action_derivations(snapshot: dict[str, Any]) -> None:
+    """Reject priority queues that disagree with the canonical action model."""
+    if snapshot["priority_actions"] != _canonical_priority_actions(snapshot):
+        raise ValueError("Command Center priority actions do not match the canonical action model")
+
+
 def _validate_score_derivations(snapshot: dict[str, Any]) -> None:
     """Reject displayed scores that disagree with the canonical scoring model."""
     from .command_center import Capability, _score
@@ -130,6 +149,7 @@ def command_center_payload(repo: str | Path) -> dict[str, Any]:
         _validate_snapshot_derivations(snapshot)
         _validate_report_error_derivations(snapshot)
         _validate_capability_derivations(snapshot)
+        _validate_priority_action_derivations(snapshot)
         _validate_score_derivations(snapshot)
         return {
             "ok": True,

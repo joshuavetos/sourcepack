@@ -153,6 +153,26 @@ def _restore_proposed_state_provenance(finding: dict, fid: str) -> dict:
     return restored
 
 
+def _restore_analysis_state_provenance(finding: dict, fid: str, source: str) -> dict:
+    restored = dict(finding)
+    source_kind = "dependency_manifest" if fid == "unsupported_dependency" else "command_manifest"
+    restored.update(
+        {
+            "analysis_status": "UNSUPPORTED",
+            "evidence_class": "analysis_state",
+            "trust_status": "no_supporting_evidence",
+            "source_path": finding.get("path"),
+            "source_kind": source_kind,
+            "baseline_or_proposed": "baseline",
+            "modified_by_patch": False,
+            "checked_status": "missing",
+            "missing_evidence": source,
+            "required_evidence_class": source_kind,
+        }
+    )
+    return restored
+
+
 def normalize_finding_evidence(finding: dict) -> dict:
     if finding.get("evidence_class"):
         return finding
@@ -161,11 +181,13 @@ def normalize_finding_evidence(finding: dict) -> dict:
     source = str(finding.get("evidence") or finding.get("path") or category or fid)
     if fid in {"declared_dependency", "declared_command"}:
         return _restore_proposed_state_provenance(finding, fid)
-    if category == "dependency" or fid in {"unsupported_dependency", "dependency_scope_review"}:
-        status = "missing" if fid == "unsupported_dependency" else "partially_checked" if fid == "dependency_scope_review" else "checked"
-        return attach_evidence_to_finding(finding, "dependency_manifest", source, status, missing_evidence=source if status == "missing" else None, required_evidence_class="dependency_manifest")
-    if category == "command" or fid in {"unsupported_command", "command_manifest_missing", "command_check_inconclusive", "command_manifest_uncertain", "manifest_parse_failure"}:
-        status = "missing" if fid in {"unsupported_command", "command_manifest_missing"} else "partially_checked" if fid in {"command_check_inconclusive", "command_manifest_uncertain"} else "unavailable" if fid == "manifest_parse_failure" else "checked"
+    if fid in {"unsupported_dependency", "unsupported_command"}:
+        return _restore_analysis_state_provenance(finding, fid, source)
+    if category == "dependency" or fid == "dependency_scope_review":
+        status = "partially_checked" if fid == "dependency_scope_review" else "checked"
+        return attach_evidence_to_finding(finding, "dependency_manifest", source, status, required_evidence_class="dependency_manifest")
+    if category == "command" or fid in {"command_manifest_missing", "command_check_inconclusive", "command_manifest_uncertain", "manifest_parse_failure"}:
+        status = "missing" if fid == "command_manifest_missing" else "partially_checked" if fid in {"command_check_inconclusive", "command_manifest_uncertain"} else "unavailable" if fid == "manifest_parse_failure" else "checked"
         return attach_evidence_to_finding(finding, "command_manifest", source, status, missing_evidence=source if status in {"missing", "unavailable"} else None, required_evidence_class="command_manifest")
     if category == "execution" or fid.startswith("execution_"):
         status = "checked" if fid == "execution_evidence_present" else "unavailable" if fid == "execution_evidence_missing" else "partially_checked"

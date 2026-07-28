@@ -90,6 +90,14 @@ def test_contract_rejects_unknown_capability_action(tmp_path: Path) -> None:
         validate_command_center_snapshot(snapshot)
 
 
+def test_contract_rejects_action_bound_to_wrong_capability(tmp_path: Path) -> None:
+    snapshot = deepcopy(_snapshot(tmp_path))
+    snapshot["capabilities"][0]["action"] = "build_improvement_loop"
+
+    with pytest.raises(ValueError, match="action does not belong to capability"):
+        validate_command_center_snapshot(snapshot)
+
+
 def test_contract_rejects_unknown_priority_action_id(tmp_path: Path) -> None:
     snapshot = deepcopy(_snapshot(tmp_path))
     snapshot["priority_actions"][0]["id"] = "invent_action"
@@ -118,13 +126,44 @@ def test_contract_rejects_action_type_that_disagrees_with_id(tmp_path: Path) -> 
         validate_command_center_snapshot(snapshot)
 
 
+def test_contract_rejects_wrong_navigation_target_for_action_id(tmp_path: Path) -> None:
+    snapshot = deepcopy(_snapshot(tmp_path))
+    action = next(item for item in snapshot["priority_actions"] if item["id"] == "build_adversarial_runner")
+    action["target_surface"] = "policy"
+
+    with pytest.raises(ValueError, match="command and target do not match action ID"):
+        validate_command_center_snapshot(snapshot)
+
+
+def test_contract_rejects_wrong_command_for_action_id(tmp_path: Path) -> None:
+    snapshot = deepcopy(_snapshot(tmp_path))
+    snapshot["priority_actions"].insert(
+        0,
+        {
+            "id": "create_baseline",
+            "priority": "P0",
+            "label": "Copy baseline command",
+            "action_type": "copy_command",
+            "command": "sourcepack baseline --force .",
+            "target_surface": None,
+            "reason": "No trusted repository baseline exists.",
+        },
+    )
+
+    with pytest.raises(ValueError, match="command and target do not match action ID"):
+        validate_command_center_snapshot(snapshot)
+
+
 def test_contract_rejects_invalid_action_payload(tmp_path: Path) -> None:
     snapshot = deepcopy(_snapshot(tmp_path))
     action = snapshot["priority_actions"][0]
     action["action_type"] = "navigate"
     action["target_surface"] = None
 
-    with pytest.raises(ValueError, match="action type does not match action ID|navigate requires only target_surface"):
+    with pytest.raises(
+        ValueError,
+        match="action type does not match action ID|command and target do not match action ID|navigate requires only target_surface",
+    ):
         validate_command_center_snapshot(snapshot)
 
 

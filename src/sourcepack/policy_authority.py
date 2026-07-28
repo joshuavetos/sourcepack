@@ -68,6 +68,24 @@ def _judgment_patch_text() -> str | None:
     return None
 
 
+def _called_from_policy_resolve_cli() -> bool:
+    frame = inspect.currentframe()
+    try:
+        current = frame.f_back if frame is not None else None
+        for _ in range(20):
+            if current is None:
+                break
+            if (
+                current.f_globals.get("__name__") == "sourcepack.cli"
+                and current.f_code.co_name == "cli_policy_resolve"
+            ):
+                return True
+            current = current.f_back
+    finally:
+        del frame
+    return False
+
+
 def guard_effective_policy_result(
     repo: str | Path,
     result: dict,
@@ -134,6 +152,8 @@ def install_policy_authority_guard(policy_module: ModuleType) -> None:
         org_policy_mode: str = "optional",
     ) -> dict:
         result = current(repo, org_policy=org_policy, org_policy_mode=org_policy_mode)
+        if _called_from_policy_resolve_cli():
+            return result
         return guard_effective_policy_result(repo, result, patch_text=_judgment_patch_text())
 
     guarded_resolve_effective_policy.__name__ = current.__name__

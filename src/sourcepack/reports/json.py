@@ -139,10 +139,20 @@ def normalize_finding_evidence(finding: dict) -> dict:
     fid = str(finding.get("id") or "")
     category = str(finding.get("category") or "")
     source = str(finding.get("evidence") or finding.get("path") or category or fid)
-    if category == "dependency" or fid in {"unsupported_dependency", "declared_dependency", "dependency_scope_review"}:
+    canonical_proposed_state = fid in {"declared_dependency", "declared_command"} and category == "uncertainty"
+    if canonical_proposed_state or fid in {"unsupported_dependency", "unsupported_command"}:
+        # These reason codes carry semantic provenance which is more precise
+        # than their broad dependency/command display category.  Leave them
+        # untouched so attach_finding_id can restore the canonical record.
+        return finding
+    if fid == "declared_dependency":
+        return attach_evidence_to_finding(finding, "dependency_manifest", source, "partially_checked", required_evidence_class="dependency_manifest")
+    if fid == "declared_command":
+        return attach_evidence_to_finding(finding, "command_manifest", source, "partially_checked", required_evidence_class="command_manifest")
+    if category == "dependency" or fid in {"dependency_scope_review"}:
         status = "missing" if fid == "unsupported_dependency" else "partially_checked" if fid in {"declared_dependency", "dependency_scope_review"} else "checked"
         return attach_evidence_to_finding(finding, "dependency_manifest", source, status, missing_evidence=source if status == "missing" else None, required_evidence_class="dependency_manifest")
-    if category == "command" or fid in {"unsupported_command", "declared_command", "command_manifest_missing", "command_check_inconclusive", "command_manifest_uncertain", "manifest_parse_failure"}:
+    if category == "command" or fid in {"command_manifest_missing", "command_check_inconclusive", "command_manifest_uncertain", "manifest_parse_failure"}:
         status = "missing" if fid in {"unsupported_command", "command_manifest_missing"} else "partially_checked" if fid in {"declared_command", "command_check_inconclusive", "command_manifest_uncertain"} else "unavailable" if fid == "manifest_parse_failure" else "checked"
         return attach_evidence_to_finding(finding, "command_manifest", source, status, missing_evidence=source if status in {"missing", "unavailable"} else None, required_evidence_class="command_manifest")
     if category == "execution" or fid.startswith("execution_"):

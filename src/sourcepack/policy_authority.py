@@ -47,7 +47,13 @@ def proposed_policy_paths(repo: str | Path, patch_text: str | None = None) -> tu
     pathspec = ["--", ".sourcepack/policy.json", ".sourcepack/policy"]
     paths.update(_git_paths(root, ["diff", "--name-only", *pathspec]))
     paths.update(_git_paths(root, ["diff", "--cached", "--name-only", *pathspec]))
-    paths.update(_git_paths(root, ["ls-files", "--others", "--exclude-standard", *pathspec]))
+    # A repository's first policy.json has no trusted predecessor to weaken;
+    # it is therefore valid resolver input.  Other untracked policy artifacts
+    # (notably allow records) can affect an existing authority and remain
+    # proposed-state changes.
+    untracked = _git_paths(root, ["ls-files", "--others", "--exclude-standard", *pathspec])
+    untracked.discard(".sourcepack/policy.json")
+    paths.update(untracked)
     return tuple(sorted(paths))
 
 

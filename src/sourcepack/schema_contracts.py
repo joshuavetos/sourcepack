@@ -103,7 +103,7 @@ def effective_policy_schema() -> dict[str, Any]:
             "organization_policy_status": {"type": "string", "enum": ["not_supplied", "required_but_missing", "loaded", "trust_boundary_violation", "invalid"]},
             "organization_policy_source": {"type": "object", "additionalProperties": False, "required": ["supplied", "path"], "properties": {"supplied": {"type": "boolean"}, "path": {"type": ["string", "null"]}, "resolved_path": {"type": "string", "minLength": 1}}},
             "organization_policy_id": {"type": ["string", "null"], "minLength": 1}, "organization_policy_hash": nullable_sha,
-            "repository_policy_source": {"type": "object", "additionalProperties": False, "required": ["path", "status"], "properties": {"path": {"const": ".sourcepack/policy.json"}, "status": {"type": "string", "enum": ["loaded", "absent", "invalid"]}}},
+            "repository_policy_source": {"type": "object", "additionalProperties": False, "required": ["path", "status"], "properties": {"path": {"const": ".sourcepack/policy.json"}, "status": {"type": "string", "enum": ["loaded", "absent", "invalid"]}, "authority_basis": {"const": "trusted_prechange_state"}, "proposed_change_status": {"const": "rejected_for_current_judgment"}, "proposed_change_paths": {"type": "array", "items": _safe_policy_path_schema(), "uniqueItems": True}}},
             "repository_policy_hash": nullable_sha,
             # The runtime intentionally emits a sparse effective map: absent
             # means no effective constraint, while rules is always complete.
@@ -111,10 +111,11 @@ def effective_policy_schema() -> dict[str, Any]:
             "rules": {"type": "object", "additionalProperties": False, "required": rule_names,
                       "properties": {name: _rule_result_schema(rule_values[name]) for name in rule_names}},
             "strengthening_contributions": {"type": "array", "items": {"type": "string", "enum": rule_names}, "uniqueItems": True},
-            "rejected_weakening_attempts": {"type": "array", "items": {"oneOf": [_rule_change_schema(name, rule_values[name]) for name in rule_names]}},
+            "rejected_weakening_attempts": {"type": "array", "items": {"oneOf": [_rule_change_schema(name, rule_values[name]) for name in rule_names] + [{"type": "object", "additionalProperties": False, "required": ["rule", "path", "comparison_method", "reason"], "properties": {"rule": {"const": "repository_policy_authority"}, "path": _safe_policy_path_schema(), "comparison_method": {"const": "trusted_prechange_policy_only"}, "reason": {"type": "string", "minLength": 1}}}]}},
             "conflicts": {"type": "array", "items": _rule_change_schema("package_manager", rule_values["package_manager"])},
             "errors": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": True},
             "effective_policy_id": {"type": "string", "pattern": "^epol_[0-9a-f]{32}$"},
+            "prechange_policy_authority": {"type": "object", "additionalProperties": False, "required": ["status", "reason", "changed_paths", "required_workflow"], "properties": {"status": {"const": "FAIL"}, "reason": {"const": "repository_policy_modified_in_proposed_state"}, "changed_paths": {"type": "array", "items": _safe_policy_path_schema(), "minItems": 1, "uniqueItems": True}, "required_workflow": {"type": "string", "minLength": 1}}},
         },
     }
 
@@ -162,8 +163,13 @@ def _semantic_errors(instance: Any) -> list[dict[str, str]]:
     weakening_error = "repository_policy_weakening_attempt" in errors
     if bool(conflicts) != conflict_error:
         add("conflict_error_mismatch", "/conflicts", "policy_conflict and conflicts are emitted together")
-    if bool(weakening) != weakening_error:
+    authority_error = "repository_policy_modified_in_proposed_state" in errors
+    policy_weakening = [item for item in weakening if isinstance(item, dict) and item.get("rule") != "repository_policy_authority"]
+    if bool(policy_weakening) != weakening_error:
         add("weakening_error_mismatch", "/rejected_weakening_attempts", "repository_policy_weakening_attempt and rejected weakening attempts are emitted together")
+    authority_attempts = [item for item in weakening if isinstance(item, dict) and item.get("rule") == "repository_policy_authority"]
+    if bool(authority_attempts) != authority_error:
+        add("authority_error_mismatch", "/rejected_weakening_attempts", "policy-authority rejection and its proposed-state attempts are emitted together")
     org_status = instance.get("organization_policy_status")
     org_mode = instance.get("organization_policy_mode")
     org_source = instance.get("organization_policy_source") if isinstance(instance.get("organization_policy_source"), dict) else {}

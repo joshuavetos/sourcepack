@@ -3,12 +3,12 @@ from __future__ import annotations
 import urllib.parse
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any
 
 COMMAND_CENTER_ROUTE = "/api/command-center/v1/snapshot"
 COMMAND_CENTER_CLIENT = "/command-center-aggregate.js"
 WORKBENCH_RELEASE_MARKER = "<!-- SourcePack Workbench -->"
-_INSTALL_MARKER = "_sourcepack_command_center_route_installed"
+_INSTALL_MARKER = "_sourcepack_command_center_handler_installed"
 
 
 def command_center_payload(repo: str | Path) -> dict[str, Any]:
@@ -35,49 +35,52 @@ def command_center_payload(repo: str | Path) -> dict[str, Any]:
         }
 
 
+def command_center_handler(base_handler: type[Any], static_root: Path) -> type[Any]:
+    """Return an explicit Workbench handler that owns Command Center behavior."""
+
+    class CommandCenterWorkbenchHandler(base_handler):
+        def do_GET(self) -> None:
+            requested = urllib.parse.urlparse(self.path).path
+            if requested != COMMAND_CENTER_ROUTE:
+                super().do_GET()
+                return
+            if not self._require_api_token():
+                return
+            payload = command_center_payload(self.repo_root)
+            self._send_json(200 if payload.get("ok") else 500, payload)
+
+        def _serve_static(self, requested: str) -> None:
+            if requested not in {"", "/", "/index.html"}:
+                super()._serve_static(requested)
+                return
+            index_path = static_root / "index.html"
+            body = index_path.read_text(encoding="utf-8")
+            client_marker = f'<script src="{COMMAND_CENTER_CLIENT}"></script>'
+            injected = f"{WORKBENCH_RELEASE_MARKER}\n{client_marker}"
+            if client_marker not in body:
+                body = body.replace("</body>", f"{injected}\n</body>")
+            encoded = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+    CommandCenterWorkbenchHandler.__name__ = "CommandCenterWorkbenchHandler"
+    CommandCenterWorkbenchHandler.__qualname__ = "CommandCenterWorkbenchHandler"
+    setattr(CommandCenterWorkbenchHandler, _INSTALL_MARKER, True)
+    return CommandCenterWorkbenchHandler
+
+
 def install_command_center_route(workbench_module: ModuleType | None = None) -> None:
-    """Add the authenticated aggregate route and client without replacing Workbench."""
+    """Install one explicit Command Center handler subclass for Workbench."""
     if workbench_module is None:
         from . import workbench as workbench_module
 
-    handler = workbench_module.WorkbenchHandler
-    if getattr(handler, _INSTALL_MARKER, False):
+    current = workbench_module.WorkbenchHandler
+    if getattr(current, _INSTALL_MARKER, False):
         return
-
-    original_do_get: Callable[..., Any] = handler.do_GET
-    original_serve_static: Callable[..., Any] = handler._serve_static
-
-    def command_center_do_get(self: Any) -> Any:
-        requested = urllib.parse.urlparse(self.path).path
-        if requested != COMMAND_CENTER_ROUTE:
-            return original_do_get(self)
-        if not self._require_api_token():
-            return None
-        payload = command_center_payload(self.repo_root)
-        self._send_json(200 if payload.get("ok") else 500, payload)
-        return None
-
-    def command_center_serve_static(self: Any, requested: str) -> Any:
-        if requested not in {"", "/", "/index.html"}:
-            return original_serve_static(self, requested)
-        index_path = workbench_module.STATIC_ROOT / "index.html"
-        body = index_path.read_text(encoding="utf-8")
-        client_marker = f'<script src="{COMMAND_CENTER_CLIENT}"></script>'
-        injected = f"{WORKBENCH_RELEASE_MARKER}\n{client_marker}"
-        if client_marker not in body:
-            body = body.replace("</body>", f"{injected}\n</body>")
-        encoded = body.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.end_headers()
-        self.wfile.write(encoded)
-        return None
-
-    command_center_do_get.__name__ = original_do_get.__name__
-    command_center_do_get.__doc__ = original_do_get.__doc__
-    command_center_serve_static.__name__ = original_serve_static.__name__
-    command_center_serve_static.__doc__ = original_serve_static.__doc__
-    handler.do_GET = command_center_do_get
-    handler._serve_static = command_center_serve_static
-    setattr(handler, _INSTALL_MARKER, True)
+    workbench_module.WorkbenchHandler = command_center_handler(
+        current,
+        workbench_module.STATIC_ROOT,
+    )

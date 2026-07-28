@@ -27,8 +27,11 @@ def ensure_git_repo(repo: Path):
 
 
 def write_repo_policy(repo: Path, rules: dict):
+    ensure_git_repo(repo)
     (repo / ".sourcepack").mkdir(exist_ok=True)
     (repo / ".sourcepack" / "policy.json").write_text(json.dumps({"schema_version": "sourcepack.policy.v1", "rules": rules}), encoding="utf-8")
+    subprocess.run(["git", "add", ".sourcepack/policy.json"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "trust repository policy"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
 def write_org(path: Path, rules: dict, *, policy_id="engineering-default", schema="sourcepack.org_policy.v1"):

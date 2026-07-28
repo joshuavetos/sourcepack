@@ -97,6 +97,35 @@ class PrechangePolicyAuthorityTests(unittest.TestCase):
             [".sourcepack/policy/allow.jsonl"],
         )
 
+    def test_new_policy_cannot_authorize_accompanying_changes(self) -> None:
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        repo = Path(td.name)
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "sourcepack@example.invalid")
+        _git(repo, "config", "user.name", "SourcePack Tests")
+        (repo / "app.py").write_text("print('accompanying change')\n", encoding="utf-8")
+        policy = repo / ".sourcepack" / "policy.json"
+        policy.parent.mkdir(parents=True)
+        policy.write_text(
+            json.dumps(
+                {
+                    "schema_version": "sourcepack.policy.v1",
+                    "rules": {"protected_paths": []},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = resolve_effective_policy(repo)
+
+        self.assertEqual(result["resolution_status"], "FAIL")
+        self.assertIn(POLICY_AUTHORITY_ERROR, result["errors"])
+        self.assertEqual(
+            result["prechange_policy_authority"]["changed_paths"],
+            [".sourcepack/policy.json"],
+        )
+
     def test_explicit_patch_detects_policy_delete_recreate(self) -> None:
         td, repo = self._repo()
         self.addCleanup(td.cleanup)

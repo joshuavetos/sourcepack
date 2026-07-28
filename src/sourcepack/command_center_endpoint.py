@@ -53,6 +53,35 @@ def _validate_snapshot_derivations(snapshot: dict[str, Any]) -> None:
             raise ValueError(f"Command Center posture {field} does not match canonical report")
 
 
+def _validate_report_error_derivations(snapshot: dict[str, Any]) -> None:
+    """Reject report, report-error, and activity combinations that disagree."""
+    artifacts = snapshot["artifacts"]
+    report = artifacts["report"]
+    report_error = artifacts["report_error"]
+    activity = snapshot["activity"]
+    terminal_error = activity[-1] if activity and activity[-1].get("type") == "error" else None
+
+    if report is not None and report_error is not None:
+        raise ValueError("Command Center cannot expose both a canonical report and report_error")
+
+    if report_error is None:
+        if terminal_error is not None:
+            raise ValueError("Command Center terminal error activity requires report_error")
+        return
+
+    if report is not None:
+        raise ValueError("Command Center report_error requires canonical report to be absent")
+    if terminal_error is None:
+        raise ValueError("Command Center report_error requires terminal error activity")
+
+    error_data = report_error.get("error") if isinstance(report_error, dict) else None
+    expected_message = error_data.get("message") if isinstance(error_data, dict) else None
+    if not isinstance(expected_message, str) or not expected_message:
+        expected_message = "Canonical report unavailable"
+    if terminal_error.get("message") != expected_message:
+        raise ValueError("Command Center terminal error activity does not match report_error")
+
+
 def command_center_payload(repo: str | Path) -> dict[str, Any]:
     """Build and validate the canonical Command Center snapshot."""
     from .command_center import build_command_center_snapshot
@@ -62,6 +91,7 @@ def command_center_payload(repo: str | Path) -> dict[str, Any]:
         snapshot = build_command_center_snapshot(repo)
         validate_command_center_snapshot(snapshot)
         _validate_snapshot_derivations(snapshot)
+        _validate_report_error_derivations(snapshot)
         return {
             "ok": True,
             "status": "success",

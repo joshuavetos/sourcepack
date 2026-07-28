@@ -12,14 +12,17 @@ _INSTALL_MARKER = "_sourcepack_command_center_route_installed"
 
 
 def command_center_payload(repo: str | Path) -> dict[str, Any]:
-    """Build the canonical Command Center snapshot without duplicating state logic."""
+    """Build and validate the canonical Command Center snapshot."""
     from .command_center import build_command_center_snapshot
+    from .command_center_contract import validate_command_center_snapshot
 
     try:
+        snapshot = build_command_center_snapshot(repo)
+        validate_command_center_snapshot(snapshot)
         return {
             "ok": True,
             "status": "success",
-            "snapshot": build_command_center_snapshot(repo),
+            "snapshot": snapshot,
         }
     except Exception:
         return {

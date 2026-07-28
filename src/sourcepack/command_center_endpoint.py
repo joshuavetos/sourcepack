@@ -82,27 +82,38 @@ def _validate_report_error_derivations(snapshot: dict[str, Any]) -> None:
         raise ValueError("Command Center terminal error activity does not match report_error")
 
 
-def _validate_score_derivations(snapshot: dict[str, Any]) -> None:
-    """Reject displayed scores that disagree with the canonical scoring model."""
-    from .command_center import _capabilities, _score
+def _canonical_capabilities(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    from .command_center import _capabilities
 
     artifacts = snapshot["artifacts"]
-    baseline = artifacts["baseline"]
-    policy = artifacts["policy"]
-    status = artifacts["status"]
-    report = artifacts["report"]
-    capabilities = _capabilities(
-        baseline=baseline,
-        policy=policy,
-        report=report,
-        status=status,
-    )
+    return [
+        item.as_dict()
+        for item in _capabilities(
+            baseline=artifacts["baseline"],
+            policy=artifacts["policy"],
+            report=artifacts["report"],
+            status=artifacts["status"],
+        )
+    ]
+
+
+def _validate_capability_derivations(snapshot: dict[str, Any]) -> None:
+    """Reject capability claims that disagree with the canonical capability model."""
+    if snapshot["capabilities"] != _canonical_capabilities(snapshot):
+        raise ValueError("Command Center capabilities do not match the canonical capability model")
+
+
+def _validate_score_derivations(snapshot: dict[str, Any]) -> None:
+    """Reject displayed scores that disagree with the canonical scoring model."""
+    from .command_center import Capability, _score
+
+    artifacts = snapshot["artifacts"]
     expected_scores = _score(
-        baseline=baseline,
-        policy=policy,
-        report=report,
-        status=status,
-        capabilities=capabilities,
+        baseline=artifacts["baseline"],
+        policy=artifacts["policy"],
+        report=artifacts["report"],
+        status=artifacts["status"],
+        capabilities=[Capability(**item) for item in _canonical_capabilities(snapshot)],
     )
     if snapshot["scores"] != expected_scores:
         raise ValueError("Command Center scores do not match the canonical scoring model")
@@ -118,6 +129,7 @@ def command_center_payload(repo: str | Path) -> dict[str, Any]:
         validate_command_center_snapshot(snapshot)
         _validate_snapshot_derivations(snapshot)
         _validate_report_error_derivations(snapshot)
+        _validate_capability_derivations(snapshot)
         _validate_score_derivations(snapshot)
         return {
             "ok": True,

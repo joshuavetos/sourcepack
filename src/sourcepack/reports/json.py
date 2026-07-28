@@ -133,17 +133,39 @@ def build_replay_bundle(report: dict, *, generated_at: str | None = None, exit_c
     }
 
 
+def _restore_proposed_state_provenance(finding: dict, fid: str) -> dict:
+    restored = dict(finding)
+    source_kind = "dependency_manifest" if fid == "declared_dependency" else "command_manifest"
+    source_path = finding.get("path") or ("package.json" if fid == "declared_command" else None)
+    restored.update(
+        {
+            "analysis_status": "UNKNOWN",
+            "evidence_class": "proposed_state",
+            "trust_status": "untrusted_until_accepted",
+            "source_path": source_path,
+            "source_kind": source_kind,
+            "baseline_or_proposed": "proposed",
+            "modified_by_patch": True,
+            "checked_status": "partially_checked",
+            "required_evidence_class": source_kind,
+        }
+    )
+    return restored
+
+
 def normalize_finding_evidence(finding: dict) -> dict:
     if finding.get("evidence_class"):
         return finding
     fid = str(finding.get("id") or "")
     category = str(finding.get("category") or "")
     source = str(finding.get("evidence") or finding.get("path") or category or fid)
-    if category == "dependency" or fid in {"unsupported_dependency", "declared_dependency", "dependency_scope_review"}:
-        status = "missing" if fid == "unsupported_dependency" else "partially_checked" if fid in {"declared_dependency", "dependency_scope_review"} else "checked"
+    if fid in {"declared_dependency", "declared_command"}:
+        return _restore_proposed_state_provenance(finding, fid)
+    if category == "dependency" or fid in {"unsupported_dependency", "dependency_scope_review"}:
+        status = "missing" if fid == "unsupported_dependency" else "partially_checked" if fid == "dependency_scope_review" else "checked"
         return attach_evidence_to_finding(finding, "dependency_manifest", source, status, missing_evidence=source if status == "missing" else None, required_evidence_class="dependency_manifest")
-    if category == "command" or fid in {"unsupported_command", "declared_command", "command_manifest_missing", "command_check_inconclusive", "command_manifest_uncertain", "manifest_parse_failure"}:
-        status = "missing" if fid in {"unsupported_command", "command_manifest_missing"} else "partially_checked" if fid in {"declared_command", "command_check_inconclusive", "command_manifest_uncertain"} else "unavailable" if fid == "manifest_parse_failure" else "checked"
+    if category == "command" or fid in {"unsupported_command", "command_manifest_missing", "command_check_inconclusive", "command_manifest_uncertain", "manifest_parse_failure"}:
+        status = "missing" if fid in {"unsupported_command", "command_manifest_missing"} else "partially_checked" if fid in {"command_check_inconclusive", "command_manifest_uncertain"} else "unavailable" if fid == "manifest_parse_failure" else "checked"
         return attach_evidence_to_finding(finding, "command_manifest", source, status, missing_evidence=source if status in {"missing", "unavailable"} else None, required_evidence_class="command_manifest")
     if category == "execution" or fid.startswith("execution_"):
         status = "checked" if fid == "execution_evidence_present" else "unavailable" if fid == "execution_evidence_missing" else "partially_checked"

@@ -28,6 +28,7 @@ CAPABILITY_STATUSES = (
 ACTION_TYPES = ("run_review", "navigate", "copy_command")
 ACTION_PRIORITIES = ("P0", "P1", "P2", "P3")
 ACTIVITY_TYPES = ("repository", "baseline", "policy", "review", "error")
+REQUIRED_ACTIVITY_SEQUENCE = ("repository", "baseline", "policy", "review")
 VERDICTS = ("PASS", "WARN", "FAIL")
 
 
@@ -148,7 +149,8 @@ def command_center_snapshot_schema() -> dict[str, Any]:
             },
             "activity": {
                 "type": "array",
-                "minItems": 4,
+                "minItems": len(REQUIRED_ACTIVITY_SEQUENCE),
+                "maxItems": len(REQUIRED_ACTIVITY_SEQUENCE) + 1,
                 "items": activity,
             },
             "artifacts": {
@@ -185,6 +187,18 @@ def validate_command_center_snapshot(snapshot: dict[str, Any]) -> None:
         raise ValueError(
             "Invalid Command Center snapshot at /capabilities: capability order must match the canonical registry"
         )
+
+    activity_types = tuple(item["type"] for item in snapshot["activity"])
+    if activity_types[: len(REQUIRED_ACTIVITY_SEQUENCE)] != REQUIRED_ACTIVITY_SEQUENCE:
+        raise ValueError(
+            "Invalid Command Center snapshot at /activity: lifecycle order must be repository, baseline, policy, review"
+        )
+    if len(activity_types) == len(REQUIRED_ACTIVITY_SEQUENCE) + 1 and activity_types[-1] != "error":
+        raise ValueError(
+            "Invalid Command Center snapshot at /activity: only one terminal error event may follow review"
+        )
+    if len(set(activity_types)) != len(activity_types):
+        raise ValueError("Invalid Command Center snapshot at /activity: lifecycle event types must be unique")
 
     actions = snapshot["priority_actions"]
     action_ids = [item["id"] for item in actions]

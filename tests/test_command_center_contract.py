@@ -9,6 +9,7 @@ from sourcepack.command_center import build_command_center_snapshot
 from sourcepack.command_center_contract import (
     CAPABILITY_IDS,
     COMMAND_CENTER_SCHEMA_VERSION,
+    REQUIRED_ACTIVITY_SEQUENCE,
     command_center_snapshot_schema,
     validate_command_center_snapshot,
 )
@@ -48,6 +49,7 @@ def test_generated_snapshot_satisfies_v1_contract(tmp_path: Path) -> None:
 
     assert snapshot["schema_version"] == COMMAND_CENTER_SCHEMA_VERSION
     assert tuple(item["id"] for item in snapshot["capabilities"]) == CAPABILITY_IDS
+    assert tuple(item["type"] for item in snapshot["activity"]) == REQUIRED_ACTIVITY_SEQUENCE
     assert command_center_snapshot_schema()["properties"]["schema_version"] == {
         "const": COMMAND_CENTER_SCHEMA_VERSION
     }
@@ -79,6 +81,38 @@ def test_contract_rejects_invalid_action_payload(tmp_path: Path) -> None:
     action["target_surface"] = None
 
     with pytest.raises(ValueError, match="navigate requires only target_surface"):
+        validate_command_center_snapshot(snapshot)
+
+
+def test_contract_rejects_reordered_activity_lifecycle(tmp_path: Path) -> None:
+    snapshot = deepcopy(_snapshot(tmp_path))
+    snapshot["activity"][1], snapshot["activity"][2] = snapshot["activity"][2], snapshot["activity"][1]
+
+    with pytest.raises(ValueError, match="lifecycle order"):
+        validate_command_center_snapshot(snapshot)
+
+
+def test_contract_allows_one_terminal_error_activity(tmp_path: Path) -> None:
+    snapshot = deepcopy(_snapshot(tmp_path))
+    snapshot["activity"].append({"type": "error", "message": "Canonical report unavailable"})
+
+    validate_command_center_snapshot(snapshot)
+
+
+def test_contract_rejects_duplicate_activity_phase(tmp_path: Path) -> None:
+    snapshot = deepcopy(_snapshot(tmp_path))
+    snapshot["activity"].append({"type": "review", "message": "Duplicate review"})
+
+    with pytest.raises(ValueError, match="terminal error event|unique"):
+        validate_command_center_snapshot(snapshot)
+
+
+def test_contract_rejects_activity_after_terminal_error(tmp_path: Path) -> None:
+    snapshot = deepcopy(_snapshot(tmp_path))
+    snapshot["activity"].append({"type": "error", "message": "Canonical report unavailable"})
+    snapshot["activity"].append({"type": "review", "message": "Late review"})
+
+    with pytest.raises(ValueError, match="too long"):
         validate_command_center_snapshot(snapshot)
 
 

@@ -82,6 +82,46 @@ def _validate_report_error_derivations(snapshot: dict[str, Any]) -> None:
         raise ValueError("Command Center terminal error activity does not match report_error")
 
 
+def _canonical_activity(snapshot: dict[str, Any]) -> list[dict[str, str]]:
+    artifacts = snapshot["artifacts"]
+    report = artifacts["report"]
+    activity = [
+        {
+            "type": "repository",
+            "message": f"Repository loaded at {snapshot['repository']['path']}",
+        },
+        {
+            "type": "baseline",
+            "message": f"Baseline state: {artifacts['baseline'].get('state', 'unknown')}",
+        },
+        {
+            "type": "policy",
+            "message": f"Policy resolution: {artifacts['policy'].get('resolution_status', 'unknown')}",
+        },
+        {
+            "type": "review",
+            "message": f"Latest verdict: {report.get('verdict', 'unavailable') if report else 'unavailable'}",
+        },
+    ]
+    report_error = artifacts["report_error"]
+    if report_error:
+        error_data = report_error.get("error") if isinstance(report_error, dict) else None
+        message = error_data.get("message") if isinstance(error_data, dict) else None
+        activity.append(
+            {
+                "type": "error",
+                "message": str(message or "Canonical report unavailable"),
+            }
+        )
+    return activity
+
+
+def _validate_activity_derivations(snapshot: dict[str, Any]) -> None:
+    """Reject activity messages that disagree with canonical snapshot state."""
+    if snapshot["activity"] != _canonical_activity(snapshot):
+        raise ValueError("Command Center activity does not match canonical snapshot state")
+
+
 def _canonical_capabilities(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     from .command_center import _capabilities
 
@@ -148,6 +188,7 @@ def command_center_payload(repo: str | Path) -> dict[str, Any]:
         validate_command_center_snapshot(snapshot)
         _validate_snapshot_derivations(snapshot)
         _validate_report_error_derivations(snapshot)
+        _validate_activity_derivations(snapshot)
         _validate_capability_derivations(snapshot)
         _validate_priority_action_derivations(snapshot)
         _validate_score_derivations(snapshot)

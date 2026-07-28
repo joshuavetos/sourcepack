@@ -45,7 +45,7 @@ def test_snapshot_exposes_live_capabilities_and_scores(tmp_path):
     assert snapshot["scores"] == {
         "trust": 100,
         "automation": 100,
-        "product_breadth": 56,
+        "product_breadth": 67,
         "report_depth": 100,
     }
     by_id = {item["id"]: item for item in snapshot["capabilities"]}

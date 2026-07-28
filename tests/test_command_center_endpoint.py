@@ -9,6 +9,7 @@ from sourcepack.command_center_endpoint import (
     COMMAND_CENTER_CLIENT,
     COMMAND_CENTER_ROUTE,
     WORKBENCH_RELEASE_MARKER,
+    command_center_handler,
     install_command_center_route,
 )
 
@@ -55,11 +56,23 @@ def _module(static_root: Path | None = None):
     return SimpleNamespace(WorkbenchHandler=Handler, STATIC_ROOT=static_root or Path("."))
 
 
+def test_handler_factory_returns_explicit_subclass(tmp_path: Path) -> None:
+    handler = command_center_handler(_FakeHandler, tmp_path)
+
+    assert issubclass(handler, _FakeHandler)
+    assert handler is not _FakeHandler
+    assert handler.__name__ == "CommandCenterWorkbenchHandler"
+    assert _FakeHandler.do_GET.__name__ == "do_GET"
+    assert _FakeHandler._serve_static.__name__ == "_serve_static"
+
+
 def test_installed_route_returns_authenticated_snapshot() -> None:
     module = _module()
+    original = module.WorkbenchHandler
     install_command_center_route(module)
     handler = module.WorkbenchHandler(COMMAND_CENTER_ROUTE)
 
+    assert issubclass(module.WorkbenchHandler, original)
     with patch(
         "sourcepack.command_center_endpoint.command_center_payload",
         return_value={"ok": True, "status": "success", "snapshot": {"scores": {"trust": 100}}},
@@ -82,7 +95,7 @@ def test_route_rejects_missing_authentication() -> None:
     assert handler.sent is None
 
 
-def test_non_command_center_route_preserves_original_handler() -> None:
+def test_non_command_center_route_delegates_to_base_handler() -> None:
     module = _module()
     install_command_center_route(module)
     handler = module.WorkbenchHandler("/api/status")
@@ -109,7 +122,7 @@ def test_index_injects_aggregate_client_once(tmp_path: Path) -> None:
     assert body.endswith("</body>")
 
 
-def test_non_index_asset_preserves_original_static_handler() -> None:
+def test_non_index_asset_delegates_to_base_static_handler() -> None:
     module = _module()
     install_command_center_route(module)
     handler = module.WorkbenchHandler("/app.css")
@@ -123,10 +136,8 @@ def test_non_index_asset_preserves_original_static_handler() -> None:
 def test_installation_is_idempotent() -> None:
     module = _module()
     install_command_center_route(module)
-    first_get = module.WorkbenchHandler.do_GET
-    first_static = module.WorkbenchHandler._serve_static
+    first_handler = module.WorkbenchHandler
 
     install_command_center_route(module)
 
-    assert module.WorkbenchHandler.do_GET is first_get
-    assert module.WorkbenchHandler._serve_static is first_static
+    assert module.WorkbenchHandler is first_handler

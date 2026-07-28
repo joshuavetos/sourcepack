@@ -25,8 +25,31 @@ CAPABILITY_STATUSES = (
     "READY_TO_BUILD",
     "PLANNED",
 )
+ACTION_IDS = (
+    "run_review",
+    "resolve_findings",
+    "repair_policy",
+    "create_baseline",
+    "refresh_baseline",
+    "install_hooks",
+    "build_adversarial_runner",
+    "add_integration_adapter",
+    "build_improvement_loop",
+)
 ACTION_TYPES = ("run_review", "navigate", "copy_command")
 ACTION_PRIORITIES = ("P0", "P1", "P2", "P3")
+TARGET_SURFACES = ("review", "policy", "lab", "integrations", "agents")
+ACTION_TYPE_BY_ID = {
+    "run_review": "run_review",
+    "resolve_findings": "navigate",
+    "repair_policy": "navigate",
+    "create_baseline": "copy_command",
+    "refresh_baseline": "copy_command",
+    "install_hooks": "copy_command",
+    "build_adversarial_runner": "navigate",
+    "add_integration_adapter": "navigate",
+    "build_improvement_loop": "navigate",
+}
 ACTIVITY_TYPES = ("repository", "baseline", "policy", "review", "error")
 REQUIRED_ACTIVITY_SEQUENCE = ("repository", "baseline", "policy", "review")
 VERDICTS = ("PASS", "WARN", "FAIL")
@@ -38,6 +61,8 @@ def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
 
 def command_center_snapshot_schema() -> dict[str, Any]:
     nullable_string = _nullable({"type": "string"})
+    nullable_action_id = _nullable({"type": "string", "enum": list(ACTION_IDS)})
+    nullable_target_surface = _nullable({"type": "string", "enum": list(TARGET_SURFACES)})
     nullable_object = _nullable({"type": "object"})
     capability = {
         "type": "object",
@@ -49,7 +74,7 @@ def command_center_snapshot_schema() -> dict[str, Any]:
             "surface": {"type": "string", "minLength": 1},
             "status": {"type": "string", "enum": list(CAPABILITY_STATUSES)},
             "evidence": {"type": "string", "minLength": 1},
-            "action": nullable_string,
+            "action": nullable_action_id,
         },
     }
     priority_action = {
@@ -57,12 +82,12 @@ def command_center_snapshot_schema() -> dict[str, Any]:
         "additionalProperties": False,
         "required": ["id", "priority", "label", "action_type", "command", "target_surface", "reason"],
         "properties": {
-            "id": {"type": "string", "minLength": 1},
+            "id": {"type": "string", "enum": list(ACTION_IDS)},
             "priority": {"type": "string", "enum": list(ACTION_PRIORITIES)},
             "label": {"type": "string", "minLength": 1},
             "action_type": {"type": "string", "enum": list(ACTION_TYPES)},
             "command": nullable_string,
-            "target_surface": nullable_string,
+            "target_surface": nullable_target_surface,
             "reason": {"type": "string", "minLength": 1},
         },
     }
@@ -214,6 +239,11 @@ def validate_command_center_snapshot(snapshot: dict[str, Any]) -> None:
         action_type = action["action_type"]
         command = action["command"]
         target_surface = action["target_surface"]
+        expected_action_type = ACTION_TYPE_BY_ID[action["id"]]
+        if action_type != expected_action_type:
+            raise ValueError(
+                f"Invalid Command Center snapshot at /priority_actions/{index}: action type does not match action ID"
+            )
         if action_type == "copy_command" and (not command or target_surface is not None):
             raise ValueError(
                 f"Invalid Command Center snapshot at /priority_actions/{index}: copy_command requires only command"

@@ -50,6 +50,28 @@ ACTION_TYPE_BY_ID = {
     "add_integration_adapter": "navigate",
     "build_improvement_loop": "navigate",
 }
+ACTION_PAYLOAD_BY_ID = {
+    "run_review": (None, None),
+    "resolve_findings": (None, "review"),
+    "repair_policy": (None, "policy"),
+    "create_baseline": ("sourcepack baseline .", None),
+    "refresh_baseline": ("sourcepack baseline .", None),
+    "install_hooks": ("sourcepack install-hook .", None),
+    "build_adversarial_runner": (None, "lab"),
+    "add_integration_adapter": (None, "integrations"),
+    "build_improvement_loop": (None, "agents"),
+}
+CAPABILITY_ACTIONS_BY_ID = {
+    "review": ("run_review",),
+    "baseline": ("create_baseline", "refresh_baseline"),
+    "policy": ("repair_policy",),
+    "hook": ("install_hooks",),
+    "evidence": (),
+    "replay": (),
+    "adversarial": ("build_adversarial_runner",),
+    "integrations": ("add_integration_adapter",),
+    "autonomy": ("build_improvement_loop",),
+}
 ACTIVITY_TYPES = ("repository", "baseline", "policy", "review", "error")
 REQUIRED_ACTIVITY_SEQUENCE = ("repository", "baseline", "policy", "review")
 VERDICTS = ("PASS", "WARN", "FAIL")
@@ -212,6 +234,12 @@ def validate_command_center_snapshot(snapshot: dict[str, Any]) -> None:
         raise ValueError(
             "Invalid Command Center snapshot at /capabilities: capability order must match the canonical registry"
         )
+    for index, capability in enumerate(snapshot["capabilities"]):
+        action_id = capability["action"]
+        if action_id is not None and action_id not in CAPABILITY_ACTIONS_BY_ID[capability["id"]]:
+            raise ValueError(
+                f"Invalid Command Center snapshot at /capabilities/{index}/action: action does not belong to capability"
+            )
 
     activity_types = tuple(item["type"] for item in snapshot["activity"])
     if activity_types[: len(REQUIRED_ACTIVITY_SEQUENCE)] != REQUIRED_ACTIVITY_SEQUENCE:
@@ -240,9 +268,14 @@ def validate_command_center_snapshot(snapshot: dict[str, Any]) -> None:
         command = action["command"]
         target_surface = action["target_surface"]
         expected_action_type = ACTION_TYPE_BY_ID[action["id"]]
+        expected_command, expected_target_surface = ACTION_PAYLOAD_BY_ID[action["id"]]
         if action_type != expected_action_type:
             raise ValueError(
                 f"Invalid Command Center snapshot at /priority_actions/{index}: action type does not match action ID"
+            )
+        if command != expected_command or target_surface != expected_target_surface:
+            raise ValueError(
+                f"Invalid Command Center snapshot at /priority_actions/{index}: command and target do not match action ID"
             )
         if action_type == "copy_command" and (not command or target_surface is not None):
             raise ValueError(

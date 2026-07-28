@@ -63,6 +63,9 @@ jobs:
       - name: README truth tests
         run: pytest -q tests/test_readme_truth.py
 
+      - name: Diagnostic first pytest failure
+        run: pytest -q --tb=short --maxfail=1
+
       - name: Full pytest suite
         run: pytest -q
 

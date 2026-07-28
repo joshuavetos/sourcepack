@@ -11,6 +11,48 @@ WORKBENCH_RELEASE_MARKER = "<!-- SourcePack Workbench -->"
 _INSTALL_MARKER = "_sourcepack_command_center_handler_installed"
 
 
+def _list_count(value: Any) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
+def _validate_snapshot_derivations(snapshot: dict[str, Any]) -> None:
+    """Reject posture fields that disagree with their embedded artifacts."""
+    posture = snapshot["posture"]
+    artifacts = snapshot["artifacts"]
+    baseline = artifacts["baseline"]
+    policy = artifacts["policy"]
+    status = artifacts["status"]
+    report = artifacts["report"]
+
+    status_data = status.get("status") if isinstance(status.get("status"), dict) else {}
+    expected_artifact_fields = {
+        "baseline_state": baseline.get("state"),
+        "policy_resolution_status": policy.get("resolution_status"),
+        "automatic_mode_enabled": bool(status_data.get("automatic_mode_enabled", False)),
+    }
+    for field, expected in expected_artifact_fields.items():
+        if posture.get(field) != expected:
+            raise ValueError(f"Command Center posture {field} does not match embedded artifacts")
+
+    if report is None:
+        expected_report_fields = {
+            "verdict": None,
+            "finding_count": 0,
+            "blocker_count": 0,
+            "warning_count": 0,
+        }
+    else:
+        expected_report_fields = {
+            "verdict": report.get("verdict"),
+            "finding_count": _list_count(report.get("findings")),
+            "blocker_count": _list_count(report.get("blockers")),
+            "warning_count": _list_count(report.get("warnings")),
+        }
+    for field, expected in expected_report_fields.items():
+        if posture.get(field) != expected:
+            raise ValueError(f"Command Center posture {field} does not match canonical report")
+
+
 def command_center_payload(repo: str | Path) -> dict[str, Any]:
     """Build and validate the canonical Command Center snapshot."""
     from .command_center import build_command_center_snapshot
@@ -19,6 +61,7 @@ def command_center_payload(repo: str | Path) -> dict[str, Any]:
     try:
         snapshot = build_command_center_snapshot(repo)
         validate_command_center_snapshot(snapshot)
+        _validate_snapshot_derivations(snapshot)
         return {
             "ok": True,
             "status": "success",

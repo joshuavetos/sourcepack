@@ -8,7 +8,13 @@ from . import __version__
 from .baseline import validate_baseline
 from .git import metadata as git_metadata
 from .policy import resolve_effective_policy
-from .workbench import _read_canonical_report, _sourcepack_status_payload
+from .workbench import (
+    _bounded_changed_file_excerpt,
+    _dashboard_payload,
+    _read_canonical_report,
+    _sourcepack_status_payload,
+    _workbench_action,
+)
 
 COMMAND_CENTER_SCHEMA_VERSION = "sourcepack.command_center.v1"
 
@@ -249,6 +255,70 @@ def _priority_actions(
     ]
 
 
+def _workbench_presentation(report: dict[str, Any] | None, action: dict[str, Any]) -> dict[str, Any]:
+    """Build safe, display-ready Workbench rows from the canonical report."""
+    if report is None:
+        return {"evidence_cards": [], "correction_rows": []}
+
+    blockers = report.get("blockers") if isinstance(report.get("blockers"), list) else []
+    warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
+    findings = report.get("findings") if isinstance(report.get("findings"), list) else []
+    finding = next((item for item in blockers + warnings + findings if isinstance(item, dict)), None)
+
+    evidence_items = list(report.get("evidence_items")) if isinstance(report.get("evidence_items"), list) else []
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), dict) else {}
+    for key in ("checked_evidence", "missing_evidence", "unsupported_evidence", "not_checked"):
+        values = evidence.get(key)
+        if isinstance(values, list):
+            evidence_items.extend(values)
+    reason_map = report.get("reason_code_evidence") if isinstance(report.get("reason_code_evidence"), dict) else {}
+    evidence_ids = reason_map.get(action.get("reason"))
+    if isinstance(evidence_ids, list) and evidence_ids:
+        evidence_items = [
+            item for item in evidence_items
+            if isinstance(item, dict) and (item.get("evidence_id") in evidence_ids or item.get("id") in evidence_ids)
+        ]
+    if finding and finding.get("evidence"):
+        evidence_items.insert(0, {"summary": finding["evidence"], "kind": "finding evidence", "checked_status": finding.get("checked_status")})
+
+    cards = []
+    for item in evidence_items[:6]:
+        if isinstance(item, str):
+            cards.append({"name": "Repository fact", "tag": "Evidence", "body": item, "problem": False})
+            continue
+        if not isinstance(item, dict):
+            continue
+        body = str(
+            item.get("summary")
+            or item.get("message")
+            or item.get("fact")
+            or item.get("path")
+            or item.get("evidence_id")
+            or "Evidence item recorded."
+        )
+        lowered = body.lower()
+        cards.append({
+            "name": str(item.get("title") or item.get("kind") or item.get("evidence_id") or "Repository fact"),
+            "tag": str(item.get("checked_status") or item.get("status") or item.get("source_type") or "Evidence"),
+            "body": body,
+            "problem": "not found" in lowered or "missing" in lowered,
+        })
+
+    remediation = report.get("remediation") if isinstance(report.get("remediation"), dict) else {}
+    remediation_items = remediation.get("items") if isinstance(remediation.get("items"), list) else []
+    item = remediation_items[0] if remediation_items and isinstance(remediation_items[0], dict) else {}
+    finding_remediation = finding.get("remediation") if finding and isinstance(finding.get("remediation"), dict) else {}
+    correction_values = (
+        ("Correction summary", item.get("summary") or finding_remediation.get("summary")),
+        ("Affected path", item.get("path") or (finding or {}).get("path")),
+        ("Repository-supported replacement", (finding or {}).get("suggestion") or item.get("summary") or finding_remediation.get("summary")),
+    )
+    return {
+        "evidence_cards": cards,
+        "correction_rows": [{"label": label, "value": str(value)} for label, value in correction_values if value],
+    }
+
+
 def build_command_center_snapshot(
     repo: str | Path,
     *,
@@ -264,17 +334,73 @@ def build_command_center_snapshot(
     git = git_reader(root)
     status = status_reader(root)
     report, report_error = report_reader(root)
-    capabilities = _capabilities(baseline=baseline, policy=policy, report=report, status=status)
-    scores = _score(baseline=baseline, policy=policy, report=report, status=status, capabilities=capabilities)
+    decisions = _dashboard_payload(root, "overrides")
+    raw_verdict = report.get("verdict") if report else None
+    supported_verdict = raw_verdict in {"PASS", "WARN", "FAIL"}
+    canonical_report = report if supported_verdict else None
+    capabilities = _capabilities(baseline=baseline, policy=policy, report=canonical_report, status=status)
+    scores = _score(baseline=baseline, policy=policy, report=canonical_report, status=status, capabilities=capabilities)
 
-    findings = report.get("findings", []) if isinstance(report, dict) else []
-    blockers = report.get("blockers", []) if isinstance(report, dict) else []
-    warnings = report.get("warnings", []) if isinstance(report, dict) else []
+    findings = canonical_report.get("findings", []) if isinstance(canonical_report, dict) else []
+    blockers = canonical_report.get("blockers", []) if isinstance(canonical_report, dict) else []
+    warnings = canonical_report.get("warnings", []) if isinstance(canonical_report, dict) else []
+    report_error_code = (
+        report_error.get("error", {}).get("code")
+        if isinstance(report_error, dict) and isinstance(report_error.get("error"), dict)
+        else None
+    )
+    report_state = (
+        "unsupported"
+        if report is not None and not supported_verdict
+        else "available"
+        if canonical_report is not None
+        else "unsupported"
+        if report_error_code == "artifact_version_unsupported"
+        else "malformed"
+        if report_error_code == "artifact_malformed"
+        else "unavailable"
+    )
+    baseline_state = str(baseline.get("state") or "unavailable")
+    policy_state = "available" if policy.get("resolution_status") == "PASS" else "degraded"
+    replay_available = bool(canonical_report and canonical_report.get("replay_bundle"))
+    verdict = raw_verdict if supported_verdict else None
+    verdict_display = {
+        "PASS": ("pass", "✓", "Change Passed"),
+        "WARN": ("warn", "!", "Review Warning"),
+        "FAIL": ("fail", "×", "Change Blocked"),
+        None: ("neutral", "·", "No Report Available"),
+    }[verdict] if report is None or supported_verdict else ("neutral", "·", "Unsupported Report")
+    review_action = _workbench_action(report) if report_error is None else {
+        "action_type": "none", "label": "Action Unavailable", "reason": str(report_error_code or "report_unavailable"),
+        "target_surface": "none", "available": False,
+    }
+    workbench_presentation = _workbench_presentation(canonical_report, review_action)
+    evidence_items = canonical_report.get("evidence_items", []) if canonical_report else []
+    evidence_count = len(evidence_items) if isinstance(evidence_items, list) else 0
+    report_time = next(
+        (canonical_report.get(key) for key in ("generated_at", "created_at", "timestamp") if canonical_report and canonical_report.get(key)),
+        None,
+    )
+    branch = git.get("branch") or git.get("current_branch")
+    overall_state = (
+        report_state
+        if report_state in {"malformed", "unsupported"}
+        else "degraded"
+        if baseline_state not in {"present", "stale"} or policy_state == "degraded" or not replay_available
+        else "available"
+    )
+    review_message = (
+        f"Latest verdict: {verdict}"
+        if verdict is not None
+        else "Latest report state: unsupported"
+        if report_state == "unsupported"
+        else "Latest verdict: unavailable"
+    )
     events = [
         {"type": "repository", "message": f"Repository loaded at {root}"},
         {"type": "baseline", "message": f"Baseline state: {baseline.get('state', 'unknown')}"},
         {"type": "policy", "message": f"Policy resolution: {policy.get('resolution_status', 'unknown')}"},
-        {"type": "review", "message": f"Latest verdict: {report.get('verdict', 'unavailable') if report else 'unavailable'}"},
+        {"type": "review", "message": review_message},
     ]
     if report_error:
         events.append({"type": "error", "message": str(report_error.get("error", {}).get("message") or "Canonical report unavailable")})
@@ -283,8 +409,27 @@ def build_command_center_snapshot(
         "schema_version": COMMAND_CENTER_SCHEMA_VERSION,
         "sourcepack_version": __version__,
         "repository": {"path": str(root), "git": git},
+        "display": {
+            "verdict_class": verdict_display[0],
+            "verdict_icon": verdict_display[1],
+            "verdict_title": verdict_display[2],
+            "verdict_label": verdict or ("UNSUPPORTED" if report is not None else "UNAVAILABLE"),
+            "findings_summary": f"{len(blockers) if isinstance(blockers, list) else 0} blocking, {len(warnings) if isinstance(warnings, list) else 0} warnings",
+            "navigation_findings_summary": f"{len(blockers) if isinstance(blockers, list) else 0} blocking · {len(warnings) if isinstance(warnings, list) else 0} warnings",
+            "evidence_summary": f"{evidence_count} evidence items" if canonical_report else "unavailable",
+            "branch": branch,
+            "version_label": f"SourcePack v{__version__}",
+            "report_time": report_time,
+        },
+        "state": {
+            "overall": overall_state,
+            "report": report_state,
+            "baseline": "available" if baseline_state in {"present", "stale"} else "unavailable",
+            "policy": policy_state,
+            "replay": "available" if replay_available else "degraded" if canonical_report is not None else "unavailable",
+        },
         "posture": {
-            "verdict": report.get("verdict") if report else None,
+            "verdict": verdict,
             "baseline_state": baseline.get("state"),
             "policy_resolution_status": policy.get("resolution_status"),
             "automatic_mode_enabled": bool(_status_value(status, "automatic_mode_enabled", False)),
@@ -294,13 +439,26 @@ def build_command_center_snapshot(
         },
         "scores": scores,
         "capabilities": [item.as_dict() for item in capabilities],
-        "priority_actions": _priority_actions(capabilities, report=report, baseline=baseline, policy=policy),
+        "priority_actions": _priority_actions(capabilities, report=canonical_report, baseline=baseline, policy=policy),
         "activity": events,
+        "available_artifacts": [
+            {"id": "baseline", "available": baseline_state in {"present", "stale"}},
+            {"id": "policy", "available": policy_state == "available"},
+            {"id": "report", "available": canonical_report is not None},
+            {"id": "replay", "available": replay_available},
+            {"id": "decisions", "available": decisions.get("status") != "error"},
+        ],
+        "workbench": {
+            "review_action": review_action,
+            "proposed_change": _bounded_changed_file_excerpt(root, canonical_report) if canonical_report is not None else None,
+            **workbench_presentation,
+        },
         "artifacts": {
             "baseline": baseline,
             "policy": policy,
             "status": status,
             "report": report,
             "report_error": report_error,
+            "decisions": decisions,
         },
     }

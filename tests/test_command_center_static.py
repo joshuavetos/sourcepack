@@ -30,16 +30,7 @@ class CommandCenterStaticTests(unittest.TestCase):
                 self.assertIn(label, self.html)
 
     def test_live_surfaces_use_existing_authenticated_endpoints(self) -> None:
-        expected_routes = {
-            "/api/dashboard/v1/overview",
-            "/api/dashboard/v1/report",
-            "/api/dashboard/v1/policy",
-            "/api/dashboard/v1/baseline",
-            "/api/dashboard/v1/replay-evidence",
-            "/api/dashboard/v1/overrides",
-            "/api/status",
-            "/api/workbench/v1/review",
-        }
+        expected_routes = {"/api/workbench/v1/review"}
         for route in expected_routes:
             with self.subTest(route=route):
                 self.assertIn(route, self.html)
@@ -49,8 +40,8 @@ class CommandCenterStaticTests(unittest.TestCase):
         for element_id in ("policy-studio", "policy-raw", "replay-theater", "replay-raw", "override-list", "raw-systems", "systems-raw"):
             with self.subTest(element_id=element_id):
                 self.assertIn(f'id="{element_id}"', self.html)
-        self.assertIn("renderCommandCenterEndpoints(policyRes, baselineRes, replayRes, overridesRes, statusRes, overviewRes, reportRes)", self.html)
-        self.assertIn("JSON.stringify({status: statusRes, baseline: baselineRes, overview: overviewRes, report: reportRes}", self.html)
+        self.assertNotIn("renderCommandCenterEndpoints(", self.html)
+        self.assertNotIn("Promise.all", self.html)
 
     def test_planned_integrations_are_not_presented_as_live(self) -> None:
         self.assertIn("READY TO BUILD", self.html)

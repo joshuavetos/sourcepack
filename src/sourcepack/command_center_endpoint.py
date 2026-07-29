@@ -15,6 +15,11 @@ def _list_count(value: Any) -> int:
     return len(value) if isinstance(value, list) else 0
 
 
+def _supported_report(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    report = snapshot["artifacts"]["report"]
+    return report if isinstance(report, dict) and report.get("verdict") in {"PASS", "WARN", "FAIL"} else None
+
+
 def _validate_snapshot_derivations(snapshot: dict[str, Any]) -> None:
     """Reject posture fields that disagree with their embedded artifacts."""
     posture = snapshot["posture"]
@@ -34,7 +39,7 @@ def _validate_snapshot_derivations(snapshot: dict[str, Any]) -> None:
         if posture.get(field) != expected:
             raise ValueError(f"Command Center posture {field} does not match embedded artifacts")
 
-    if report is None:
+    if report is None or (isinstance(report, dict) and report.get("verdict") not in {"PASS", "WARN", "FAIL"}):
         expected_report_fields = {
             "verdict": None,
             "finding_count": 0,
@@ -85,6 +90,14 @@ def _validate_report_error_derivations(snapshot: dict[str, Any]) -> None:
 def _canonical_activity(snapshot: dict[str, Any]) -> list[dict[str, str]]:
     artifacts = snapshot["artifacts"]
     report = artifacts["report"]
+    supported_report = _supported_report(snapshot)
+    review_message = (
+        f"Latest verdict: {supported_report['verdict']}"
+        if supported_report is not None
+        else "Latest report state: unsupported"
+        if report is not None
+        else "Latest verdict: unavailable"
+    )
     activity = [
         {
             "type": "repository",
@@ -100,7 +113,7 @@ def _canonical_activity(snapshot: dict[str, Any]) -> list[dict[str, str]]:
         },
         {
             "type": "review",
-            "message": f"Latest verdict: {report.get('verdict', 'unavailable') if report else 'unavailable'}",
+            "message": review_message,
         },
     ]
     report_error = artifacts["report_error"]
@@ -131,7 +144,7 @@ def _canonical_capabilities(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         for item in _capabilities(
             baseline=artifacts["baseline"],
             policy=artifacts["policy"],
-            report=artifacts["report"],
+            report=_supported_report(snapshot),
             status=artifacts["status"],
         )
     ]
@@ -150,7 +163,7 @@ def _canonical_priority_actions(snapshot: dict[str, Any]) -> list[dict[str, Any]
     capabilities = [Capability(**item) for item in _canonical_capabilities(snapshot)]
     return _priority_actions(
         capabilities,
-        report=artifacts["report"],
+        report=_supported_report(snapshot),
         baseline=artifacts["baseline"],
         policy=artifacts["policy"],
     )
@@ -170,7 +183,7 @@ def _validate_score_derivations(snapshot: dict[str, Any]) -> None:
     expected_scores = _score(
         baseline=artifacts["baseline"],
         policy=artifacts["policy"],
-        report=artifacts["report"],
+        report=_supported_report(snapshot),
         status=artifacts["status"],
         capabilities=[Capability(**item) for item in _canonical_capabilities(snapshot)],
     )

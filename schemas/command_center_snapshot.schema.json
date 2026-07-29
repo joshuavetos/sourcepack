@@ -1,0 +1,831 @@
+{
+  "$id": "https://schemas.sourcepack.local/command-center.v1.snapshot.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Versioned application contract for the authenticated local Command Center snapshot.",
+  "properties": {
+    "activity": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "repository",
+              "baseline",
+              "policy",
+              "review",
+              "error"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "message"
+        ],
+        "type": "object"
+      },
+      "maxItems": 5,
+      "minItems": 4,
+      "type": "array"
+    },
+    "artifacts": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline": {
+          "type": "object"
+        },
+        "decisions": {
+          "type": "object"
+        },
+        "policy": {
+          "type": "object"
+        },
+        "report": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "report_error": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "baseline",
+        "policy",
+        "status",
+        "report",
+        "report_error",
+        "decisions"
+      ],
+      "type": "object"
+    },
+    "available_artifacts": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "id": {
+            "enum": [
+              "baseline",
+              "policy",
+              "report",
+              "replay",
+              "decisions"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "available"
+        ],
+        "type": "object"
+      },
+      "maxItems": 5,
+      "minItems": 5,
+      "type": "array"
+    },
+    "capabilities": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "enum": [
+                  "run_review",
+                  "resolve_findings",
+                  "repair_policy",
+                  "create_baseline",
+                  "refresh_baseline",
+                  "install_hooks",
+                  "build_adversarial_runner",
+                  "add_integration_adapter",
+                  "build_improvement_loop"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "enum": [
+              "review",
+              "baseline",
+              "policy",
+              "hook",
+              "evidence",
+              "replay",
+              "adversarial",
+              "integrations",
+              "autonomy"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "LIVE",
+              "READY",
+              "NEEDS_SETUP",
+              "DEGRADED",
+              "PARTIAL",
+              "READY_TO_BUILD",
+              "PLANNED"
+            ],
+            "type": "string"
+          },
+          "surface": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "surface",
+          "status",
+          "evidence",
+          "action"
+        ],
+        "type": "object"
+      },
+      "maxItems": 9,
+      "minItems": 9,
+      "type": "array"
+    },
+    "display": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_summary": {
+          "type": "string"
+        },
+        "findings_summary": {
+          "type": "string"
+        },
+        "navigation_findings_summary": {
+          "type": "string"
+        },
+        "report_time": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verdict_class": {
+          "enum": [
+            "pass",
+            "warn",
+            "fail",
+            "neutral"
+          ]
+        },
+        "verdict_icon": {
+          "type": "string"
+        },
+        "verdict_label": {
+          "type": "string"
+        },
+        "verdict_title": {
+          "type": "string"
+        },
+        "version_label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verdict_class",
+        "verdict_icon",
+        "verdict_title",
+        "verdict_label",
+        "findings_summary",
+        "navigation_findings_summary",
+        "evidence_summary",
+        "branch",
+        "version_label",
+        "report_time"
+      ],
+      "type": "object"
+    },
+    "posture": {
+      "additionalProperties": false,
+      "properties": {
+        "automatic_mode_enabled": {
+          "type": "boolean"
+        },
+        "baseline_state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "blocker_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "finding_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "policy_resolution_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verdict": {
+          "anyOf": [
+            {
+              "enum": [
+                "PASS",
+                "WARN",
+                "FAIL"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "warning_count": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "verdict",
+        "baseline_state",
+        "policy_resolution_status",
+        "automatic_mode_enabled",
+        "finding_count",
+        "blocker_count",
+        "warning_count"
+      ],
+      "type": "object"
+    },
+    "priority_actions": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "action_type": {
+            "enum": [
+              "run_review",
+              "navigate",
+              "copy_command"
+            ],
+            "type": "string"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "enum": [
+              "run_review",
+              "resolve_findings",
+              "repair_policy",
+              "create_baseline",
+              "refresh_baseline",
+              "install_hooks",
+              "build_adversarial_runner",
+              "add_integration_adapter",
+              "build_improvement_loop"
+            ],
+            "type": "string"
+          },
+          "label": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "priority": {
+            "enum": [
+              "P0",
+              "P1",
+              "P2",
+              "P3"
+            ],
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "target_surface": {
+            "anyOf": [
+              {
+                "enum": [
+                  "review",
+                  "policy",
+                  "lab",
+                  "integrations",
+                  "agents"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "priority",
+          "label",
+          "action_type",
+          "command",
+          "target_surface",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "maxItems": 8,
+      "type": "array"
+    },
+    "repository": {
+      "additionalProperties": false,
+      "properties": {
+        "git": {
+          "type": "object"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "git"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "sourcepack.command_center.v1"
+    },
+    "scores": {
+      "additionalProperties": false,
+      "properties": {
+        "automation": {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "product_breadth": {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "report_depth": {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "trust": {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "trust",
+        "automation",
+        "product_breadth",
+        "report_depth"
+      ],
+      "type": "object"
+    },
+    "sourcepack_version": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "state": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline": {
+          "enum": [
+            "available",
+            "unavailable"
+          ]
+        },
+        "overall": {
+          "enum": [
+            "available",
+            "degraded",
+            "unavailable",
+            "malformed",
+            "unsupported"
+          ]
+        },
+        "policy": {
+          "enum": [
+            "available",
+            "degraded"
+          ]
+        },
+        "replay": {
+          "enum": [
+            "available",
+            "degraded",
+            "unavailable"
+          ]
+        },
+        "report": {
+          "enum": [
+            "available",
+            "unavailable",
+            "malformed",
+            "unsupported"
+          ]
+        }
+      },
+      "required": [
+        "overall",
+        "report",
+        "baseline",
+        "policy",
+        "replay"
+      ],
+      "type": "object"
+    },
+    "workbench": {
+      "additionalProperties": false,
+      "properties": {
+        "correction_rows": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "label": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "value": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "label",
+              "value"
+            ],
+            "type": "object"
+          },
+          "maxItems": 3,
+          "type": "array"
+        },
+        "evidence_cards": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "body": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "name": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "problem": {
+                "type": "boolean"
+              },
+              "tag": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "tag",
+              "body",
+              "problem"
+            ],
+            "type": "object"
+          },
+          "maxItems": 6,
+          "type": "array"
+        },
+        "proposed_change": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "excerpts": {
+                  "items": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "status": {
+                              "const": "omitted"
+                            }
+                          }
+                        },
+                        "then": {
+                          "required": [
+                            "reason"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "status": {
+                              "enum": [
+                                "available",
+                                "truncated"
+                              ]
+                            }
+                          }
+                        },
+                        "then": {
+                          "required": [
+                            "byte_limit"
+                          ]
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "byte_limit": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "lines": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "number": {
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "text": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "number",
+                            "text"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "path": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "reason": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "source": {
+                        "const": "current_worktree_file_listed_by_canonical_report"
+                      },
+                      "status": {
+                        "enum": [
+                          "available",
+                          "truncated",
+                          "omitted"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "source",
+                      "status",
+                      "lines"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "paths": {
+                  "items": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "schema_version": {
+                  "const": "sourcepack.dashboard.proposed_change.v1"
+                },
+                "source": {
+                  "const": "traffic_report.raw_patch_judgment plus bounded current worktree excerpt"
+                }
+              },
+              "required": [
+                "schema_version",
+                "source",
+                "paths",
+                "excerpts"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "review_action": {
+          "additionalProperties": false,
+          "oneOf": [
+            {
+              "not": {
+                "required": [
+                  "prompt"
+                ]
+              },
+              "properties": {
+                "action_type": {
+                  "const": "run_review"
+                },
+                "available": {
+                  "const": true
+                },
+                "target_surface": {
+                  "const": "workbench_review"
+                }
+              }
+            },
+            {
+              "properties": {
+                "action_type": {
+                  "const": "copy_prompt"
+                },
+                "available": {
+                  "const": true
+                },
+                "target_surface": {
+                  "const": "correction_prompt"
+                }
+              },
+              "required": [
+                "prompt"
+              ]
+            },
+            {
+              "not": {
+                "required": [
+                  "prompt"
+                ]
+              },
+              "properties": {
+                "action_type": {
+                  "const": "copy_prompt"
+                },
+                "available": {
+                  "const": false
+                },
+                "target_surface": {
+                  "const": "correction_prompt"
+                }
+              }
+            },
+            {
+              "not": {
+                "required": [
+                  "prompt"
+                ]
+              },
+              "properties": {
+                "action_type": {
+                  "const": "none"
+                },
+                "available": {
+                  "const": false
+                },
+                "target_surface": {
+                  "const": "none"
+                }
+              }
+            }
+          ],
+          "properties": {
+            "action_type": {
+              "enum": [
+                "run_review",
+                "copy_prompt",
+                "none"
+              ],
+              "type": "string"
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "label": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "prompt": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "reason": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "target_surface": {
+              "enum": [
+                "workbench_review",
+                "correction_prompt",
+                "none"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action_type",
+            "label",
+            "reason",
+            "target_surface",
+            "available"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "review_action",
+        "proposed_change",
+        "evidence_cards",
+        "correction_rows"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "sourcepack_version",
+    "repository",
+    "display",
+    "state",
+    "posture",
+    "scores",
+    "capabilities",
+    "priority_actions",
+    "activity",
+    "available_artifacts",
+    "workbench",
+    "artifacts"
+  ],
+  "title": "SourcePack Command Center v1 Snapshot",
+  "type": "object"
+}

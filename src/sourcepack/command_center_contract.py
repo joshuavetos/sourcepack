@@ -122,6 +122,116 @@ def command_center_snapshot_schema() -> dict[str, Any]:
             "message": {"type": "string", "minLength": 1},
         },
     }
+    review_action = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["action_type", "label", "reason", "target_surface", "available"],
+        "properties": {
+            "action_type": {"type": "string", "enum": ["run_review", "copy_prompt", "none"]},
+            "label": {"type": "string", "minLength": 1},
+            "reason": {"type": "string", "minLength": 1},
+            "target_surface": {"type": "string", "enum": ["workbench_review", "correction_prompt", "none"]},
+            "available": {"type": "boolean"},
+            "prompt": {"type": "string", "minLength": 1},
+        },
+        "oneOf": [
+            {
+                "properties": {
+                    "action_type": {"const": "run_review"},
+                    "target_surface": {"const": "workbench_review"},
+                    "available": {"const": True},
+                },
+                "not": {"required": ["prompt"]},
+            },
+            {
+                "properties": {
+                    "action_type": {"const": "copy_prompt"},
+                    "target_surface": {"const": "correction_prompt"},
+                    "available": {"const": True},
+                },
+                "required": ["prompt"],
+            },
+            {
+                "properties": {
+                    "action_type": {"const": "copy_prompt"},
+                    "target_surface": {"const": "correction_prompt"},
+                    "available": {"const": False},
+                },
+                "not": {"required": ["prompt"]},
+            },
+            {
+                "properties": {
+                    "action_type": {"const": "none"},
+                    "target_surface": {"const": "none"},
+                    "available": {"const": False},
+                },
+                "not": {"required": ["prompt"]},
+            },
+        ],
+    }
+    excerpt_line = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["number", "text"],
+        "properties": {
+            "number": {"type": "integer", "minimum": 1},
+            "text": {"type": "string"},
+        },
+    }
+    excerpt = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["path", "source", "status", "lines"],
+        "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "source": {"const": "current_worktree_file_listed_by_canonical_report"},
+            "status": {"type": "string", "enum": ["available", "truncated", "omitted"]},
+            "reason": {"type": "string", "minLength": 1},
+            "byte_limit": {"type": "integer", "minimum": 1},
+            "lines": {"type": "array", "items": excerpt_line},
+        },
+        "allOf": [
+            {
+                "if": {"properties": {"status": {"const": "omitted"}}},
+                "then": {"required": ["reason"]},
+            },
+            {
+                "if": {"properties": {"status": {"enum": ["available", "truncated"]}}},
+                "then": {"required": ["byte_limit"]},
+            },
+        ],
+    }
+    proposed_change = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "source", "paths", "excerpts"],
+        "properties": {
+            "schema_version": {"const": "sourcepack.dashboard.proposed_change.v1"},
+            "source": {"const": "traffic_report.raw_patch_judgment plus bounded current worktree excerpt"},
+            "paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+            "excerpts": {"type": "array", "items": excerpt},
+        },
+    }
+    evidence_card = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["name", "tag", "body", "problem"],
+        "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "tag": {"type": "string", "minLength": 1},
+            "body": {"type": "string", "minLength": 1},
+            "problem": {"type": "boolean"},
+        },
+    }
+    correction_row = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["label", "value"],
+        "properties": {
+            "label": {"type": "string", "minLength": 1},
+            "value": {"type": "string", "minLength": 1},
+        },
+    }
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://schemas.sourcepack.local/command-center.v1.snapshot.schema.json",
@@ -133,11 +243,15 @@ def command_center_snapshot_schema() -> dict[str, Any]:
             "schema_version",
             "sourcepack_version",
             "repository",
+            "display",
+            "state",
             "posture",
             "scores",
             "capabilities",
             "priority_actions",
             "activity",
+            "available_artifacts",
+            "workbench",
             "artifacts",
         ],
         "properties": {
@@ -150,6 +264,29 @@ def command_center_snapshot_schema() -> dict[str, Any]:
                 "properties": {
                     "path": {"type": "string", "minLength": 1},
                     "git": {"type": "object"},
+                },
+            },
+            "display": {
+                "type": "object", "additionalProperties": False,
+                "required": ["verdict_class", "verdict_icon", "verdict_title", "verdict_label", "findings_summary", "navigation_findings_summary", "evidence_summary", "branch", "version_label", "report_time"],
+                "properties": {
+                    "verdict_class": {"enum": ["pass", "warn", "fail", "neutral"]},
+                    "verdict_icon": {"type": "string"}, "verdict_title": {"type": "string"},
+                    "verdict_label": {"type": "string"}, "findings_summary": {"type": "string"},
+                    "navigation_findings_summary": {"type": "string"}, "evidence_summary": {"type": "string"},
+                    "branch": nullable_string, "version_label": {"type": "string"}, "report_time": nullable_string,
+                },
+            },
+            "state": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["overall", "report", "baseline", "policy", "replay"],
+                "properties": {
+                    "overall": {"enum": ["available", "degraded", "unavailable", "malformed", "unsupported"]},
+                    "report": {"enum": ["available", "unavailable", "malformed", "unsupported"]},
+                    "baseline": {"enum": ["available", "unavailable"]},
+                    "policy": {"enum": ["available", "degraded"]},
+                    "replay": {"enum": ["available", "degraded", "unavailable"]},
                 },
             },
             "posture": {
@@ -200,16 +337,35 @@ def command_center_snapshot_schema() -> dict[str, Any]:
                 "maxItems": len(REQUIRED_ACTIVITY_SEQUENCE) + 1,
                 "items": activity,
             },
+            "available_artifacts": {
+                "type": "array", "minItems": 5, "maxItems": 5,
+                "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["id", "available"],
+                    "properties": {"id": {"enum": ["baseline", "policy", "report", "replay", "decisions"]}, "available": {"type": "boolean"}},
+                },
+            },
+            "workbench": {
+                "type": "object", "additionalProperties": False,
+                "required": ["review_action", "proposed_change", "evidence_cards", "correction_rows"],
+                "properties": {
+                    "review_action": review_action,
+                    "proposed_change": _nullable(proposed_change),
+                    "evidence_cards": {"type": "array", "maxItems": 6, "items": evidence_card},
+                    "correction_rows": {"type": "array", "maxItems": 3, "items": correction_row},
+                },
+            },
             "artifacts": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["baseline", "policy", "status", "report", "report_error"],
+                "required": ["baseline", "policy", "status", "report", "report_error", "decisions"],
                 "properties": {
                     "baseline": {"type": "object"},
                     "policy": {"type": "object"},
                     "status": {"type": "object"},
                     "report": nullable_object,
                     "report_error": nullable_object,
+                    "decisions": {"type": "object"},
                 },
             },
         },

@@ -31,6 +31,59 @@ TRAFFIC_REPORT_SCHEMA_VERSION = "traffic_report.v1"
 WORKBENCH_EXCERPT_FILE_LIMIT_BYTES = 128 * 1024
 
 
+def _workbench_action(report: dict[str, Any] | None) -> dict[str, Any]:
+    """Build the Workbench CTA exclusively from canonical report fields."""
+    if report is None:
+        return {
+            "action_type": "run_review",
+            "label": "Run Review",
+            "reason": "report_unavailable",
+            "target_surface": "workbench_review",
+            "available": True,
+        }
+
+    verdict = str(report.get("verdict") or "").upper()
+    blockers_raw = report.get("blockers")
+    warnings_raw = report.get("warnings")
+    findings_raw = report.get("findings")
+    blockers = [item for item in blockers_raw if isinstance(item, dict)] if isinstance(blockers_raw, list) else []
+    warnings = [item for item in warnings_raw if isinstance(item, dict)] if isinstance(warnings_raw, list) else []
+    findings = [item for item in findings_raw if isinstance(item, dict)] if isinstance(findings_raw, list) else []
+    primary = (blockers or warnings or findings or [{}])[0]
+    reason = primary.get("reason_code") or primary.get("id") or report.get("reason_code")
+    if verdict == "PASS":
+        raw = report.get("raw_patch_judgment") if isinstance(report.get("raw_patch_judgment"), dict) else {}
+        has_change = any(raw.get(key) for key in ("modified_files", "new_files", "deleted_files", "missing_modified_files"))
+        return {
+            "action_type": "run_review",
+            "label": "Run Review Again",
+            "reason": "change_supported" if has_change else "no_diff",
+            "target_surface": "workbench_review",
+            "available": True,
+        }
+    if verdict in {"WARN", "FAIL"}:
+        remediation = report.get("remediation") if isinstance(report.get("remediation"), dict) else {}
+        prompt = remediation.get("agent_prompt")
+        available = isinstance(prompt, str) and bool(prompt.strip())
+        action = {
+            "action_type": "copy_prompt",
+            "label": "Copy Correction Prompt",
+            "reason": str(reason or "remediation_unavailable"),
+            "target_surface": "correction_prompt",
+            "available": available,
+        }
+        if available:
+            action["prompt"] = prompt
+        return action
+    return {
+        "action_type": "none",
+        "label": "Action Unavailable",
+        "reason": str(reason or "unsupported_verdict"),
+        "target_surface": "none",
+        "available": False,
+    }
+
+
 def _dashboard_error(section: str, code: str, message: str, status: str = "error") -> dict[str, Any]:
     return {"schema_version": f"sourcepack.dashboard.{section}.v1", "ok": False, "status": status, "error": {"code": code, "message": message}}
 
@@ -105,10 +158,17 @@ def _bounded_changed_file_excerpt(repo: Path, report: dict[str, Any]) -> dict[st
 def _report_payload(repo: Path) -> dict[str, Any]:
     report, error = _read_canonical_report(repo)
     if error:
+        error["action"] = {
+            "action_type": "none",
+            "label": "Action Unavailable",
+            "reason": str(error.get("error", {}).get("code") or "report_unavailable"),
+            "target_surface": "none",
+            "available": False,
+        }
         return error
     if report is None:
-        return {"schema_version": "sourcepack.dashboard.report.v1", "ok": True, "status": "empty", "error": {"code": "report_unavailable", "message": "No canonical report is available."}, "report": None}
-    return {"schema_version": "sourcepack.dashboard.report.v1", "ok": True, "status": "success", "report_path": ".sourcepack/reports/latest.json", "report": report, "proposed_change": _bounded_changed_file_excerpt(repo, report)}
+        return {"schema_version": "sourcepack.dashboard.report.v1", "ok": True, "status": "empty", "error": {"code": "report_unavailable", "message": "No canonical report is available."}, "report": None, "action": _workbench_action(None)}
+    return {"schema_version": "sourcepack.dashboard.report.v1", "ok": True, "status": "success", "report_path": ".sourcepack/reports/latest.json", "report": report, "proposed_change": _bounded_changed_file_excerpt(repo, report), "action": _workbench_action(report)}
 
 
 def _hook_is_sourcepack(text: str) -> bool:
@@ -282,6 +342,7 @@ def run_bounded_workbench_review(repo: Path) -> dict[str, Any]:
         "elapsed_seconds": round(__import__("time").time() - started_at, 3),
         "report": payload.get("report"),
         "report_payload": payload,
+        "action": payload.get("action"),
     }
 
 

@@ -3,7 +3,7 @@ from pathlib import Path
 
 from sourcepack import workbench
 from sourcepack.reports.json import normalized_finding, traffic_report
-from sourcepack.workbench import WORKBENCH_EXCERPT_FILE_LIMIT_BYTES, _dashboard_payload
+from sourcepack.workbench import WORKBENCH_EXCERPT_FILE_LIMIT_BYTES, _dashboard_payload, _workbench_action
 
 
 def test_workbench_surfaces_copyable_remediation_without_html_injection():
@@ -11,7 +11,8 @@ def test_workbench_surfaces_copyable_remediation_without_html_injection():
 
     assert "Agent correction instruction" in ui
     assert "Copy correction prompt" in ui
-    assert "data.report?.remediation?.agent_prompt" in ui
+    assert "action.action_type === 'copy_prompt'" in ui
+    assert "typeof action.prompt === 'string'" in ui
     assert "navigator.clipboard.writeText" in ui
     assert "innerHTML" not in ui
     assert "textContent" in ui
@@ -21,8 +22,7 @@ def test_workbench_surfaces_copyable_remediation_without_html_injection():
     assert "verdict-card neutral" in ui
     assert "Affected File Context" in ui
     assert "Current worktree context; may differ" in ui
-    assert "finding.reason_code || finding.id" in ui
-    assert "report?.reason_code || report?.replay_bundle" in ui
+    assert "renderAction(action)" in ui
 
 
 def test_workbench_report_model_surfaces_real_unsupported_dependency_shape(tmp_path: Path):
@@ -87,31 +87,42 @@ def test_workbench_context_excerpt_bounds_oversized_files(tmp_path: Path):
     assert any("FastAPI" in line["text"] for line in excerpt["lines"])
 
 
-def test_workbench_primary_finding_prefers_blocker_before_warning():
+def test_workbench_action_metadata_is_deterministic_for_canonical_states():
+    prompt = "Replace the unsupported dependency with the repository-supported dependency."
+    cases = [
+        ({"verdict": "PASS", "raw_patch_judgment": {"modified_files": ["app.py"]}}, {"action_type": "run_review", "label": "Run Review Again", "reason": "change_supported", "target_surface": "workbench_review", "available": True}),
+        ({"verdict": "PASS", "raw_patch_judgment": {"modified_files": []}}, {"action_type": "run_review", "label": "Run Review Again", "reason": "no_diff", "target_surface": "workbench_review", "available": True}),
+        ({"verdict": "WARN", "warnings": [{"reason_code": "uncertain_support"}], "remediation": {"agent_prompt": prompt}}, {"action_type": "copy_prompt", "label": "Copy Correction Prompt", "reason": "uncertain_support", "target_surface": "correction_prompt", "available": True, "prompt": prompt}),
+        ({"verdict": "FAIL", "blockers": [{"reason_code": "unsupported_dependency"}], "remediation": {"agent_prompt": prompt}}, {"action_type": "copy_prompt", "label": "Copy Correction Prompt", "reason": "unsupported_dependency", "target_surface": "correction_prompt", "available": True, "prompt": prompt}),
+        ({"verdict": "FAIL", "blockers": [{"reason_code": "unsupported_dependency"}]}, {"action_type": "copy_prompt", "label": "Copy Correction Prompt", "reason": "unsupported_dependency", "target_surface": "correction_prompt", "available": False}),
+        ({"verdict": "FAIL", "blockers": None, "warnings": None, "findings": None, "remediation": None}, {"action_type": "copy_prompt", "label": "Copy Correction Prompt", "reason": "remediation_unavailable", "target_surface": "correction_prompt", "available": False}),
+        ({"verdict": "UNKNOWN"}, {"action_type": "none", "label": "Action Unavailable", "reason": "unsupported_verdict", "target_surface": "none", "available": False}),
+    ]
+    for report, expected in cases:
+        assert _workbench_action(report) == expected
+        assert _workbench_action(report) == expected
+
+
+def test_workbench_client_consumes_backend_action_without_selection_logic():
     ui = (workbench.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    render_action = ui.split("function renderAction(action)", 1)[1].split("async function copyPrompt()", 1)[0]
+    set_operation = ui.split("function setOperation(state, message)", 1)[1].split("function transitionMessage", 1)[0]
+    run_review = ui.split("async function runReview()", 1)[1].split("async function load()", 1)[0]
 
-    assert "function primaryFinding(report)" in ui
-    assert "const blockers = uniqueFindings(report?.blockers || [])" in ui
-    assert "if (blockers.length) return blockers[0]" in ui
-    assert "const warnings = uniqueFindings([...(report?.warnings || []), ...(report?.uncertainties || [])])" in ui
-    assert "function reasonOf(finding, report)" in ui
-    assert "if (finding) return finding.reason_code || finding.id" in ui
-
-
-def test_workbench_pass_modified_change_uses_supported_presentation_reason():
-    ui = (workbench.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
-
-    assert "function reviewedPaths(report)" in ui
-    assert "if (verdict === 'PASS' && reviewedPaths(report).length) return 'change_supported'" in ui
-    assert "No unsupported repository assumptions were detected in the reviewed change." in ui
-    assert "SourcePack did not record blocking or warning findings for this report." not in ui
-
-
-def test_workbench_pass_empty_diff_uses_no_diff_presentation_reason():
-    ui = (workbench.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
-
-    assert "if (verdict === 'PASS') return 'no_diff'" in ui
-    assert "if (verdict === 'PASS') return 'No uncommitted changes detected.'" in ui
+    assert "const action = reportRes.action" in ui
+    assert "renderAction(action)" in ui
+    assert "runButton.hidden = true; runButton.disabled = true" in render_action
+    assert "$(id).hidden = true; $(id).disabled = true" in render_action
+    assert "if (copyAvailable) { $(id).hidden = false; $(id).disabled = false" in render_action
+    assert "if (available && action?.action_type === 'run_review')" in render_action
+    assert "renderAction(currentAction)" in set_operation
+    assert "renderAction(data.action); await load()" in run_review
+    assert "completedOnce" not in ui
+    assert "'Run Review Again'" not in ui
+    assert "function reasonOf(" not in ui
+    assert "function explain(" not in ui
+    assert "reviewedPaths(report)" not in ui
+    assert "data.report?.remediation?.agent_prompt" not in ui
 
 
 def test_workbench_empty_agent_prompt_hides_copy_controls_and_prevents_empty_copy():
@@ -119,9 +130,9 @@ def test_workbench_empty_agent_prompt_hides_copy_controls_and_prevents_empty_cop
 
     assert "if (!currentPrompt)" in ui
     assert "No correction prompt is required for this PASS report." in ui
-    assert "$('copy-prompt').hidden = !currentPrompt" in ui
-    assert "$('copy-prompt-secondary').hidden = !currentPrompt" in ui
-    assert "promptDetails.hidden = !currentPrompt" in ui
+    assert "$(id).hidden = true; $(id).disabled = true" in ui
+    assert "$(id).hidden = false; $(id).disabled = false" in ui
+    assert "promptDetails.hidden = !copyAvailable" in ui
     assert "await navigator.clipboard.writeText(currentPrompt)" in ui
 
 

@@ -89,6 +89,11 @@ def build_clean_artifacts() -> None:
     run([sys.executable, "-m", "twine", "check", *(str(path) for path in artifacts)], ROOT)
 
 
+def run_adversarial_benchmark() -> None:
+    """Run the repository's canonical, offline adversarial validation gate."""
+    run([sys.executable, "tools/adversarial_runner.py"], ROOT)
+
+
 def _check_package_metadata(metadata, artifact: Path, label: str) -> tuple[str, str]:
     name = metadata.get("Name")
     version = metadata.get("Version")
@@ -266,6 +271,7 @@ def smoke_installed_artifact(artifact: Path, version: str, name: str, work: Path
 
 def main() -> int:
     try:
+        run_adversarial_benchmark()
         build_clean_artifacts()
         version, wheel, sdist = verify_expected_artifacts(DIST)
         inspect_wheel_contents(wheel)

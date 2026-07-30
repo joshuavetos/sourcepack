@@ -353,6 +353,9 @@ jobs:
       - name: Full pytest suite
         run: pytest -q
 
+      - name: Adversarial benchmark
+        run: python tools/adversarial_runner.py
+
       - name: Behavior matrix
         run: python tools/behavior_matrix.py
 

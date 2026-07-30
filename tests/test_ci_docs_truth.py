@@ -7,6 +7,12 @@ def test_ci_docs_truth():
     assert "report artifact" in text.lower() and "sensitive" in text.lower()
     assert "Hosted CI result: unavailable from this environment" in text
     assert "docs/ci.md" in Path("README.md").read_text(encoding="utf-8")
+    assert "python tools/adversarial_runner.py" in text
+
+
+def test_github_actions_invokes_canonical_adversarial_runner():
+    workflow = Path(".github/workflows/sourcepack.yml").read_text(encoding="utf-8")
+    assert "run: python tools/adversarial_runner.py" in workflow
 
 
 def test_github_action_quickstart_materializes_pr_delta_with_mixed_reset():

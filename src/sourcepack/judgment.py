@@ -1254,6 +1254,29 @@ def _declared_dependency_names(manifest: dict, packet: Path) -> set[str]:
     return scoped["python"] | scoped["js"]
 
 
+def _ambiguous_root_requirement_dependencies(packet: Path) -> set[str]:
+    """Return dependencies with conflicting exact pins in peer runtime manifests."""
+    pins_by_dependency: dict[str, set[str]] = {}
+    specialized = re.compile(r"^requirements[-_.](?:dev|development|test|testing|docs?|documentation)(?:[-_.]|\.txt$)")
+    for rel, content in _packet_file_contents(packet).items():
+        name = Path(rel).name.lower()
+        if "/" in rel or not name.startswith("requirements") or not name.endswith(".txt"):
+            continue
+        if specialized.match(name):
+            continue
+        for line in content.splitlines():
+            match = re.match(r"^\s*([A-Za-z0-9_.-]+)\s*==\s*([^\s;#]+)", line)
+            if not match:
+                continue
+            dependency = _normalize_dependency_name(match.group(1))
+            pins_by_dependency.setdefault(dependency, set()).add(match.group(2))
+    return {
+        dependency
+        for dependency, pins in pins_by_dependency.items()
+        if len(pins) > 1
+    }
+
+
 def _workspace_package_names(packet: Path) -> set[str]:
     contents = _packet_file_contents(packet)
     root = {}
@@ -1410,6 +1433,7 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
     packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest, packet); contents = _packet_file_contents(packet)
     existing_declared = _declared_dependency_names_by_ecosystem(manifest, packet)
     scopes = _declared_dependency_scopes_by_ecosystem(manifest, packet)
+    ambiguous_requirements = _ambiguous_root_requirement_dependencies(packet)
     patch_declared, manifest_uncertainties = _declared_dependency_names_from_patch_by_ecosystem_structural(changes, contents)
     if manifest_uncertainties:
         report.setdefault("uncertainties", []).extend(manifest_uncertainties)
@@ -1422,8 +1446,18 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
             suffix = Path(ch.path).suffix.lower(); added = "\n".join(ch.added_lines or [])
             if suffix == ".py":
                 for imported in extract_imports_from_text(added, suffix):
-                    dep_resolution = resolve_python_import(resolver_root, imported, added_dependencies=patch_declared["python"])
                     dep_name = _dependency_name_for_import(imported)
+                    if dep_name in ambiguous_requirements:
+                        unsupported.discard(imported)
+                        unsupported.discard(dep_name)
+                        report.setdefault("uncertainties", []).append({
+                            "id": "dependency_manifest_uncertain",
+                            "message": f"{dep_name} has contradictory root requirements evidence",
+                            "path": ch.path,
+                            "evidence": dep_name,
+                        })
+                        continue
+                    dep_resolution = resolve_python_import(resolver_root, imported, added_dependencies=patch_declared["python"])
                     if dep_resolution.verdict == "PASS":
                         unsupported.discard(imported); unsupported.discard(dep_name)
                     elif dep_resolution.reason_code == "declared_dependency":
@@ -1542,8 +1576,8 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
             findings.append(normalized_finding("binary_diff", "warn", "uncertainty", f"Binary content was detected at {p} and was not semantically evaluated.", p, evidence=p))
     for p in report.get("new_files", []): findings.append(normalized_finding("new_file", "warn", "review", f"{p} was created by the patch.", p))
     for p in report.get("deleted_files", []): findings.append(normalized_finding("deleted_file", "warn", "review", f"{p} was deleted by the patch.", p))
-    for d in report.get("declared_dependencies", []): findings.append(normalized_finding("declared_dependency", "warn", "review", f"{d} was added to dependency files.", evidence=d))
-    for c in report.get("declared_commands", []): findings.append(normalized_finding("declared_command", "warn", "review", f"{c} was added in the same patch.", evidence=c))
+    for d in report.get("declared_dependencies", []): findings.append(normalized_finding("declared_dependency", "warn", "uncertainty", f"{d} was added to dependency files.", evidence=d))
+    for c in report.get("declared_commands", []): findings.append(normalized_finding("declared_command", "warn", "uncertainty", f"{c} was added in the same patch.", evidence=c))
     for w in report.get("uncertainties", []):
         if isinstance(w, dict):
             fid = str(w.get("id") or "uncertainty")

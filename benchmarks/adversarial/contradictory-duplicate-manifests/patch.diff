@@ -1,0 +1,7 @@
+diff --git a/app.py b/app.py
+index 2f9a147..db20142 100644
+--- a/app.py
++++ b/app.py
+@@ -1 +1,2 @@
++import requests
+ print("baseline")

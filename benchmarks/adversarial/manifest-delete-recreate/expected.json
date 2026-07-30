@@ -1,0 +1,28 @@
+{
+  "schema_version": "sourcepack.adversarial-case.v1",
+  "case_id": "manifest-delete-recreate",
+  "expected_verdict": "WARN",
+  "required_findings": [
+    {
+      "id": "declared_dependency",
+      "analysis_status": "UNKNOWN",
+      "evidence_class": "proposed_state",
+      "trust_status": "untrusted_until_accepted",
+      "modified_by_patch": true
+    },
+    {
+      "id": "deleted_file"
+    },
+    {
+      "id": "new_file"
+    }
+  ],
+  "forbidden_findings": [
+    "baseline_corrupt",
+    "baseline_failed",
+    "malformed_diff",
+    "prompt_context_failed"
+  ],
+  "allowed_additional_findings": [],
+  "deterministic": true
+}

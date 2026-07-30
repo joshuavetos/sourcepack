@@ -65,6 +65,13 @@ _CANONICAL_PROVENANCE_BY_REASON = {
         "modified_by_patch": False,
         "source_kind": "command_manifest",
     },
+    "dependency_manifest_uncertain": {
+        "analysis_status": "UNKNOWN",
+        "evidence_class": "analysis_state",
+        "trust_status": "inconclusive",
+        "modified_by_patch": False,
+        "source_kind": "dependency_manifest",
+    },
     "manifest_parse_failure": {
         "analysis_status": "UNREVIEWABLE",
         "evidence_class": "analysis_state",

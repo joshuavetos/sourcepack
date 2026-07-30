@@ -1,0 +1,22 @@
+{
+  "schema_version": "sourcepack.adversarial-case.v1",
+  "case_id": "contradictory-duplicate-manifests",
+  "expected_verdict": "WARN",
+  "required_findings": [
+    {
+      "id": "dependency_manifest_uncertain",
+      "analysis_status": "UNKNOWN",
+      "evidence_class": "analysis_state",
+      "trust_status": "inconclusive",
+      "modified_by_patch": false
+    }
+  ],
+  "forbidden_findings": [
+    "baseline_corrupt",
+    "baseline_failed",
+    "malformed_diff",
+    "prompt_context_failed"
+  ],
+  "allowed_additional_findings": [],
+  "deterministic": true
+}

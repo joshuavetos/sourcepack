@@ -288,3 +288,51 @@ def test_build_repo_change_report_initial_missing_git_remains_git_unavailable(mo
     assert report["verdict"] == "FAIL"
     assert "git_unavailable" in finding_ids
     assert "no_git_repo" not in finding_ids
+
+
+def test_contradictory_root_requirements_do_not_become_repository_support(tmp_path):
+    packet = write_packet(
+        tmp_path,
+        {
+            "app.py": "print('baseline')\n",
+            "requirements.txt": "requests==2.31.0\n",
+            "requirements-prod.txt": "requests==2.32.4\n",
+        },
+    )
+    patch = multi_patch([("app.py", "print('baseline')\n", "import requests\nprint('baseline')\n")])
+
+    report = judgment.judge_patch_text(packet, patch)
+
+    assert report["verdict"] == "WARN"
+    assert report["unsupported_dependencies"] == []
+    assert any(
+        finding.get("id") == "dependency_manifest_uncertain"
+        for finding in report.get("uncertainties", [])
+    )
+
+
+def test_specialized_requirement_files_are_additive_not_contradictory(tmp_path):
+    for specialized_name in (
+        "requirements-dev.txt",
+        "requirements-test.txt",
+        "requirements-docs.txt",
+    ):
+        case_root = tmp_path / specialized_name
+        case_root.mkdir()
+        packet = write_packet(
+            case_root,
+            {
+                "app.py": "print('baseline')\n",
+                "requirements.txt": "requests==2.32.4\n",
+                specialized_name: "pytest==8.3.5\n",
+            },
+        )
+        patch = multi_patch([("app.py", "print('baseline')\n", "import requests\nprint('baseline')\n")])
+
+        report = judgment.judge_patch_text(packet, patch)
+
+        assert report["verdict"] == "PASS", specialized_name
+        assert not any(
+            finding.get("id") == "dependency_manifest_uncertain"
+            for finding in report.get("uncertainties", [])
+        ), specialized_name

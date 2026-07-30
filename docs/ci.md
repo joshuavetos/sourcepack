@@ -18,6 +18,12 @@ python -m pip install -e .
 sourcepack diff . --ci
 ```
 
+SourcePack contributors must also run the deterministic, offline adversarial corpus from the repository root. CI and release smoke validation use this same canonical runner:
+
+```bash
+python tools/adversarial_runner.py
+```
+
 `--ci` keeps JSON output machine-readable and, by default, treats WARN as nonzero while FAIL remains nonzero and PASS exits `0`. Add `--exit-policy fail-only` when a CI boundary should preserve WARN verdicts and findings but exit `0` unless the verdict is FAIL. `--exit-policy warn-or-fail` is the explicit spelling of the default WARN-or-FAIL blocking behavior. Verdicts are report judgments; process exits are command-boundary policy decisions and do not rewrite JSON or human verdicts.
 
 ## Trust-state rule

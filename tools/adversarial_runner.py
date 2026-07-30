@@ -207,12 +207,29 @@ def _matches_expected(actual: dict[str, Any], expected: dict[str, Any]) -> list[
 
 
 def run_corpus(corpus: Path, runs: int) -> dict[str, Any]:
-    case_dirs = sorted(path for path in corpus.iterdir() if (path / "expected.json").is_file())
+    if not corpus.is_dir():
+        raise ValueError(f"adversarial corpus directory does not exist: {corpus}")
+    case_dirs = sorted(path for path in corpus.iterdir() if path.is_dir())
     results: list[dict[str, Any]] = []
     for case_dir in case_dirs:
-        loaded = json.loads((case_dir / "expected.json").read_text(encoding="utf-8"))
-        expected = _validate_expected(loaded, case_dir.name)
-        outputs = [_run_once(case_dir) for _ in range(runs)]
+        required_paths = (case_dir / "expected.json", case_dir / "patch.diff", case_dir / "repo_before")
+        missing = [path.name for path in required_paths if not path.exists()]
+        if missing:
+            raise ValueError(f"fixture {case_dir.name!r} is missing required paths: {missing}")
+        if not (case_dir / "repo_before").is_dir():
+            raise ValueError(f"fixture {case_dir.name!r} repo_before must be a directory")
+        try:
+            loaded = json.loads((case_dir / "expected.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"fixture {case_dir.name!r} has an invalid expectation document: {exc}") from exc
+        try:
+            expected = _validate_expected(loaded, case_dir.name)
+        except ValueError as exc:
+            raise ValueError(f"fixture {case_dir.name!r} has an invalid expectation document: {exc}") from exc
+        try:
+            outputs = [_run_once(case_dir) for _ in range(runs)]
+        except (OSError, UnicodeError, RuntimeError, ValueError) as exc:
+            raise ValueError(f"fixture or patch {case_dir.name!r} is malformed: {exc}") from exc
         encoded = [json.dumps(item, sort_keys=True, separators=(",", ":")) for item in outputs]
         errors = _matches_expected(outputs[0], expected)
         if len(set(encoded)) != 1:
@@ -243,7 +260,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.runs < 2:
         parser.error("--runs must be at least 2 to prove determinism")
-    report = run_corpus(args.corpus.resolve(), args.runs)
+    try:
+        report = run_corpus(args.corpus.resolve(), args.runs)
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"adversarial benchmark failed: {exc}", file=sys.stderr)
+        return 1
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["status"] == "PASS" else 1
 

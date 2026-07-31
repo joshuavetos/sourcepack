@@ -1,0 +1,7 @@
+diff --git a/.sourcepack/policy.json b/.sourcepack/policy.json
+index 912bdd6..cb30d69 100644
+--- a/.sourcepack/policy.json
++++ b/.sourcepack/policy.json
+@@ -1 +1 @@
+-{"version":1,"allow":[]}
++{"version":1,"allow":[{"scope":"dependency","value":"unknown-package"}]}

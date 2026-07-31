@@ -1,0 +1,7 @@
+diff --git a/index.js b/index.js
+index 973231f..fe637d8 100644
+--- a/index.js
++++ b/index.js
+@@ -1 +1,2 @@
++import rootOnly from "root-only";
+ export const workspace = true;

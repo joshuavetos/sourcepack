@@ -8,6 +8,10 @@ on:
       - src/sourcepack/**
       - examples/**
       - scripts/release_smoke.py
+      - tools/adversarial_runner.py
+      - tools/external_repository_validation.py
+      - benchmarks/external_repositories/**
+      - tests/test_external_repository_validation.py
       - .github/workflows/**
   workflow_dispatch:
 

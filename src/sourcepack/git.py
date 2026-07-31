@@ -179,6 +179,12 @@ def repo_root(path: str | Path) -> Path | None:
 
 
 def diff(repo: str | Path, *, staged: bool = False, relative: bool = False) -> str:
+    """Return diff text, or an empty string when this convenience query fails.
+
+    Callers making security or policy decisions must use :func:`run_git` and
+    inspect its return code instead of treating this lossy result as evidence
+    that a repository has no changes.
+    """
     args = ["diff", "--staged"] if staged else ["diff"]
 
     if relative:
@@ -189,6 +195,12 @@ def diff(repo: str | Path, *, staged: bool = False, relative: bool = False) -> s
 
 
 def untracked_files(repo: str | Path) -> list[str]:
+    """Return untracked paths, or an empty list when this convenience query fails.
+
+    This wrapper intentionally favors a simple display-oriented API over
+    diagnostic fidelity. Security-sensitive callers must use :func:`run_git`
+    so failure remains distinguishable from a successful empty result.
+    """
     cp = run_git(repo, ["ls-files", "--others", "--exclude-standard"])
     if cp.returncode != 0:
         return []

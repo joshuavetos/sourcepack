@@ -2705,14 +2705,32 @@ def run_cli(args_list=None):
     prompt_cmd.add_argument("--copy", action="store_true")
     prompt_cmd.add_argument("--verbose", action="store_true")
     prompt_cmd.add_argument("--json", action="store_true")
-    baseline_cmd = subs.add_parser("baseline", help="create or refresh trusted enforcement baseline", description="Create or refresh .sourcepack/baseline, the authoritative enforcement state used by sourcepack diff.")
+    baseline_cmd = subs.add_parser(
+        "baseline",
+        help="create or refresh an accepted enforcement baseline",
+        description=(
+            "Create or refresh .sourcepack/baseline after accepting the repository "
+            "state. Later hash checks verify stored-artifact integrity; they do not "
+            "authenticate its creator or establish trust."
+        ),
+    )
     baseline_cmd.add_argument("repo")
     baseline_cmd.add_argument("--force", action="store_true")
     baseline_cmd.add_argument("--refresh", action="store_true")
     baseline_cmd.add_argument("--verbose", action="store_true")
     baseline_cmd.add_argument("--json", action="store_true")
     baseline_cmd.add_argument("--quiet", action="store_true")
-    diff_cmd = subs.add_parser("diff", help="check repo changes against trusted baseline", description="Judge working-tree or staged changes against .sourcepack/baseline. PASS exits 0. WARN exits 0 locally, but exits nonzero with --strict or --ci. FAIL exits nonzero. --json stays machine-readable.")
+    diff_cmd = subs.add_parser(
+        "diff",
+        help="check repo changes against the accepted baseline",
+        description=(
+            "Judge working-tree or staged changes against the integrity-checked "
+            "accepted .sourcepack/baseline. Hash checks verify stored-artifact "
+            "integrity, not creator identity or trust. PASS exits 0. WARN exits 0 "
+            "locally, but exits nonzero with --strict or --ci. FAIL exits nonzero. "
+            "--json stays machine-readable."
+        ),
+    )
     diff_cmd.add_argument("repo")
     diff_cmd.add_argument("--staged", action="store_true")
     diff_cmd.add_argument("--verbose", action="store_true")

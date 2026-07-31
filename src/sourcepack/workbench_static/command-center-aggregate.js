@@ -116,7 +116,7 @@
   window.loadCommandCenterSnapshot = async function loadCommandCenterSnapshot() {
     $('refresh').disabled = true;
     try { const payload = await api(SNAPSHOT_ROUTE); renderSnapshot(payload.snapshot); }
-    catch (error) { setText('verdict-title', 'Workbench Error'); setText('explanation', error.message); }
+    catch (error) { setText('verdict-title', 'Workbench Error'); setText('explanation', error.message); $('verdict-card').setAttribute('role', 'alert'); }
     finally { $('refresh').disabled = false; }
   };
   $('refresh').addEventListener('click', loadCommandCenterSnapshot);

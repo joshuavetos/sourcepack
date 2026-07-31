@@ -4,6 +4,8 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
+from .command_center_limits import MAX_LINE_CHARS, MAX_PROMPT_CHARS, MAX_STRING_CHARS
+
 COMMAND_CENTER_SCHEMA_VERSION = "sourcepack.command_center.v1"
 CAPABILITY_IDS = (
     "review",
@@ -82,7 +84,7 @@ def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def command_center_snapshot_schema() -> dict[str, Any]:
-    nullable_string = _nullable({"type": "string"})
+    nullable_string = _nullable({"type": "string", "maxLength": MAX_STRING_CHARS})
     nullable_action_id = _nullable({"type": "string", "enum": list(ACTION_IDS)})
     nullable_target_surface = _nullable({"type": "string", "enum": list(TARGET_SURFACES)})
     nullable_object = _nullable({"type": "object"})
@@ -92,10 +94,10 @@ def command_center_snapshot_schema() -> dict[str, Any]:
         "required": ["id", "name", "surface", "status", "evidence", "action"],
         "properties": {
             "id": {"type": "string", "enum": list(CAPABILITY_IDS)},
-            "name": {"type": "string", "minLength": 1},
-            "surface": {"type": "string", "minLength": 1},
+            "name": {"type": "string", "minLength": 1, "maxLength": MAX_STRING_CHARS},
+            "surface": {"type": "string", "minLength": 1, "maxLength": MAX_STRING_CHARS},
             "status": {"type": "string", "enum": list(CAPABILITY_STATUSES)},
-            "evidence": {"type": "string", "minLength": 1},
+            "evidence": {"type": "string", "minLength": 1, "maxLength": MAX_STRING_CHARS},
             "action": nullable_action_id,
         },
     }
@@ -110,7 +112,7 @@ def command_center_snapshot_schema() -> dict[str, Any]:
             "action_type": {"type": "string", "enum": list(ACTION_TYPES)},
             "command": nullable_string,
             "target_surface": nullable_target_surface,
-            "reason": {"type": "string", "minLength": 1},
+            "reason": {"type": "string", "minLength": 1, "maxLength": MAX_STRING_CHARS},
         },
     }
     activity = {
@@ -119,7 +121,7 @@ def command_center_snapshot_schema() -> dict[str, Any]:
         "required": ["type", "message"],
         "properties": {
             "type": {"type": "string", "enum": list(ACTIVITY_TYPES)},
-            "message": {"type": "string", "minLength": 1},
+            "message": {"type": "string", "minLength": 1, "maxLength": MAX_STRING_CHARS},
         },
     }
     review_action = {
@@ -128,11 +130,11 @@ def command_center_snapshot_schema() -> dict[str, Any]:
         "required": ["action_type", "label", "reason", "target_surface", "available"],
         "properties": {
             "action_type": {"type": "string", "enum": ["run_review", "copy_prompt", "none"]},
-            "label": {"type": "string", "minLength": 1},
-            "reason": {"type": "string", "minLength": 1},
+            "label": {"type": "string", "minLength": 1, "maxLength": MAX_STRING_CHARS},
+            "reason": {"type": "string", "minLength": 1, "maxLength": MAX_STRING_CHARS},
             "target_surface": {"type": "string", "enum": ["workbench_review", "correction_prompt", "none"]},
             "available": {"type": "boolean"},
-            "prompt": {"type": "string", "minLength": 1},
+            "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_PROMPT_CHARS},
         },
         "oneOf": [
             {
@@ -175,7 +177,7 @@ def command_center_snapshot_schema() -> dict[str, Any]:
         "required": ["number", "text"],
         "properties": {
             "number": {"type": "integer", "minimum": 1},
-            "text": {"type": "string"},
+            "text": {"type": "string", "maxLength": MAX_LINE_CHARS},
         },
     }
     excerpt = {
@@ -183,7 +185,7 @@ def command_center_snapshot_schema() -> dict[str, Any]:
         "additionalProperties": False,
         "required": ["path", "source", "status", "lines"],
         "properties": {
-            "path": {"type": "string", "minLength": 1},
+            "path": {"type": "string", "minLength": 1, "maxLength": MAX_STRING_CHARS},
             "source": {"const": "current_worktree_file_listed_by_canonical_report"},
             "status": {"type": "string", "enum": ["available", "truncated", "omitted"]},
             "reason": {"type": "string", "minLength": 1},
@@ -208,7 +210,7 @@ def command_center_snapshot_schema() -> dict[str, Any]:
         "properties": {
             "schema_version": {"const": "sourcepack.dashboard.proposed_change.v1"},
             "source": {"const": "traffic_report.raw_patch_judgment plus bounded current worktree excerpt"},
-            "paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+            "paths": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": MAX_STRING_CHARS}},
             "excerpts": {"type": "array", "items": excerpt},
         },
     }
@@ -217,9 +219,9 @@ def command_center_snapshot_schema() -> dict[str, Any]:
         "additionalProperties": False,
         "required": ["name", "tag", "body", "problem"],
         "properties": {
-            "name": {"type": "string", "minLength": 1},
-            "tag": {"type": "string", "minLength": 1},
-            "body": {"type": "string", "minLength": 1},
+            "name": {"type": "string", "minLength": 1, "maxLength": MAX_STRING_CHARS},
+            "tag": {"type": "string", "minLength": 1, "maxLength": MAX_STRING_CHARS},
+            "body": {"type": "string", "minLength": 1, "maxLength": MAX_STRING_CHARS},
             "problem": {"type": "boolean"},
         },
     }
@@ -228,8 +230,8 @@ def command_center_snapshot_schema() -> dict[str, Any]:
         "additionalProperties": False,
         "required": ["label", "value"],
         "properties": {
-            "label": {"type": "string", "minLength": 1},
-            "value": {"type": "string", "minLength": 1},
+            "label": {"type": "string", "minLength": 1, "maxLength": MAX_STRING_CHARS},
+            "value": {"type": "string", "minLength": 1, "maxLength": MAX_STRING_CHARS},
         },
     }
     return {
@@ -253,6 +255,7 @@ def command_center_snapshot_schema() -> dict[str, Any]:
             "available_artifacts",
             "workbench",
             "artifacts",
+            "bounds",
         ],
         "properties": {
             "schema_version": {"const": COMMAND_CENTER_SCHEMA_VERSION},
@@ -366,6 +369,29 @@ def command_center_snapshot_schema() -> dict[str, Any]:
                     "report": nullable_object,
                     "report_error": nullable_object,
                     "decisions": {"type": "object"},
+                },
+            },
+            "bounds": {
+                "type": "object", "additionalProperties": False,
+                "required": ["max_serialized_bytes", "bounded_content", "collections", "artifacts"],
+                "properties": {
+                    "max_serialized_bytes": {"type": "integer", "minimum": 1},
+                    "bounded_content": {"const": True},
+                    "collections": {
+                        "type": "object", "additionalProperties": False,
+                        "required": ["findings", "blockers", "warnings", "evidence_items"],
+                        "properties": {key: {
+                            "type": "object", "additionalProperties": False,
+                            "required": ["truncated", "total_count", "displayed_count", "omitted_count"],
+                            "properties": {
+                                "truncated": {"type": "boolean"},
+                                "total_count": {"type": "integer", "minimum": 0},
+                                "displayed_count": {"type": "integer", "minimum": 0},
+                                "omitted_count": {"type": "integer", "minimum": 0},
+                            },
+                        } for key in ("findings", "blockers", "warnings", "evidence_items")},
+                    },
+                    "artifacts": {"type": "object"},
                 },
             },
         },

@@ -15,6 +15,8 @@
     $('policy-raw').textContent = JSON.stringify(snapshot.artifacts.policy, null, 2);
     $('replay-raw').textContent = JSON.stringify(report === null ? null : report.replay_bundle, null, 2);
     $('systems-raw').textContent = JSON.stringify(snapshot.artifacts, null, 2);
+    const omitted = Object.entries(snapshot.bounds.collections).filter(([, value]) => value.truncated).map(([key, value]) => `${key}: ${value.omitted_count} omitted`);
+    if (omitted.length) $('systems-raw').textContent = `Bounded diagnostics (${omitted.join(', ')}).\n` + $('systems-raw').textContent;
     const copyAvailable = action.action_type === 'copy_prompt' && action.available === true && typeof action.prompt === 'string' && action.prompt.trim() !== '';
     currentPrompt = copyAvailable ? action.prompt : '';
     $('correction-prompt').textContent = currentPrompt || 'No correction prompt is available in the canonical report.';

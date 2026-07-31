@@ -16,6 +16,7 @@ from typing import Any
 from . import __version__
 from .baseline import baseline_report_fields, validate_baseline
 from .command_center_endpoint import COMMAND_CENTER_ROUTE, command_center_payload
+from .command_center_limits import MAX_COLLECTION_ITEMS, MAX_EXCERPTS, MAX_LINE_CHARS, clip_text
 from .git import metadata as git_metadata, run_git
 from .overrides import OVERRIDE_SCHEMA_VERSION, override_applies
 from .paths import sourcepack_paths
@@ -112,29 +113,40 @@ def _safe_report_paths(report: dict[str, Any]) -> list[str]:
         values = raw.get(key) if isinstance(raw, dict) else None
         if isinstance(values, list):
             for value in values:
-                if isinstance(value, str) and value not in paths:
-                    paths.append(value)
-    for finding in report.get("findings", []):
-        if isinstance(finding, dict) and isinstance(finding.get("path"), str) and finding["path"] not in paths:
-            paths.append(finding["path"])
-    return paths[:8]
+                if isinstance(value, str):
+                    path = clip_text(value)
+                    if path not in paths:
+                        paths.append(path)
+    for finding in report.get("findings", [])[:MAX_COLLECTION_ITEMS]:
+        if isinstance(finding, dict) and isinstance(finding.get("path"), str):
+            path = clip_text(finding["path"])
+            if path not in paths:
+                paths.append(path)
+    return paths[:MAX_EXCERPTS]
 
 
 def _bounded_changed_file_excerpt(repo: Path, report: dict[str, Any]) -> dict[str, Any]:
     paths = _safe_report_paths(report)
-    terms = sorted({str(finding.get("evidence") or "").lower() for finding in report.get("findings", []) if isinstance(finding, dict) and finding.get("evidence")})
+    terms = sorted({str(finding.get("evidence") or "")[:MAX_LINE_CHARS].lower() for finding in report.get("findings", [])[:MAX_COLLECTION_ITEMS] if isinstance(finding, dict) and finding.get("evidence")})
     excerpts: list[dict[str, Any]] = []
     root = repo.resolve()
     for rel in paths:
         if not rel or Path(rel).is_absolute() or rel.startswith(("..", "/", "\\")):
             continue
         target = (root / rel).resolve()
-        if not _is_relative_to(target, root) or not target.is_file():
+        if not _is_relative_to(target, root):
+            continue
+        try:
+            is_file = target.is_file()
+        except OSError:
+            excerpts.append({"path": clip_text(rel), "source": "current_worktree_file_listed_by_canonical_report", "status": "omitted", "reason": "file_unreadable", "lines": []})
+            continue
+        if not is_file:
             continue
         try:
             data = target.open("rb").read(WORKBENCH_EXCERPT_FILE_LIMIT_BYTES + 1)
         except OSError:
-            excerpts.append({"path": rel, "source": "current_worktree_file_listed_by_canonical_report", "status": "omitted", "reason": "file_unreadable", "lines": []})
+            excerpts.append({"path": clip_text(rel), "source": "current_worktree_file_listed_by_canonical_report", "status": "omitted", "reason": "file_unreadable", "lines": []})
             continue
         status = "truncated" if len(data) > WORKBENCH_EXCERPT_FILE_LIMIT_BYTES else "available"
         if status == "truncated":
@@ -142,7 +154,7 @@ def _bounded_changed_file_excerpt(repo: Path, report: dict[str, Any]) -> dict[st
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
-            excerpts.append({"path": rel, "source": "current_worktree_file_listed_by_canonical_report", "status": "omitted", "reason": "file_not_utf8", "lines": []})
+            excerpts.append({"path": clip_text(rel), "source": "current_worktree_file_listed_by_canonical_report", "status": "omitted", "reason": "file_not_utf8", "lines": []})
             continue
         lines = text.splitlines()
         selected: list[int] = []
@@ -153,7 +165,7 @@ def _bounded_changed_file_excerpt(repo: Path, report: dict[str, Any]) -> dict[st
         if not selected:
             selected = list(range(min(len(lines), 8)))
         selected = sorted(set(selected))[:12]
-        excerpts.append({"path": rel, "source": "current_worktree_file_listed_by_canonical_report", "status": status, "byte_limit": WORKBENCH_EXCERPT_FILE_LIMIT_BYTES, "lines": [{"number": i + 1, "text": lines[i]} for i in selected]})
+        excerpts.append({"path": clip_text(rel), "source": "current_worktree_file_listed_by_canonical_report", "status": status, "byte_limit": WORKBENCH_EXCERPT_FILE_LIMIT_BYTES, "lines": [{"number": i + 1, "text": clip_text(lines[i], MAX_LINE_CHARS)} for i in selected]})
     return {"schema_version": "sourcepack.dashboard.proposed_change.v1", "source": "traffic_report.raw_patch_judgment plus bounded current worktree excerpt", "paths": paths, "excerpts": excerpts}
 
 def _report_payload(repo: Path) -> dict[str, Any]:

@@ -15,6 +15,20 @@ builder, and serializes its result.
 
 The response contains the canonical Command Center snapshot built from the repository's existing Git, baseline, policy, status, and report readers.
 
+## Verified growth paths
+
+The pre-hardening composition review found six embedded producer objects: Git metadata,
+baseline validation, effective policy, status, canonical report/report error, and the override
+dashboard. The report could grow through findings, blockers, warnings, evidence variants,
+reason-code maps, remediation, replay bundles, paths, raw patch/report fields, and arbitrary
+nested metadata. Policy rules/material and override history were repository-sized; Git/status,
+error messages, branch/path/time strings, evidence cards, correction rows, and activity text were
+string-sized. Changed-file excerpts were already limited to eight paths, 128 KiB read per file,
+and twelve selected lines, but individual line text was not clipped. Capabilities (nine), priority
+actions (eight), activity (four plus one error), evidence cards (six), and correction rows (three)
+were already count-bounded. The new projection bounds all indirect producer nesting as well as
+these direct display paths; excerpt reads remain capped and excerpt line text is now clipped.
+
 ## Response shape
 
 ```json
@@ -30,7 +44,8 @@ The response contains the canonical Command Center snapshot built from the repos
     "capabilities": [],
     "priority_actions": [],
     "activity": [],
-    "artifacts": {}
+    "artifacts": {},
+    "bounds": {}
   }
 }
 ```
@@ -48,9 +63,23 @@ The backend validates every successful endpoint response against the canonical c
 - deterministic priority ordering and unique action IDs;
 - bounded action payload rules;
 - score ranges;
-- additive compatibility inside raw artifact payloads.
+- additive compatibility inside bounded artifact diagnostics.
 
-Raw baseline, policy, status, report, and report-error objects remain preserved under `artifacts`. Their internal schemas are owned by their respective producers and are intentionally not redefined by the Command Center contract.
+Producer diagnostics under `artifacts` are deterministic bounded projections, not complete raw
+objects. Strings are limited to 2,048 code points (correction prompts to 8,192), lists and
+mappings to 64 entries, and nesting to six levels. Mapping keys are sorted; lists retain producer
+order; clipped text ends in `…[truncated]`. Findings, blockers, warnings, and evidence expose
+`total_count`, `displayed_count`, `omitted_count`, and `truncated` under `bounds`, so canonical
+totals are never confused with the displayed subset.
+
+The compact UTF-8 serialization of a snapshot is limited to 262,144 bytes. After construction and
+validation, the backend performs at most three deterministic reduction stages: decisions first,
+then policy/baseline/status diagnostics, then nonessential report detail. It serializes after each
+stage and stops immediately once the snapshot fits. Verdict, posture, totals,
+scores, action selection, replay availability, and error integrity are retained and the result is
+revalidated. If those essential fields cannot fit, the endpoint returns the established safe error
+envelope and sends no partial snapshot. Bounding performs no review, repair, baseline mutation, or
+trust-state mutation.
 
 An invalid snapshot fails closed with the existing `command_center_snapshot_failed` response rather than sending a partially valid application state.
 
@@ -75,6 +104,7 @@ This is an **internal versioned contract**, not a public compatibility contract.
 | `available_artifacts` | Canonical usability flags for baseline, policy, supported canonical report, replay, and persisted decisions. | Never null; an unsupported raw report remains inspectable under `artifacts.report` but its report availability flag is false. |
 | `workbench` | Backend-owned bounded-review/correction action, bounded changed-file excerpt, evidence-card display model, and correction-summary rows. | `proposed_change` is null and presentation arrays are empty without a supported canonical report. |
 | `artifacts` | Bundled canonical baseline, policy, status, report, report error, and persisted-decision payloads used to construct the snapshot. | Report and report error are mutually exclusive and nullable; producer-owned objects may contain additive fields. |
+| `bounds` | Transport limit and honest per-collection/per-artifact truncation metadata. | Counts describe canonical totals and displayed subsets; omission reasons identify final byte-limit reduction. |
 
 ## Provenance and failure rules
 
@@ -82,4 +112,4 @@ The single builder reads only canonical Git metadata, baseline validation, effec
 
 ## Known limitations
 
-The contract is local and release-coupled, activity is a current-state lifecycle summary rather than a durable audit log, capability scores are coarse product indicators, and replay is degraded when a canonical report has no replay bundle. The snapshot embeds raw producer payloads, so it can be larger than the previous overview response. Persisted decisions currently expose the established override-ledger view rather than every possible future decision type.
+The contract is local and release-coupled, activity is a current-state lifecycle summary rather than a durable audit log, capability scores are coarse product indicators, and replay is degraded when a canonical report has no replay bundle. Bounding limits transport and rendering cost; it does **not** prove repository completeness, correctness, or security. Producers still construct their canonical objects before this projection, so their own computational limits remain separate. Persisted decisions currently expose the established override-ledger view rather than every possible future decision type.

@@ -9,6 +9,7 @@
         "additionalProperties": false,
         "properties": {
           "message": {
+            "maxLength": 2048,
             "minLength": 1,
             "type": "string"
           },
@@ -106,6 +107,148 @@
       "minItems": 5,
       "type": "array"
     },
+    "bounds": {
+      "additionalProperties": false,
+      "properties": {
+        "artifacts": {
+          "type": "object"
+        },
+        "bounded_content": {
+          "const": true
+        },
+        "collections": {
+          "additionalProperties": false,
+          "properties": {
+            "blockers": {
+              "additionalProperties": false,
+              "properties": {
+                "displayed_count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "omitted_count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "total_count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "truncated",
+                "total_count",
+                "displayed_count",
+                "omitted_count"
+              ],
+              "type": "object"
+            },
+            "evidence_items": {
+              "additionalProperties": false,
+              "properties": {
+                "displayed_count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "omitted_count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "total_count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "truncated",
+                "total_count",
+                "displayed_count",
+                "omitted_count"
+              ],
+              "type": "object"
+            },
+            "findings": {
+              "additionalProperties": false,
+              "properties": {
+                "displayed_count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "omitted_count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "total_count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "truncated",
+                "total_count",
+                "displayed_count",
+                "omitted_count"
+              ],
+              "type": "object"
+            },
+            "warnings": {
+              "additionalProperties": false,
+              "properties": {
+                "displayed_count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "omitted_count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "total_count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "truncated",
+                "total_count",
+                "displayed_count",
+                "omitted_count"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "findings",
+            "blockers",
+            "warnings",
+            "evidence_items"
+          ],
+          "type": "object"
+        },
+        "max_serialized_bytes": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_serialized_bytes",
+        "bounded_content",
+        "collections",
+        "artifacts"
+      ],
+      "type": "object"
+    },
     "capabilities": {
       "items": {
         "additionalProperties": false,
@@ -132,6 +275,7 @@
             ]
           },
           "evidence": {
+            "maxLength": 2048,
             "minLength": 1,
             "type": "string"
           },
@@ -150,6 +294,7 @@
             "type": "string"
           },
           "name": {
+            "maxLength": 2048,
             "minLength": 1,
             "type": "string"
           },
@@ -166,6 +311,7 @@
             "type": "string"
           },
           "surface": {
+            "maxLength": 2048,
             "minLength": 1,
             "type": "string"
           }
@@ -190,6 +336,7 @@
         "branch": {
           "anyOf": [
             {
+              "maxLength": 2048,
               "type": "string"
             },
             {
@@ -209,6 +356,7 @@
         "report_time": {
           "anyOf": [
             {
+              "maxLength": 2048,
               "type": "string"
             },
             {
@@ -260,6 +408,7 @@
         "baseline_state": {
           "anyOf": [
             {
+              "maxLength": 2048,
               "type": "string"
             },
             {
@@ -278,6 +427,7 @@
         "policy_resolution_status": {
           "anyOf": [
             {
+              "maxLength": 2048,
               "type": "string"
             },
             {
@@ -331,6 +481,7 @@
           "command": {
             "anyOf": [
               {
+                "maxLength": 2048,
                 "type": "string"
               },
               {
@@ -366,6 +517,7 @@
             "type": "string"
           },
           "reason": {
+            "maxLength": 2048,
             "minLength": 1,
             "type": "string"
           },
@@ -514,10 +666,12 @@
             "additionalProperties": false,
             "properties": {
               "label": {
+                "maxLength": 2048,
                 "minLength": 1,
                 "type": "string"
               },
               "value": {
+                "maxLength": 2048,
                 "minLength": 1,
                 "type": "string"
               }
@@ -536,10 +690,12 @@
             "additionalProperties": false,
             "properties": {
               "body": {
+                "maxLength": 2048,
                 "minLength": 1,
                 "type": "string"
               },
               "name": {
+                "maxLength": 2048,
                 "minLength": 1,
                 "type": "string"
               },
@@ -547,6 +703,7 @@
                 "type": "boolean"
               },
               "tag": {
+                "maxLength": 2048,
                 "minLength": 1,
                 "type": "string"
               }
@@ -617,6 +774,7 @@
                               "type": "integer"
                             },
                             "text": {
+                              "maxLength": 512,
                               "type": "string"
                             }
                           },
@@ -629,6 +787,7 @@
                         "type": "array"
                       },
                       "path": {
+                        "maxLength": 2048,
                         "minLength": 1,
                         "type": "string"
                       },
@@ -660,6 +819,7 @@
                 },
                 "paths": {
                   "items": {
+                    "maxLength": 2048,
                     "minLength": 1,
                     "type": "string"
                   },
@@ -772,14 +932,17 @@
               "type": "boolean"
             },
             "label": {
+              "maxLength": 2048,
               "minLength": 1,
               "type": "string"
             },
             "prompt": {
+              "maxLength": 8192,
               "minLength": 1,
               "type": "string"
             },
             "reason": {
+              "maxLength": 2048,
               "minLength": 1,
               "type": "string"
             },
@@ -824,7 +987,8 @@
     "activity",
     "available_artifacts",
     "workbench",
-    "artifacts"
+    "artifacts",
+    "bounds"
   ],
   "title": "SourcePack Command Center v1 Snapshot",
   "type": "object"

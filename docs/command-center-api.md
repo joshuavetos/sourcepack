@@ -7,6 +7,12 @@ GET /api/command-center/v1/snapshot
 X-SourcePack-Token: <workbench session token>
 ```
 
+The canonical Workbench request handler registers and dispatches this route directly.
+Importing the package does not install, wrap, or replace a Workbench handler. Snapshot
+construction remains in the Command Center module and contract validation remains in
+the contract layer; the router only authenticates, invokes the canonical payload
+builder, and serializes its result.
+
 The response contains the canonical Command Center snapshot built from the repository's existing Git, baseline, policy, status, and report readers.
 
 ## Response shape

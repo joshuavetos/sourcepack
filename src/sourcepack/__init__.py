@@ -25,9 +25,3 @@ from . import policy as _policy
 from .policy_authority import install_policy_authority_guard as _install_policy_authority_guard
 
 _install_policy_authority_guard(_policy)
-
-# The experimental mega branch exposes one authenticated aggregate application
-# state endpoint without replacing the established Workbench routes.
-from .command_center_endpoint import install_command_center_route as _install_command_center_route
-
-_install_command_center_route()

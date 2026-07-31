@@ -15,6 +15,7 @@ from typing import Any
 
 from . import __version__
 from .baseline import baseline_report_fields, validate_baseline
+from .command_center_endpoint import COMMAND_CENTER_ROUTE, command_center_payload
 from .git import metadata as git_metadata, run_git
 from .overrides import OVERRIDE_SCHEMA_VERSION, override_applies
 from .paths import sourcepack_paths
@@ -415,6 +416,12 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             if not self._require_api_token():
                 return
             self._send_review_method_not_allowed()
+            return
+        if requested == COMMAND_CENTER_ROUTE:
+            if not self._require_api_token():
+                return
+            payload = command_center_payload(self.repo_root)
+            self._send_json(200 if payload.get("ok") else 500, payload)
             return
         if requested.startswith("/api/"):
             if not self._require_api_token():

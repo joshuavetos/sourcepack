@@ -7,6 +7,7 @@ browser, context, and temporary-repository lifetimes remain explicit.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -16,7 +17,13 @@ from pathlib import Path
 
 import pytest
 
-playwright = pytest.importorskip("playwright.sync_api")
+PLAYWRIGHT_AVAILABLE = importlib.util.find_spec("playwright.sync_api") is not None
+pytestmark = pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="Playwright browser-test dependency is not installed")
+
+if PLAYWRIGHT_AVAILABLE:
+    import playwright.sync_api as playwright
+else:
+    playwright = None
 
 from sourcepack import workbench
 from sourcepack.command_center import build_command_center_snapshot

@@ -1,0 +1,359 @@
+[IGN] .git/ - ignored_directory
+[IGN] .gitattributes - hidden_file
+[IGN] .github/ - hidden_directory
+[IGN] .gitignore - hidden_file
+[IGN] .pytest_cache/ - ignored_directory
+[IGN] .sourcepack-published - hidden_file
+[IGN] .sourcepack/ - ignored_directory
+[IGN] .sourcepack_corpus_cache/ - hidden_directory
+[IGN] benchmarks/adversarial/contradictory-duplicate-manifests/patch.diff - unsupported_extension
+[IGN] benchmarks/adversarial/manifest-delete-recreate/patch.diff - unsupported_extension
+[IGN] benchmarks/adversarial/nested-manifest-scope-leakage/patch.diff - unsupported_extension
+[IGN] benchmarks/adversarial/npm-same-patch-dependency/patch.diff - unsupported_extension
+[IGN] benchmarks/adversarial/npm-same-patch-script/patch.diff - unsupported_extension
+[IGN] benchmarks/adversarial/python-same-patch-dependency/patch.diff - unsupported_extension
+[IGN] benchmarks/adversarial/repository-policy-weakened/patch.diff - unsupported_extension
+[IGN] benchmarks/adversarial/repository-policy-weakened/repo_before/.sourcepack/ - ignored_directory
+[IGN] benchmarks/external_repositories/multiple-dependency-manifests/patch.diff - unsupported_extension
+[IGN] benchmarks/external_repositories/node-npm-project/patch.diff - unsupported_extension
+[IGN] benchmarks/external_repositories/pnpm-workspace/patch.diff - unsupported_extension
+[IGN] benchmarks/external_repositories/protected-policy-files/patch.diff - unsupported_extension
+[IGN] benchmarks/external_repositories/protected-policy-files/repo_before/.sourcepack/ - ignored_directory
+[IGN] benchmarks/external_repositories/python-project/patch.diff - unsupported_extension
+[IGN] benchmarks/external_repositories/unsupported-dependency-evidence/patch.diff - unsupported_extension
+[IGN] docs/assets/.gitkeep - hidden_file
+[IGN] docs/assets/sourcepack-showcase-hero.png - ignored_pattern
+[IGN] examples/demo_repo/.env - hidden_file
+[IGN] examples/fake_ai_patch.diff - unsupported_extension
+[IGN] examples/golden/output/fail-protected-artifact/repo/.git/ - ignored_directory
+[IGN] examples/golden/output/fail-protected-artifact/repo/.gitignore - hidden_file
+[IGN] examples/golden/output/fail-protected-artifact/repo/.sourcepack/ - ignored_directory
+[IGN] examples/golden/output/fail-protected-artifact/repo/.sourcepackignore - hidden_file
+[IGN] examples/golden/output/fail-protected-artifact/repo/README.md - untracked_file_skipped
+[IGN] examples/golden/output/fail-protected-artifact/repo/pyproject.toml - untracked_file_skipped
+[IGN] examples/golden/output/fail-protected-artifact/repo/sourcepack.config.json - untracked_file_skipped
+[IGN] examples/golden/output/fail-protected-artifact/summary.json - untracked_file_skipped
+[IGN] examples/golden/output/fail-protected-artifact/terminal.txt - untracked_file_skipped
+[IGN] examples/golden/output/fail-unsupported-command/repo/.git/ - ignored_directory
+[IGN] examples/golden/output/fail-unsupported-command/repo/.gitignore - hidden_file
+[IGN] examples/golden/output/fail-unsupported-command/repo/.sourcepack/ - ignored_directory
+[IGN] examples/golden/output/fail-unsupported-command/repo/.sourcepackignore - hidden_file
+[IGN] examples/golden/output/fail-unsupported-command/repo/README.md - untracked_file_skipped
+[IGN] examples/golden/output/fail-unsupported-command/repo/package.json - untracked_file_skipped
+[IGN] examples/golden/output/fail-unsupported-command/repo/pyproject.toml - untracked_file_skipped
+[IGN] examples/golden/output/fail-unsupported-command/repo/sourcepack.config.json - untracked_file_skipped
+[IGN] examples/golden/output/fail-unsupported-command/summary.json - untracked_file_skipped
+[IGN] examples/golden/output/fail-unsupported-command/terminal.txt - untracked_file_skipped
+[IGN] examples/golden/output/fail-unsupported-dependency/repo/.git/ - ignored_directory
+[IGN] examples/golden/output/fail-unsupported-dependency/repo/.gitignore - hidden_file
+[IGN] examples/golden/output/fail-unsupported-dependency/repo/.sourcepack/ - ignored_directory
+[IGN] examples/golden/output/fail-unsupported-dependency/repo/.sourcepackignore - hidden_file
+[IGN] examples/golden/output/fail-unsupported-dependency/repo/README.md - untracked_file_skipped
+[IGN] examples/golden/output/fail-unsupported-dependency/repo/app.py - untracked_file_skipped
+[IGN] examples/golden/output/fail-unsupported-dependency/repo/pyproject.toml - untracked_file_skipped
+[IGN] examples/golden/output/fail-unsupported-dependency/repo/sourcepack.config.json - untracked_file_skipped
+[IGN] examples/golden/output/fail-unsupported-dependency/summary.json - untracked_file_skipped
+[IGN] examples/golden/output/fail-unsupported-dependency/terminal.txt - untracked_file_skipped
+[IGN] examples/golden/output/pass-clean/repo/.git/ - ignored_directory
+[IGN] examples/golden/output/pass-clean/repo/.gitignore - hidden_file
+[IGN] examples/golden/output/pass-clean/repo/.sourcepack/ - ignored_directory
+[IGN] examples/golden/output/pass-clean/repo/.sourcepackignore - hidden_file
+[IGN] examples/golden/output/pass-clean/repo/README.md - untracked_file_skipped
+[IGN] examples/golden/output/pass-clean/repo/pyproject.toml - untracked_file_skipped
+[IGN] examples/golden/output/pass-clean/repo/sourcepack.config.json - untracked_file_skipped
+[IGN] examples/golden/output/pass-clean/summary.json - untracked_file_skipped
+[IGN] examples/golden/output/pass-clean/terminal.txt - untracked_file_skipped
+[IGN] examples/golden/output/trust-boundary/repo/.git/ - ignored_directory
+[IGN] examples/golden/output/trust-boundary/repo/.gitignore - hidden_file
+[IGN] examples/golden/output/trust-boundary/repo/.sourcepack/ - ignored_directory
+[IGN] examples/golden/output/trust-boundary/repo/.sourcepackignore - hidden_file
+[IGN] examples/golden/output/trust-boundary/repo/README.md - untracked_file_skipped
+[IGN] examples/golden/output/trust-boundary/repo/deploy.sh - untracked_file_skipped
+[IGN] examples/golden/output/trust-boundary/repo/pyproject.toml - untracked_file_skipped
+[IGN] examples/golden/output/trust-boundary/repo/sourcepack.config.json - untracked_file_skipped
+[IGN] examples/golden/output/trust-boundary/summary.json - untracked_file_skipped
+[IGN] examples/golden/output/trust-boundary/terminal.txt - untracked_file_skipped
+[IGN] examples/golden/output/warn-new-file/repo/.git/ - ignored_directory
+[IGN] examples/golden/output/warn-new-file/repo/.gitignore - hidden_file
+[IGN] examples/golden/output/warn-new-file/repo/.sourcepack/ - ignored_directory
+[IGN] examples/golden/output/warn-new-file/repo/.sourcepackignore - hidden_file
+[IGN] examples/golden/output/warn-new-file/repo/README.md - untracked_file_skipped
+[IGN] examples/golden/output/warn-new-file/repo/api.py - untracked_file_skipped
+[IGN] examples/golden/output/warn-new-file/repo/pyproject.toml - untracked_file_skipped
+[IGN] examples/golden/output/warn-new-file/repo/sourcepack.config.json - untracked_file_skipped
+[IGN] examples/golden/output/warn-new-file/summary.json - untracked_file_skipped
+[IGN] examples/golden/output/warn-new-file/terminal.txt - untracked_file_skipped
+[IGN] scripts/__pycache__/ - ignored_directory
+[IGN] src/sourcepack.egg-info/PKG-INFO - untracked_file_skipped
+[IGN] src/sourcepack.egg-info/SOURCES.txt - untracked_file_skipped
+[IGN] src/sourcepack.egg-info/dependency_links.txt - untracked_file_skipped
+[IGN] src/sourcepack.egg-info/entry_points.txt - untracked_file_skipped
+[IGN] src/sourcepack.egg-info/requires.txt - untracked_file_skipped
+[IGN] src/sourcepack.egg-info/top_level.txt - untracked_file_skipped
+[IGN] src/sourcepack/__pycache__/ - ignored_directory
+[IGN] src/sourcepack/assets/__pycache__/ - ignored_directory
+[IGN] src/sourcepack/commands/__pycache__/ - ignored_directory
+[IGN] src/sourcepack/ecosystems/__pycache__/ - ignored_directory
+[IGN] src/sourcepack/examples/demo_repo/.env - hidden_file
+[IGN] src/sourcepack/examples/fake_ai_patch.diff - unsupported_extension
+[IGN] src/sourcepack/reports/__pycache__/ - ignored_directory
+[IGN] tests/__pycache__/ - ignored_directory
+[IGN] tools/__pycache__/ - ignored_directory
+[INC] BUILD_WEEK.md
+[INC] CHANGELOG.md
+[INC] LICENSE
+[INC] PROJECT.md
+[INC] README.md
+[INC] SECURITY.md
+[INC] action.yml
+[INC] benchmarks/adversarial/README.md
+[INC] benchmarks/adversarial/contradictory-duplicate-manifests/case.md
+[INC] benchmarks/adversarial/contradictory-duplicate-manifests/expected.json
+[INC] benchmarks/adversarial/contradictory-duplicate-manifests/repo_before/app.py
+[INC] benchmarks/adversarial/contradictory-duplicate-manifests/repo_before/requirements-prod.txt
+[INC] benchmarks/adversarial/contradictory-duplicate-manifests/repo_before/requirements.txt
+[INC] benchmarks/adversarial/manifest-delete-recreate/case.md
+[INC] benchmarks/adversarial/manifest-delete-recreate/expected.json
+[INC] benchmarks/adversarial/manifest-delete-recreate/repo_before/app.py
+[INC] benchmarks/adversarial/manifest-delete-recreate/repo_before/requirements.txt
+[INC] benchmarks/adversarial/nested-manifest-scope-leakage/case.md
+[INC] benchmarks/adversarial/nested-manifest-scope-leakage/expected.json
+[INC] benchmarks/adversarial/nested-manifest-scope-leakage/repo_before/app.js
+[INC] benchmarks/adversarial/nested-manifest-scope-leakage/repo_before/package.json
+[INC] benchmarks/adversarial/nested-manifest-scope-leakage/repo_before/packages/worker/package.json
+[INC] benchmarks/adversarial/npm-same-patch-dependency/case.md
+[INC] benchmarks/adversarial/npm-same-patch-dependency/expected.json
+[INC] benchmarks/adversarial/npm-same-patch-dependency/repo_before/app.js
+[INC] benchmarks/adversarial/npm-same-patch-script/case.md
+[INC] benchmarks/adversarial/npm-same-patch-script/expected.json
+[INC] benchmarks/adversarial/npm-same-patch-script/repo_before/README.md
+[INC] benchmarks/adversarial/python-same-patch-dependency/case.md
+[INC] benchmarks/adversarial/python-same-patch-dependency/expected.json
+[INC] benchmarks/adversarial/python-same-patch-dependency/repo_before/app.py
+[INC] benchmarks/adversarial/repository-policy-weakened/case.md
+[INC] benchmarks/adversarial/repository-policy-weakened/expected.json
+[INC] benchmarks/adversarial/repository-policy-weakened/repo_before/app.py
+[INC] benchmarks/external_repositories/README.md
+[INC] benchmarks/external_repositories/multiple-dependency-manifests/expected.json
+[INC] benchmarks/external_repositories/multiple-dependency-manifests/repo_before/app.py
+[INC] benchmarks/external_repositories/multiple-dependency-manifests/repo_before/requirements-prod.txt
+[INC] benchmarks/external_repositories/multiple-dependency-manifests/repo_before/requirements.txt
+[INC] benchmarks/external_repositories/node-npm-project/expected.json
+[INC] benchmarks/external_repositories/node-npm-project/repo_before/index.js
+[INC] benchmarks/external_repositories/node-npm-project/repo_before/package.json
+[INC] benchmarks/external_repositories/pnpm-workspace/expected.json
+[INC] benchmarks/external_repositories/pnpm-workspace/repo_before/index.js
+[INC] benchmarks/external_repositories/pnpm-workspace/repo_before/package.json
+[INC] benchmarks/external_repositories/pnpm-workspace/repo_before/packages/web/index.js
+[INC] benchmarks/external_repositories/pnpm-workspace/repo_before/packages/web/package.json
+[INC] benchmarks/external_repositories/pnpm-workspace/repo_before/pnpm-workspace.yaml
+[INC] benchmarks/external_repositories/protected-policy-files/expected.json
+[INC] benchmarks/external_repositories/protected-policy-files/repo_before/app.py
+[INC] benchmarks/external_repositories/python-project/expected.json
+[INC] benchmarks/external_repositories/python-project/repo_before/app.py
+[INC] benchmarks/external_repositories/python-project/repo_before/requirements.txt
+[INC] benchmarks/external_repositories/unsupported-dependency-evidence/expected.json
+[INC] benchmarks/external_repositories/unsupported-dependency-evidence/repo_before/Cargo.toml
+[INC] benchmarks/external_repositories/unsupported-dependency-evidence/repo_before/src/main.rs
+[INC] corpus/repos.example.json
+[INC] docs/README.md
+[INC] docs/adversarial-hardening-plan.md
+[INC] docs/ai-agent-workflow.md
+[INC] docs/architecture.md
+[INC] docs/assets/README.md
+[INC] docs/baseline-lifecycle.md
+[INC] docs/ci.md
+[INC] docs/command-center-api.md
+[INC] docs/command-center-changelog.md
+[INC] docs/command-center-next.md
+[INC] docs/command-center-pr-scope.md
+[INC] docs/command-center-security.md
+[INC] docs/demo-evidence-checklist.md
+[INC] docs/examples/sourcepack-action.yml
+[INC] docs/github-action-quickstart.md
+[INC] docs/hosted-control-plane.md
+[INC] docs/limitations.md
+[INC] docs/problem-fit.md
+[INC] docs/public-alpha-readiness.md
+[INC] docs/real-corpus-validation.md
+[INC] docs/reason-codes.md
+[INC] docs/release-checklist.md
+[INC] docs/releases/v1.10.0a0-publish-checklist.md
+[INC] docs/releases/v1.10.0a0.md
+[INC] docs/schema-contracts.md
+[INC] docs/showcase/index.html
+[INC] docs/showcase/showcase-data.json
+[INC] docs/showcase/showcase.css
+[INC] docs/showcase/showcase.js
+[INC] docs/sourcepack-command-center.md
+[INC] docs/submission-assets.md
+[INC] docs/systemic-upgrade-status.md
+[INC] docs/threat-model.md
+[INC] docs/vscode-extension-plan.md
+[INC] docs/workbench-review-flow.md
+[INC] examples/demo_repo/README.md
+[INC] examples/demo_repo/pyproject.toml
+[INC] examples/demo_repo/sourcepack/cli.py
+[INC] examples/demo_repo/sourcepack/judge.py
+[INC] examples/demo_repo/sourcepack/verify.py
+[INC] examples/demo_repo/tests/test_verify.py
+[INC] examples/fake_ai_answer.md
+[INC] pyproject.toml
+[INC] pytest.ini
+[INC] schemas/command_center_snapshot.schema.json
+[INC] schemas/judgment_report.schema.json
+[INC] schemas/patch_judgment_report.schema.json
+[INC] schemas/reality_map.schema.json
+[INC] schemas/receipt.schema.json
+[INC] scripts/__init__.py
+[INC] scripts/release_smoke.py
+[INC] scripts/sourcepack_action.py
+[INC] src/sourcepack/__init__.py
+[INC] src/sourcepack/analysis.py
+[INC] src/sourcepack/assets/__init__.py
+[INC] src/sourcepack/assets/audit_template.md
+[INC] src/sourcepack/assets/packet_instructions.md
+[INC] src/sourcepack/baseline.py
+[INC] src/sourcepack/cli.py
+[INC] src/sourcepack/cloud.py
+[INC] src/sourcepack/command_center.py
+[INC] src/sourcepack/command_center_contract.py
+[INC] src/sourcepack/command_center_endpoint.py
+[INC] src/sourcepack/command_center_limits.py
+[INC] src/sourcepack/commands/__init__.py
+[INC] src/sourcepack/commands/bundle.py
+[INC] src/sourcepack/commands/fleet.py
+[INC] src/sourcepack/commands/report.py
+[INC] src/sourcepack/decision_ledger.py
+[INC] src/sourcepack/dependencies.py
+[INC] src/sourcepack/diff_parser.py
+[INC] src/sourcepack/ecosystems/__init__.py
+[INC] src/sourcepack/ecosystems/generic.py
+[INC] src/sourcepack/ecosystems/node.py
+[INC] src/sourcepack/ecosystems/python.py
+[INC] src/sourcepack/errors.py
+[INC] src/sourcepack/evidence.py
+[INC] src/sourcepack/evidence_bundle.py
+[INC] src/sourcepack/examples/demo_repo/README.md
+[INC] src/sourcepack/examples/demo_repo/pyproject.toml
+[INC] src/sourcepack/examples/demo_repo/sourcepack/cli.py
+[INC] src/sourcepack/examples/demo_repo/sourcepack/judge.py
+[INC] src/sourcepack/examples/demo_repo/sourcepack/verify.py
+[INC] src/sourcepack/examples/demo_repo/tests/test_verify.py
+[INC] src/sourcepack/examples/fake_ai_answer.md
+[INC] src/sourcepack/execution_ledger.py
+[INC] src/sourcepack/finding_identity.py
+[INC] src/sourcepack/fleet.py
+[INC] src/sourcepack/git.py
+[INC] src/sourcepack/hosted.py
+[INC] src/sourcepack/judgment.py
+[INC] src/sourcepack/overrides.py
+[INC] src/sourcepack/packet.py
+[INC] src/sourcepack/paths.py
+[INC] src/sourcepack/policy.py
+[INC] src/sourcepack/policy_authority.py
+[INC] src/sourcepack/reason_codes.py
+[INC] src/sourcepack/remediation.py
+[INC] src/sourcepack/replay.py
+[INC] src/sourcepack/reports/__init__.py
+[INC] src/sourcepack/reports/html.py
+[INC] src/sourcepack/reports/json.py
+[INC] src/sourcepack/reports/markdown.py
+[INC] src/sourcepack/reports/sarif.py
+[INC] src/sourcepack/repository_state.py
+[INC] src/sourcepack/schema_contracts.py
+[INC] src/sourcepack/schemas.py
+[INC] src/sourcepack/workbench.py
+[INC] src/sourcepack/workbench_static/command-center-aggregate.js
+[INC] src/sourcepack/workbench_static/index.html
+[INC] tests/__init__.py
+[INC] tests/simulation_helpers.py
+[INC] tests/test_adversarial_runner.py
+[INC] tests/test_baseline_integrity.py
+[INC] tests/test_baseline_lifecycle.py
+[INC] tests/test_baseline_lifecycle_cli.py
+[INC] tests/test_behavior_matrix.py
+[INC] tests/test_ci_docs_truth.py
+[INC] tests/test_cli_registry.py
+[INC] tests/test_clipboard.py
+[INC] tests/test_cloud_optional.py
+[INC] tests/test_command_center_activity_message_integrity.py
+[INC] tests/test_command_center_aggregate_client.py
+[INC] tests/test_command_center_api_contract.py
+[INC] tests/test_command_center_capability_integrity.py
+[INC] tests/test_command_center_changelog_contract.py
+[INC] tests/test_command_center_contract.py
+[INC] tests/test_command_center_endpoint.py
+[INC] tests/test_command_center_error_integrity.py
+[INC] tests/test_command_center_mission_control_contract.py
+[INC] tests/test_command_center_next_contract.py
+[INC] tests/test_command_center_payload_bounds.py
+[INC] tests/test_command_center_pr_scope.py
+[INC] tests/test_command_center_priority_actions.py
+[INC] tests/test_command_center_priority_integrity.py
+[INC] tests/test_command_center_score_integrity.py
+[INC] tests/test_command_center_security_contract.py
+[INC] tests/test_command_center_snapshot_v1.py
+[INC] tests/test_command_center_state.py
+[INC] tests/test_command_center_static.py
+[INC] tests/test_command_resolution_provenance.py
+[INC] tests/test_command_resolver.py
+[INC] tests/test_confidence_report.py
+[INC] tests/test_core_rendering.py
+[INC] tests/test_decision_ledger.py
+[INC] tests/test_demo_smoke.py
+[INC] tests/test_dependency_inventory_behavior.py
+[INC] tests/test_dependency_resolver.py
+[INC] tests/test_diff_exit_policy.py
+[INC] tests/test_diff_parser.py
+[INC] tests/test_engine_inversion.py
+[INC] tests/test_evidence_bundle.py
+[INC] tests/test_evidence_model.py
+[INC] tests/test_execution_ledger.py
+[INC] tests/test_external_repository_validation.py
+[INC] tests/test_final_boss_integration.py
+[INC] tests/test_finding_identity.py
+[INC] tests/test_fleet.py
+[INC] tests/test_gauntlet.py
+[INC] tests/test_git.py
+[INC] tests/test_github_action.py
+[INC] tests/test_golden_demo.py
+[INC] tests/test_judgment.py
+[INC] tests/test_judgment_hardening.py
+[INC] tests/test_judgment_provenance_handoff.py
+[INC] tests/test_local_policy.py
+[INC] tests/test_org_policy_resolution.py
+[INC] tests/test_overrides.py
+[INC] tests/test_policy_integration.py
+[INC] tests/test_policy_validation.py
+[INC] tests/test_prechange_policy_authority.py
+[INC] tests/test_readme_truth.py
+[INC] tests/test_real_corpus_validation.py
+[INC] tests/test_reason_code_docs.py
+[INC] tests/test_release_docs.py
+[INC] tests/test_release_smoke.py
+[INC] tests/test_remediation.py
+[INC] tests/test_replay_audit.py
+[INC] tests/test_report_provenance.py
+[INC] tests/test_report_ui.py
+[INC] tests/test_reports_json.py
+[INC] tests/test_repository_state_separation.py
+[INC] tests/test_same_patch_evidence_provenance.py
+[INC] tests/test_scanner_behavior.py
+[INC] tests/test_schema_contracts.py
+[INC] tests/test_secret_redaction.py
+[INC] tests/test_showcase.py
+[INC] tests/test_simulation_harness.py
+[INC] tests/test_smoke.py
+[INC] tests/test_ugly_repos.py
+[INC] tests/test_workbench.py
+[INC] tests/test_workbench_browser.py
+[INC] tests/test_workbench_remediation.py
+[INC] tools/__init__.py
+[INC] tools/adversarial_runner.py
+[INC] tools/behavior_matrix.py
+[INC] tools/external_repository_validation.py
+[INC] tools/generate_showcase_data.py
+[INC] tools/golden_demo.py
+[INC] tools/real_corpus_validation.py
+[INC] tools/release_smoke.py

@@ -55,7 +55,8 @@ class CommandCenterStaticTests(unittest.TestCase):
         self.assertIn('name="viewport"', self.html)
 
     def test_command_center_has_no_remote_runtime_dependencies(self) -> None:
-        self.assertNotIn("<script src=", self.html)
+        self.assertNotRegex(self.html, re.compile(r'<script src=["\']https?://'))
+        self.assertIn('<script src="/command-center-aggregate.js"></script>', self.html)
         self.assertNotIn("<link rel=\"stylesheet\" href=\"http", self.html)
         self.assertNotIn("https://cdn.", self.html)
 

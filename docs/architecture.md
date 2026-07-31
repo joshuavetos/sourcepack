@@ -56,6 +56,17 @@ The intended flow is:
 
 Prompt context is intentionally outside this enforcement evidence path.
 
+## Workbench and Command Center routing
+
+The canonical `WorkbenchHandler` owns registration and dispatch for the authenticated
+`GET /api/command-center/v1/snapshot` route alongside the established Workbench API
+and static routes. Normal Workbench server construction therefore exposes the route
+without package-initialization hooks or handler replacement. The Command Center
+endpoint module owns snapshot construction and safe failure serialization, while the
+Command Center contract module owns schema and cross-field validation. Package import
+does not mutate Workbench routing, and the browser consumes the single authenticated
+snapshot without reconstructing it from diagnostic endpoints.
+
 ## Evidence graph and replay bundle
 
 SourcePack reports include an additive evidence graph for explanation and reconstructability. Canonical evidence items are defined in `src/sourcepack/evidence.py` and carry stable IDs plus bounded local observations such as category, source type, path, optional line range, observed value, normalized value, reason-code support/contradiction links, uncertainty, and metadata.

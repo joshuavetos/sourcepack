@@ -59,6 +59,15 @@ def test_dirty_worktree_maps_missing_git_executable(monkeypatch, tmp_path):
     assert state == "git_unavailable"
 
 
+def test_lossy_git_convenience_helpers_keep_failure_distinct_from_policy_checks(monkeypatch, tmp_path):
+    failure = _cp(["query"], git_mod.GIT_RETURNCODE_OS_ERROR, stderr="denied")
+    monkeypatch.setattr(git_mod, "run_git", lambda repo, args: failure)
+
+    assert git_mod.diff(tmp_path) == ""
+    assert git_mod.untracked_files(tmp_path) == []
+    assert git_mod.dirty_worktree(tmp_path) == (False, "git_error")
+
+
 def test_dirty_worktree_maps_git_timeout(monkeypatch, tmp_path):
     monkeypatch.setattr(
         git_mod,

@@ -6,7 +6,7 @@ SourcePack is a local-first guardrail for AI-assisted repository edits. Its narr
 
 ## Trust model
 
-SourcePack compares proposed or current changes against a trusted local baseline packet. The baseline is enforcement evidence. Prompt context is only guidance for an AI assistant and is never authoritative enforcement evidence.
+SourcePack compares proposed or current changes against an integrity-checked accepted local baseline packet. Acceptance is the maintainer's trust decision; SHA-256 receipt verification checks the stored artifact bytes after acceptance. Hash agreement does not authenticate a creator, prove review, or independently establish trust. Prompt context is only guidance for an AI assistant and is never authoritative enforcement evidence.
 
 ## Baseline lifecycle
 
@@ -20,7 +20,9 @@ Prompt context packets help an AI answer with grounded local facts, but prompt c
 
 ## Diff judgment pipeline
 
-The CLI obtains a git diff or explicit patch text, parses changed files and added lines, checks path safety, evaluates file existence against the baseline inventory, detects dependency and command assumptions, applies PASS/WARN/FAIL policy, then writes local JSON, Markdown, and HTML reports.
+The CLI obtains a Git diff or explicit patch text. Its parser recognizes and safety-checks the Git-style unified-diff subset SourcePack relies upon: file headers, new/delete and rename/copy metadata, hunk headers, and added/context/deleted lines. It is not a complete validator for every unified-diff grammar or semantic invariant. Unsupported or unsafe structure retains the existing fail-closed malformed-diff path where detected.
+
+Diff paths normalize separators and `.` components. Internal parent segments are canonicalized (`directory/../file.py` becomes `file.py`), while a parent segment that would escape above the repository-relative root (`../file.py`) is marked unsafe and causes malformed handling. Thus the path check rejects escapes, not every literal `..` segment. The pipeline then evaluates file existence against the baseline inventory, detects dependency and command assumptions, applies PASS/WARN/FAIL policy, and writes local JSON, Markdown, and HTML reports.
 
 ## Reason-code lifecycle
 

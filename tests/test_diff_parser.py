@@ -212,6 +212,15 @@ def test_normalize_diff_path_marks_windows_style_traversal_unsafe():
     assert normalize_diff_path(r"..\outside.txt") == ("outside.txt", True)
 
 
+def test_normalize_diff_path_canonicalizes_internal_parent_without_marking_escape():
+    assert normalize_diff_path("directory/../file.py") == ("file.py", False)
+    assert normalize_diff_path("directory/nested/../../file.py") == ("file.py", False)
+
+
+def test_normalize_diff_path_marks_only_parent_segments_that_escape_root_unsafe():
+    assert normalize_diff_path("directory/../../file.py") == ("file.py", True)
+
+
 def test_cli_diff_parser_symbols_are_canonical():
     from sourcepack import cli
 

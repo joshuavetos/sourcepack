@@ -169,7 +169,7 @@ Local WARN exits `0` unless `--strict` is used. CI mode, `--ci`, treats WARN as 
 
 ## malformed_diff
 
-- **Meaning:** SourcePack could not safely parse the diff artifact.
+- **Meaning:** SourcePack detected malformed or unsafe structure while parsing the Git-style unified-diff subset used by its judgment checks. This does not claim complete validation of every unified-diff grammar or semantic invariant.
 - **Typical severity:** `FAIL`.
 - **Common cause:** Non-Git diff text, truncated hunks, malformed hunk headers, or unsupported patch format.
 - **Likely fix:** Regenerate the diff with Git or rerun `sourcepack diff .`.

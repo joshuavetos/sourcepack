@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 
 from sourcepack.command_center_endpoint import _validate_report_error_derivations
+from sourcepack.command_center_limits import MAX_STRING_CHARS, TRUNCATION_MARKER, clip_text
 
 
 def _snapshot() -> dict:
@@ -75,6 +76,18 @@ def test_matching_report_error_and_terminal_activity_are_valid() -> None:
     snapshot["activity"].append({"type": "error", "message": "Canonical report malformed"})
 
     _validate_report_error_derivations(snapshot)
+
+
+def test_long_report_error_matches_clipped_terminal_activity() -> None:
+    snapshot = _snapshot()
+    message = "界<script>" * MAX_STRING_CHARS
+    snapshot["artifacts"]["report"] = None
+    snapshot["artifacts"]["report_error"] = {"error": {"message": message}}
+    snapshot["activity"].append({"type": "error", "message": clip_text(message)})
+
+    _validate_report_error_derivations(snapshot)
+    assert len(snapshot["activity"][-1]["message"]) == MAX_STRING_CHARS
+    assert snapshot["activity"][-1]["message"].endswith(TRUNCATION_MARKER)
 
 
 def test_missing_error_message_uses_canonical_fallback() -> None:

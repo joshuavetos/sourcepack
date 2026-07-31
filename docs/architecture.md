@@ -63,8 +63,15 @@ The canonical `WorkbenchHandler` owns registration and dispatch for the authenti
 and static routes. Normal Workbench server construction therefore exposes the route
 without package-initialization hooks or handler replacement. The Command Center
 endpoint module owns snapshot construction and safe failure serialization, while the
-Command Center contract module owns schema and cross-field validation. Package import
-does not mutate Workbench routing, and the browser consumes the single authenticated
+Command Center contract module owns schema and cross-field validation.
+The single snapshot is backend-bounded to 262,144 serialized UTF-8 bytes. Repository-controlled
+producer objects are projected through deterministic list (64), mapping (64), depth (6), and
+string (2,048; prompts 8,192) limits. Canonical totals and omitted counts accompany displayed
+subsets. Three ordered reduction stages serialize after decisions, authority diagnostics, and
+report diagnostics respectively, stopping at the first bounded result before revalidation; failure
+to fit essential canonical state returns the safe error envelope. This boundary reduces transport
+and browser cost but is not evidence of repository completeness, correctness, or security.
+Package import does not mutate Workbench routing, and the browser consumes the single authenticated
 snapshot without reconstructing it from diagnostic endpoints.
 
 ## Evidence graph and replay bundle

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import json
+
+from .command_center_limits import MAX_SNAPSHOT_BYTES, clip_text
 
 COMMAND_CENTER_ROUTE = "/api/command-center/v1/snapshot"
 
@@ -42,11 +45,18 @@ def _validate_snapshot_derivations(snapshot: dict[str, Any]) -> None:
             "warning_count": 0,
         }
     else:
+        totals = snapshot.get("bounds", {}).get("collections")
+        if totals is not None:
+            for key in ("findings", "blockers", "warnings", "evidence_items"):
+                displayed = _list_count(report.get(key))
+                metadata = totals[key]
+                if displayed != metadata["displayed_count"] or metadata["omitted_count"] != metadata["total_count"] - displayed:
+                    raise ValueError(f"Command Center bounded {key} metadata does not match canonical report")
         expected_report_fields = {
             "verdict": report.get("verdict"),
-            "finding_count": _list_count(report.get("findings")),
-            "blocker_count": _list_count(report.get("blockers")),
-            "warning_count": _list_count(report.get("warnings")),
+            "finding_count": totals["findings"]["total_count"] if totals else _list_count(report.get("findings")),
+            "blocker_count": totals["blockers"]["total_count"] if totals else _list_count(report.get("blockers")),
+            "warning_count": totals["warnings"]["total_count"] if totals else _list_count(report.get("warnings")),
         }
     for field, expected in expected_report_fields.items():
         if posture.get(field) != expected:
@@ -78,6 +88,7 @@ def _validate_report_error_derivations(snapshot: dict[str, Any]) -> None:
     expected_message = error_data.get("message") if isinstance(error_data, dict) else None
     if not isinstance(expected_message, str) or not expected_message:
         expected_message = "Canonical report unavailable"
+    expected_message = clip_text(expected_message)
     if terminal_error.get("message") != expected_message:
         raise ValueError("Command Center terminal error activity does not match report_error")
 
@@ -96,15 +107,15 @@ def _canonical_activity(snapshot: dict[str, Any]) -> list[dict[str, str]]:
     activity = [
         {
             "type": "repository",
-            "message": f"Repository loaded at {snapshot['repository']['path']}",
+            "message": clip_text(f"Repository loaded at {snapshot['repository']['path']}"),
         },
         {
             "type": "baseline",
-            "message": f"Baseline state: {artifacts['baseline'].get('state', 'unknown')}",
+            "message": clip_text(f"Baseline state: {artifacts['baseline'].get('state', 'unknown')}"),
         },
         {
             "type": "policy",
-            "message": f"Policy resolution: {artifacts['policy'].get('resolution_status', 'unknown')}",
+            "message": clip_text(f"Policy resolution: {artifacts['policy'].get('resolution_status', 'unknown')}"),
         },
         {
             "type": "review",
@@ -118,7 +129,7 @@ def _canonical_activity(snapshot: dict[str, Any]) -> list[dict[str, str]]:
         activity.append(
             {
                 "type": "error",
-                "message": str(message or "Canonical report unavailable"),
+                "message": clip_text(message or "Canonical report unavailable"),
             }
         )
     return activity
@@ -186,6 +197,65 @@ def _validate_score_derivations(snapshot: dict[str, Any]) -> None:
         raise ValueError("Command Center scores do not match the canonical scoring model")
 
 
+def _serialized_snapshot(snapshot: dict[str, Any]) -> bytes:
+    return json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _reduce_decision_diagnostics(snapshot: dict[str, Any]) -> None:
+    snapshot["artifacts"]["decisions"] = {"bounded": True, "omission_reason": "snapshot_byte_limit"}
+    snapshot["bounds"]["artifacts"]["decisions"] = {"bounded": True, "omission_reason": "snapshot_byte_limit"}
+
+
+def _reduce_authority_diagnostics(snapshot: dict[str, Any]) -> None:
+    artifacts = snapshot["artifacts"]
+    artifacts["policy"] = {"resolution_status": artifacts["policy"].get("resolution_status")}
+    artifacts["baseline"] = {"state": artifacts["baseline"].get("state")}
+    artifacts["status"] = {"status": {
+        "automatic_mode_enabled": bool((artifacts["status"].get("status") or {}).get("automatic_mode_enabled", False)),
+        "pre_commit_hook_installed": bool((artifacts["status"].get("status") or {}).get("pre_commit_hook_installed", False)),
+        "post_commit_hook_installed": bool((artifacts["status"].get("status") or {}).get("post_commit_hook_installed", False)),
+    }}
+    for key in ("policy", "baseline", "status"):
+        snapshot["bounds"]["artifacts"][key] = {"bounded": True, "omission_reason": "snapshot_byte_limit"}
+
+
+def _reduce_report_diagnostics(snapshot: dict[str, Any]) -> None:
+    artifacts = snapshot["artifacts"]
+    report = artifacts["report"]
+    if isinstance(report, dict):
+        artifacts["report"] = {key: report[key] for key in (
+            "verdict", "findings", "blockers", "warnings", "evidence_items", "evidence",
+            "replay_bundle", "reason_code_evidence",
+        ) if key in report}
+        for key in ("findings", "blockers", "warnings"):
+            if key in artifacts["report"]:
+                artifacts["report"][key] = []
+        if "evidence_items" in artifacts["report"]:
+            artifacts["report"]["evidence_items"] = [{}] if report.get("evidence_items") else []
+        for key in ("evidence", "replay_bundle", "reason_code_evidence"):
+            if key in artifacts["report"]:
+                artifacts["report"][key] = {"bounded": True} if report.get(key) else {}
+        for key in ("findings", "blockers", "warnings", "evidence_items"):
+            metadata = snapshot["bounds"]["collections"][key]
+            displayed = _list_count(artifacts["report"].get(key))
+            metadata.update(displayed_count=displayed, omitted_count=metadata["total_count"] - displayed,
+                            truncated=displayed < metadata["total_count"])
+    snapshot["bounds"]["artifacts"]["report"] = {"bounded": True, "omission_reason": "snapshot_byte_limit"}
+
+
+def _reduce_snapshot_to_size(snapshot: dict[str, Any], max_bytes: int) -> tuple[bytes, bool]:
+    """Apply at most three ordered reductions, serializing and stopping after each."""
+    encoded = _serialized_snapshot(snapshot)
+    if len(encoded) <= max_bytes:
+        return encoded, False
+    for reducer in (_reduce_decision_diagnostics, _reduce_authority_diagnostics, _reduce_report_diagnostics):
+        reducer(snapshot)
+        encoded = _serialized_snapshot(snapshot)
+        if len(encoded) <= max_bytes:
+            return encoded, True
+    return encoded, True
+
+
 def command_center_payload(repo: str | Path) -> dict[str, Any]:
     """Build and validate the canonical Command Center snapshot."""
     from .command_center import build_command_center_snapshot
@@ -200,6 +270,17 @@ def command_center_payload(repo: str | Path) -> dict[str, Any]:
         _validate_capability_derivations(snapshot)
         _validate_priority_action_derivations(snapshot)
         _validate_score_derivations(snapshot)
+        encoded, reduced = _reduce_snapshot_to_size(snapshot, MAX_SNAPSHOT_BYTES)
+        if reduced:
+            validate_command_center_snapshot(snapshot)
+            _validate_snapshot_derivations(snapshot)
+            _validate_report_error_derivations(snapshot)
+            _validate_activity_derivations(snapshot)
+            _validate_capability_derivations(snapshot)
+            _validate_priority_action_derivations(snapshot)
+            _validate_score_derivations(snapshot)
+        if len(encoded) > MAX_SNAPSHOT_BYTES:
+            raise ValueError("essential Command Center snapshot exceeds byte limit")
         return {
             "ok": True,
             "status": "success",

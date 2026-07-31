@@ -8,6 +8,7 @@
 - Contract validation covers the closed modeled shape and backend cross-field derivations; raw diagnostic endpoints remain available.
 - Workbench action, excerpt, excerpt-line, evidence-card, and correction-row models are closed and schema validated; unsupported raw reports cannot contribute canonical counts or display claims.
 - Unsupported raw verdicts cannot contribute activity or replay claims, and review-action variants enforce consistent availability, targets, and prompt presence.
+- Command Center producer diagnostics, collections, strings, nesting, excerpts, and final serialized output are backend-bounded with explicit canonical totals and omission metadata.
 
 ## Verification
 
@@ -21,12 +22,11 @@
 
 ## Current risks
 
-- Raw canonical producer objects are embedded and can increase payload size.
 - Activity is a deterministic current-state summary, not a durable event history.
 - Persisted decision coverage is currently limited to the established override ledger view.
 - Operational scores remain coarse product indicators rather than security guarantees.
-- Browser behavior is guarded by deterministic DOM-contract tests; a full browser automation suite remains the next hardening step.
+- Producer objects are built before the snapshot projection, so their producer-specific construction costs remain outside this transport boundary.
 
 ## Next recommended task
 
-Add browser-driven accessibility and responsive-layout coverage for every explicit degraded-state rendering while keeping the snapshot boundary intact.
+Bound producer-side construction of canonical report, policy, and decision objects before they reach the Command Center projection.

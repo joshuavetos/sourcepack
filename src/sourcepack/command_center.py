@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from . import __version__
 from .baseline import validate_baseline
+from .command_center_limits import MAX_COLLECTION_ITEMS, MAX_PROMPT_CHARS, MAX_SNAPSHOT_BYTES, bounded_value, clip_text, collection_status
 from .git import metadata as git_metadata
 from .policy import resolve_effective_policy
 from .workbench import (
@@ -31,10 +32,10 @@ class Capability:
     def as_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
-            "name": self.name,
-            "surface": self.surface,
+            "name": clip_text(self.name),
+            "surface": clip_text(self.surface),
             "status": self.status,
-            "evidence": self.evidence,
+            "evidence": clip_text(self.evidence),
             "action": self.action,
         }
 
@@ -220,7 +221,9 @@ def _priority_action(*, action_id: str, priority: str, reason: str) -> dict[str,
         spec = _PRIORITY_ACTION_SPECS[action_id]
     except KeyError as exc:
         raise ValueError(f"Unknown Command Center priority action: {action_id}") from exc
-    return spec.apply(action_id=action_id, priority=priority, reason=reason)
+    action = spec.apply(action_id=action_id, priority=priority, reason=clip_text(reason))
+    action["label"] = clip_text(action["label"])
+    return action
 
 
 def _priority_actions(
@@ -263,14 +266,14 @@ def _workbench_presentation(report: dict[str, Any] | None, action: dict[str, Any
     blockers = report.get("blockers") if isinstance(report.get("blockers"), list) else []
     warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
     findings = report.get("findings") if isinstance(report.get("findings"), list) else []
-    finding = next((item for item in blockers + warnings + findings if isinstance(item, dict)), None)
+    finding = next((item for rows in (blockers, warnings, findings) for item in rows[:MAX_COLLECTION_ITEMS] if isinstance(item, dict)), None)
 
-    evidence_items = list(report.get("evidence_items")) if isinstance(report.get("evidence_items"), list) else []
+    evidence_items = list(report.get("evidence_items")[:MAX_COLLECTION_ITEMS]) if isinstance(report.get("evidence_items"), list) else []
     evidence = report.get("evidence") if isinstance(report.get("evidence"), dict) else {}
     for key in ("checked_evidence", "missing_evidence", "unsupported_evidence", "not_checked"):
         values = evidence.get(key)
         if isinstance(values, list):
-            evidence_items.extend(values)
+            evidence_items.extend(values[:MAX_COLLECTION_ITEMS])
     reason_map = report.get("reason_code_evidence") if isinstance(report.get("reason_code_evidence"), dict) else {}
     evidence_ids = reason_map.get(action.get("reason"))
     if isinstance(evidence_ids, list) and evidence_ids:
@@ -329,6 +332,7 @@ def build_command_center_snapshot(
     report_reader: Callable[[Path], tuple[dict[str, Any] | None, dict[str, Any] | None]] = _read_canonical_report,
 ) -> dict[str, Any]:
     root = Path(repo).resolve()
+    root_display = clip_text(root)
     baseline = baseline_reader(root)
     policy = policy_reader(root)
     git = git_reader(root)
@@ -381,7 +385,9 @@ def build_command_center_snapshot(
         (canonical_report.get(key) for key in ("generated_at", "created_at", "timestamp") if canonical_report and canonical_report.get(key)),
         None,
     )
-    branch = git.get("branch") or git.get("current_branch")
+    branch_value = git.get("branch") or git.get("current_branch")
+    branch = clip_text(branch_value) if branch_value is not None else None
+    report_time = clip_text(report_time) if report_time is not None else None
     overall_state = (
         report_state
         if report_state in {"malformed", "unsupported"}
@@ -397,18 +403,18 @@ def build_command_center_snapshot(
         else "Latest verdict: unavailable"
     )
     events = [
-        {"type": "repository", "message": f"Repository loaded at {root}"},
-        {"type": "baseline", "message": f"Baseline state: {baseline.get('state', 'unknown')}"},
-        {"type": "policy", "message": f"Policy resolution: {policy.get('resolution_status', 'unknown')}"},
+        {"type": "repository", "message": clip_text(f"Repository loaded at {root_display}")},
+        {"type": "baseline", "message": clip_text(f"Baseline state: {baseline.get('state', 'unknown')}")},
+        {"type": "policy", "message": clip_text(f"Policy resolution: {policy.get('resolution_status', 'unknown')}")},
         {"type": "review", "message": review_message},
     ]
     if report_error:
-        events.append({"type": "error", "message": str(report_error.get("error", {}).get("message") or "Canonical report unavailable")})
+        events.append({"type": "error", "message": clip_text(report_error.get("error", {}).get("message") or "Canonical report unavailable")})
 
-    return {
+    result = {
         "schema_version": COMMAND_CENTER_SCHEMA_VERSION,
         "sourcepack_version": __version__,
-        "repository": {"path": str(root), "git": git},
+        "repository": {"path": root_display, "git": bounded_value(git)},
         "display": {
             "verdict_class": verdict_display[0],
             "verdict_icon": verdict_display[1],
@@ -430,8 +436,8 @@ def build_command_center_snapshot(
         },
         "posture": {
             "verdict": verdict,
-            "baseline_state": baseline.get("state"),
-            "policy_resolution_status": policy.get("resolution_status"),
+            "baseline_state": clip_text(baseline.get("state")) if baseline.get("state") is not None else None,
+            "policy_resolution_status": clip_text(policy.get("resolution_status")) if policy.get("resolution_status") is not None else None,
             "automatic_mode_enabled": bool(_status_value(status, "automatic_mode_enabled", False)),
             "finding_count": len(findings) if isinstance(findings, list) else 0,
             "blocker_count": len(blockers) if isinstance(blockers, list) else 0,
@@ -453,12 +459,33 @@ def build_command_center_snapshot(
             "proposed_change": _bounded_changed_file_excerpt(root, canonical_report) if canonical_report is not None else None,
             **workbench_presentation,
         },
-        "artifacts": {
-            "baseline": baseline,
-            "policy": policy,
-            "status": status,
-            "report": report,
-            "report_error": report_error,
-            "decisions": decisions,
-        },
+        "artifacts": {},
     }
+    bounded_report = bounded_value(report) if report is not None else None
+    result["artifacts"] = {
+        "baseline": bounded_value(baseline), "policy": bounded_value(policy),
+        "status": bounded_value(status), "report": bounded_report,
+        "report_error": bounded_value(report_error) if report_error is not None else None,
+        "decisions": bounded_value(decisions),
+    }
+    if "prompt" in result["workbench"]["review_action"]:
+        result["workbench"]["review_action"]["prompt"] = clip_text(
+            result["workbench"]["review_action"]["prompt"], MAX_PROMPT_CHARS
+        )
+    for key in ("label", "reason"):
+        result["workbench"]["review_action"][key] = clip_text(result["workbench"]["review_action"][key])
+    for card in result["workbench"]["evidence_cards"]:
+        for key in ("name", "tag", "body"):
+            card[key] = clip_text(card[key])
+    for row in result["workbench"]["correction_rows"]:
+        row["value"] = clip_text(row["value"])
+    result["bounds"] = {
+        "max_serialized_bytes": MAX_SNAPSHOT_BYTES,
+        "bounded_content": True,
+        "collections": {
+            key: collection_status(report.get(key) if isinstance(report, dict) else None, bounded_report.get(key) if isinstance(bounded_report, dict) else None)
+            for key in ("findings", "blockers", "warnings", "evidence_items")
+        },
+        "artifacts": {key: {"bounded": True, "omission_reason": None} for key in result["artifacts"]},
+    }
+    return result

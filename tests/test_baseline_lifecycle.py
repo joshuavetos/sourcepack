@@ -379,6 +379,23 @@ def test_committed_range_mode_catches_committed_changes_in_clean_worktree(tmp_pa
     assert "app.py" in data.get("raw_patch_judgment", {}).get("modified_files", [])
 
 
+def test_committed_range_trusts_files_already_present_at_base_ref(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    create_baseline(repo)
+    git_commit(repo, "commit trusted baseline")
+    (repo / "later.py").write_text("VALUE = 1\n", encoding="utf-8")
+    base = git_commit(repo, "add file before reviewed range")
+    (repo / "later.py").write_text("VALUE = 2\n", encoding="utf-8")
+    head = git_commit(repo, "change file in reviewed range")
+
+    cp, data = json_cli(repo, "diff", ".", "--ci", "--json", "--base-ref", base, "--head-ref", head)
+
+    assert cp.returncode == 0, cp.stderr + cp.stdout
+    assert data["verdict"] == "PASS"
+    assert "missing_file" not in finding_ids(data)
+    assert "later.py" in data.get("raw_patch_judgment", {}).get("modified_files", [])
+
+
 def test_committed_range_preserves_missing_file_behavior_for_clean_worktree(tmp_path: Path) -> None:
     repo = init_repo(tmp_path)
     create_baseline(repo)

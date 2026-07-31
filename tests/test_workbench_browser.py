@@ -17,11 +17,11 @@ from pathlib import Path
 
 import pytest
 
-PLAYWRIGHT_AVAILABLE = importlib.util.find_spec("playwright.sync_api") is not None
+PLAYWRIGHT_AVAILABLE = importlib.util.find_spec("playwright") is not None
 pytestmark = pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="Playwright browser-test dependency is not installed")
 
 if PLAYWRIGHT_AVAILABLE:
-    import playwright.sync_api as playwright
+    playwright = importlib.import_module("playwright.sync_api")
 else:
     playwright = None
 

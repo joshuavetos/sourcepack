@@ -1,0 +1,7 @@
+diff --git a/index.js b/index.js
+index cec6a00..0a75f9a 100644
+--- a/index.js
++++ b/index.js
+@@ -1 +1,2 @@
++import kleur from "kleur";
+ export const ready = true;

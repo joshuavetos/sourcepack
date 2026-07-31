@@ -1,0 +1,23 @@
+{
+  "schema_version": "sourcepack.external-repository-case.v1",
+  "case_id": "pnpm-workspace",
+  "expected_verdict": "FAIL",
+  "required_findings": [
+    {
+      "id": "unsupported_dependency",
+      "analysis_status": "UNSUPPORTED",
+      "evidence_class": "analysis_state",
+      "trust_status": "no_supporting_evidence",
+      "source_kind": "dependency_resolution",
+      "modified_by_patch": false
+    }
+  ],
+  "forbidden_findings": [
+    "baseline_corrupt",
+    "baseline_failed",
+    "malformed_diff",
+    "prompt_context_failed"
+  ],
+  "allowed_additional_findings": [],
+  "deterministic": true
+}

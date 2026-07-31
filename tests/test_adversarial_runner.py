@@ -1,7 +1,14 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from tools import adversarial_runner
+
+
+def test_run_corpus_rejects_fewer_than_two_runs(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="runs must be at least 2 to prove determinism"):
+        adversarial_runner.run_corpus(tmp_path, runs=1)
 
 
 def test_malformed_patch_reaches_judgment_and_produces_expected_finding(tmp_path: Path) -> None:

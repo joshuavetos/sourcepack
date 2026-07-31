@@ -1,0 +1,11 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 77e36b8..05c47ea 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,3 +1,6 @@
+ [package]
+ name = "offline-rust-fixture"
+ version = "0.1.0"
++
++[dependencies]
++serde = "1"

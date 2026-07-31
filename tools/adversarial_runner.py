@@ -92,14 +92,20 @@ def _finding_projection(report: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def _validate_expected(expected: Any, case_id: str) -> dict[str, Any]:
+def _validate_expected(
+    expected: Any,
+    case_id: str,
+    *,
+    case_schema_version: str = CASE_SCHEMA_VERSION,
+    allow_empty_required: bool = False,
+) -> dict[str, Any]:
     if not isinstance(expected, dict):
         raise ValueError("expectation root must be an object")
     unknown = sorted(set(expected) - EXPECTATION_KEYS)
     missing = sorted(EXPECTATION_KEYS - set(expected))
     if unknown or missing:
         raise ValueError(f"expectation fields invalid; missing={missing}, unknown={unknown}")
-    if expected["schema_version"] != CASE_SCHEMA_VERSION:
+    if expected["schema_version"] != case_schema_version:
         raise ValueError(f"unsupported schema_version {expected['schema_version']!r}")
     if expected["case_id"] != case_id:
         raise ValueError(f"case_id must be {case_id!r}")
@@ -118,8 +124,9 @@ def _validate_expected(expected: Any, case_id: str) -> dict[str, Any]:
         if len(values) != len(set(values)):
             raise ValueError(f"{key} contains duplicate reason codes")
     required = expected["required_findings"]
-    if not isinstance(required, list) or not required:
-        raise ValueError("required_findings must be a non-empty array")
+    if not isinstance(required, list) or (not required and not allow_empty_required):
+        qualifier = "an array" if allow_empty_required else "a non-empty array"
+        raise ValueError(f"required_findings must be {qualifier}")
     for index, finding in enumerate(required):
         if not isinstance(finding, dict):
             raise ValueError(f"required_findings[{index}] must be an object")
@@ -206,9 +213,19 @@ def _matches_expected(actual: dict[str, Any], expected: dict[str, Any]) -> list[
     return errors
 
 
-def run_corpus(corpus: Path, runs: int) -> dict[str, Any]:
+def run_corpus(
+    corpus: Path,
+    runs: int,
+    *,
+    corpus_version: str = CORPUS_VERSION,
+    case_schema_version: str = CASE_SCHEMA_VERSION,
+    corpus_label: str = "adversarial corpus",
+    allow_empty_required: bool = False,
+) -> dict[str, Any]:
+    if runs < 2:
+        raise ValueError("runs must be at least 2 to prove determinism")
     if not corpus.is_dir():
-        raise ValueError(f"adversarial corpus directory does not exist: {corpus}")
+        raise ValueError(f"{corpus_label} directory does not exist: {corpus}")
     case_dirs = sorted(path for path in corpus.iterdir() if path.is_dir())
     results: list[dict[str, Any]] = []
     for case_dir in case_dirs:
@@ -223,7 +240,12 @@ def run_corpus(corpus: Path, runs: int) -> dict[str, Any]:
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise ValueError(f"fixture {case_dir.name!r} has an invalid expectation document: {exc}") from exc
         try:
-            expected = _validate_expected(loaded, case_dir.name)
+            expected = _validate_expected(
+                loaded,
+                case_dir.name,
+                case_schema_version=case_schema_version,
+                allow_empty_required=allow_empty_required,
+            )
         except ValueError as exc:
             raise ValueError(f"fixture {case_dir.name!r} has an invalid expectation document: {exc}") from exc
         try:
@@ -245,7 +267,7 @@ def run_corpus(corpus: Path, runs: int) -> dict[str, Any]:
             }
         )
     return {
-        "schema_version": CORPUS_VERSION,
+        "schema_version": corpus_version,
         "runs_per_case": runs,
         "case_count": len(results),
         "status": "PASS" if results and all(r["status"] == "PASS" for r in results) else "FAIL",

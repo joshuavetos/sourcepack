@@ -744,11 +744,13 @@ def _dependency_additions_from_patch(changes: list[PatchFileChange]) -> set[str]
     return set()
 
 
-def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchFileChange] | None = None) -> dict:
+def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchFileChange] | None = None, trusted_files: set[str] | None = None) -> dict:
     packet = Path(packet_path)
     manifest = load_manifest(packet)
     reality = json.loads((packet / "reality_map.json").read_text(encoding="utf-8")) if (packet / "reality_map.json").exists() else generate_reality_map(manifest, packet)
     files, baseline_inventory_loaded = _baseline_inventory_from_packet(packet, manifest)
+    if trusted_files:
+        files.update(trusted_files)
     deps = dependency_inventory(manifest, packet)
     scripts = _package_json_scripts(packet)
     if changes is None:
@@ -1416,7 +1418,7 @@ def _unsupported_ecosystem_uncertainties(files: set[str], changes: list[PatchFil
             uncertainties.append({"id": "unsupported_ecosystem", "message": f"{evidence} detected, but {message}", "evidence": evidence})
     return uncertainties
 
-def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
+def judge_patch_text(packet_path: str | Path, patch_text: str, *, trusted_files: set[str] | None = None) -> dict:
     if re.search(r"(?m)^@@", patch_text) and "diff --git " not in patch_text:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     if re.search(r"(?m)^@@(?! -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)", patch_text):
@@ -1429,7 +1431,7 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "path_escape": True, "path_escape_paths": unsafe_paths}
     if patch_text.strip() and not changes and "Binary files " not in patch_text and "GIT binary patch" not in patch_text:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
-    report = analyze_patch(packet_path, patch_text, changes)
+    report = analyze_patch(packet_path, patch_text, changes, trusted_files)
     packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest, packet); contents = _packet_file_contents(packet)
     existing_declared = _declared_dependency_names_by_ecosystem(manifest, packet)
     scopes = _declared_dependency_scopes_by_ecosystem(manifest, packet)
@@ -1775,6 +1777,19 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             return rep
     else:
         rep_note = None
+    trusted_base_files: set[str] | None = None
+    if base_ref is not None:
+        base_tree = run_git(repo, ["ls-tree", "-r", "--name-only", base_ref])
+        if base_tree.returncode != 0:
+            message = base_tree.stderr.strip() or "Git could not inspect the base revision."
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", message)])
+            return _finalize_early_core_failure(repo, rep, policy_result)
+        trusted_base_files = {
+            normalized
+            for path in base_tree.stdout.splitlines()
+            for normalized, unsafe in [_normalize_diff_path(path)]
+            if normalized and not unsafe
+        }
     stale_findings = []
     if baseline_status["state"] == "stale":
         stale_findings.append(normalized_finding("baseline_stale", "warn", "uncertainty", "Trusted SourcePack baseline may not match current repo state."))
@@ -1783,7 +1798,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         rep = traffic_report(verdict, "SourcePack could not fully evaluate this change." if stale_findings else "good to continue.", [normalized_finding("no_diff", "info", "diff", "No uncommitted changes detected."), *stale_findings], ["diff", "baseline freshness"])
     else:
         packet_path = repo / baseline_status["packet_path"]
-        raw = judge_patch_text(packet_path, diff_text); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
+        raw = judge_patch_text(packet_path, diff_text, trusted_files=trusted_base_files); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
         rep = _integrate_execution_findings(repo, diff_text, rep)
         rep = _apply_policy_finishers(repo, packet_path, diff_text, rep, policy_result)
         if stale_findings:

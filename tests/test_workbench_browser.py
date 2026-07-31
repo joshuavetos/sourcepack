@@ -7,7 +7,9 @@ browser, context, and temporary-repository lifetimes remain explicit.
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -16,7 +18,17 @@ from pathlib import Path
 
 import pytest
 
-playwright = pytest.importorskip("playwright.sync_api")
+PLAYWRIGHT_AVAILABLE = importlib.util.find_spec("playwright") is not None
+BROWSER_GATE_ENABLED = os.environ.get("CI") != "true" or os.environ.get("GITHUB_WORKFLOW") == "Workbench browser gate"
+pytestmark = pytest.mark.skipif(
+    not PLAYWRIGHT_AVAILABLE or not BROWSER_GATE_ENABLED,
+    reason="Workbench browser tests require their declared Playwright CI gate",
+)
+
+if PLAYWRIGHT_AVAILABLE:
+    playwright = importlib.import_module("playwright.sync_api")
+else:
+    playwright = None
 
 from sourcepack import workbench
 from sourcepack.command_center import build_command_center_snapshot
@@ -73,7 +85,9 @@ def _server(repo: Path, monkeypatch, payload: dict | None = None):
 def browser():
     with playwright.sync_playwright() as manager:
         launch_options = {"headless": True}
-        if not Path(manager.chromium.executable_path).is_file() and shutil.which("google-chrome"):
+        if not Path(manager.chromium.executable_path).is_file():
+            pytest.skip("Playwright is installed without Chromium; run 'playwright install chromium' for browser tests")
+        if shutil.which("google-chrome"):
             launch_options["channel"] = "chrome"
         instance = manager.chromium.launch(**launch_options)
         yield instance

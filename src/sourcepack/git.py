@@ -1,16 +1,102 @@
 from __future__ import annotations
 
 import os
+import selectors
 import subprocess
+import time
 from pathlib import Path
 from typing import Final
 
 
 GIT_TIMEOUT_SECONDS: Final[int] = 10
+GIT_OUTPUT_LIMIT_BYTES: Final[int] = 8 * 1024 * 1024
 
 GIT_RETURNCODE_TIMEOUT: Final[int] = 124
 GIT_RETURNCODE_OS_ERROR: Final[int] = 126
 GIT_RETURNCODE_NOT_FOUND: Final[int] = 127
+GIT_RETURNCODE_OUTPUT_LIMIT: Final[int] = 125
+
+
+class GitProducerIncompleteError(RuntimeError):
+    """A Git evidence producer stopped before exhausting its output."""
+
+
+def _bounded_process(repo: Path, args: list[str], limit: int) -> subprocess.CompletedProcess[bytes]:
+    """Drain git incrementally, killing it before retained output exceeds limit."""
+    command = ["git", *args]
+    process = subprocess.Popen(command, cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert process.stdout is not None and process.stderr is not None
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    chunks: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
+    retained = 0
+    deadline = time.monotonic() + GIT_TIMEOUT_SECONDS
+    state = "complete"
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                state = "timeout"
+                process.kill()
+                break
+            events = selector.select(remaining)
+            if not events:
+                state = "timeout"
+                process.kill()
+                break
+            for key, _ in events:
+                data = os.read(key.fileobj.fileno(), min(65536, limit + 1 - retained))
+                if not data:
+                    selector.unregister(key.fileobj)
+                    continue
+                if retained + len(data) > limit:
+                    allowed = max(0, limit - retained)
+                    if allowed:
+                        chunks[key.data].append(data[:allowed])
+                    retained = limit
+                    state = "bounded"
+                    process.kill()
+                    break
+                chunks[key.data].append(data)
+                retained += len(data)
+            if state != "complete":
+                break
+        process.wait()
+    finally:
+        selector.close()
+        process.stdout.close()
+        process.stderr.close()
+    stdout = b"".join(chunks["stdout"])
+    stderr = b"".join(chunks["stderr"])
+    if state == "bounded":
+        message = f"git output exceeded {limit} byte producer limit".encode()
+        return subprocess.CompletedProcess(command, GIT_RETURNCODE_OUTPUT_LIMIT, stdout, stderr.rstrip() + (b"\n" if stderr else b"") + message)
+    if state == "timeout":
+        message = f"git command timed out after {GIT_TIMEOUT_SECONDS} seconds".encode()
+        return subprocess.CompletedProcess(command, GIT_RETURNCODE_TIMEOUT, stdout, stderr.rstrip() + (b"\n" if stderr else b"") + message)
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def run_git_bounded(repo: str | Path, args: list[str], *, output_limit_bytes: int = GIT_OUTPUT_LIMIT_BYTES, text: bool = True) -> subprocess.CompletedProcess:
+    """Acquire Git evidence with complete/bounded/failed states encoded by return code."""
+    cwd_failure = _cwd_error(repo)
+    if cwd_failure is not None:
+        result = _completed_git_process(args, cwd_failure.returncode, str(cwd_failure.stderr), stdout=b"" if not text else "")
+        result.acquisition_state = "failed"
+        return result
+    try:
+        cp = _bounded_process(Path(repo), args, output_limit_bytes)
+    except FileNotFoundError:
+        cp = subprocess.CompletedProcess(["git", *args], GIT_RETURNCODE_NOT_FOUND, b"", b"git executable not found")
+    except OSError as exc:
+        cp = subprocess.CompletedProcess(["git", *args], GIT_RETURNCODE_OS_ERROR, b"", _os_error_text(exc).encode("utf-8", "replace"))
+    if not text:
+        cp.acquisition_state = "bounded" if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "complete" if cp.returncode == 0 else "failed"
+        return cp
+    result = subprocess.CompletedProcess(cp.args, cp.returncode, cp.stdout.decode("utf-8", "replace"), cp.stderr.decode("utf-8", "replace"))
+    result.acquisition_state = "bounded" if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "complete" if cp.returncode == 0 else "failed"
+    return result
 
 
 def _completed_git_process(
@@ -138,6 +224,9 @@ def run_git_bytes(repo: str | Path, args: list[str]) -> subprocess.CompletedProc
         return _completed_git_process(args, GIT_RETURNCODE_OS_ERROR, _os_error_text(exc).encode("utf-8", "replace"), stdout=b"")
 
 
+_DEFAULT_RUN_GIT_BYTES = run_git_bytes
+
+
 def decode_git_path(raw: bytes) -> str:
     return os.fsdecode(raw).replace("\\", "/")
 
@@ -147,7 +236,10 @@ def split_nul_paths(raw: bytes) -> list[str]:
 
 
 def tracked_paths(repo: str | Path) -> set[str] | None:
-    cp = run_git_bytes(repo, ["ls-files", "-z"])
+    runner = run_git_bounded if run_git_bytes is _DEFAULT_RUN_GIT_BYTES else run_git_bytes
+    cp = runner(repo, ["ls-files", "-z"], text=False) if runner is run_git_bounded else runner(repo, ["ls-files", "-z"])
+    if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT:
+        raise GitProducerIncompleteError("git tracked-path acquisition exceeded its producer limit")
     if cp.returncode != 0:
         return None
     paths = set(split_nul_paths(cp.stdout))
@@ -158,7 +250,9 @@ def tracked_paths(repo: str | Path) -> set[str] | None:
     if top_level is None:
         return None
 
-    all_cp = run_git_bytes(top_level, ["ls-files", "-z"])
+    all_cp = runner(top_level, ["ls-files", "-z"], text=False) if runner is run_git_bounded else runner(top_level, ["ls-files", "-z"])
+    if all_cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT:
+        raise GitProducerIncompleteError("git tracked-path acquisition exceeded its producer limit")
     if all_cp.returncode != 0:
         return None
     if not split_nul_paths(all_cp.stdout):

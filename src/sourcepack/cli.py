@@ -389,16 +389,11 @@ def verify_packet(packet_path: str | Path, against: str | Path | None = None) ->
                 if content_hash != expected_source_hash:
                     print(f"FAIL source changed {rel}")
                     ok = False
-        current_files = []
-        for root, dirs, files in os.walk(source, followlinks=False):
-            dirs[:] = [d for d in sorted(dirs) if d not in DEFAULT_IGNORED_DIRS and not d.startswith(".")]
-            for filename in sorted(files):
-                fp = Path(root) / filename
-                if filename.startswith(".") or fp.suffix.lower() not in DEFAULT_TEXT_EXTENSIONS:
-                    continue
-                rel = str(fp.relative_to(source))
-                if rel not in included:
-                    current_files.append(rel)
+        scanner = SourceScanner(source).scan()
+        if not scanner.authority["complete"]:
+            print(f"FAIL repository traversal incomplete: {scanner.authority['reason']}")
+            ok = False
+        current_files = [item.relative_path for item in scanner.included_files if item.relative_path not in included]
         for rel in current_files:
             print(f"WARN new source file not in packet {rel}")
     print("OVERALL", "PASS" if ok else "FAIL")

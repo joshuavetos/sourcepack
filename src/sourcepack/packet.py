@@ -14,7 +14,7 @@ from typing import Iterable
 from xml.sax.saxutils import escape as xml_escape
 
 from .diff_parser import normalize_diff_path
-from .git import tracked_paths as git_tracked_paths
+from .git import GitProducerIncompleteError, tracked_paths as git_tracked_paths
 from .ecosystems.python import PY_IMPORT_ALIASES
 
 try:
@@ -37,6 +37,9 @@ DEFAULT_TEXT_EXTENSIONS = {
     ".html", ".css", ".csv", ".toml", ".ini", ".sql", ".sh", ".bat", ".ps1", ".rs",
     ".go", ".java", ".c", ".cpp", ".h", ".hpp", ".rb", ".php", ".xml"
 }
+REPOSITORY_ENTRY_LIMIT = 10_000
+REPOSITORY_DEPTH_LIMIT = 64
+REPOSITORY_READ_LIMIT_BYTES = 64 * 1024 * 1024
 SECRET_PATTERNS = [
     ("openai_key", re.compile(r"sk-proj-[A-Za-z0-9_\-]{12,}|sk-[A-Za-z0-9]{24,}")),
     ("aws_access_key", re.compile(r"AKIA[0-9A-Z]{16}")),
@@ -130,16 +133,25 @@ class SourceScanner:
         include_hidden: bool = False,
         redact: bool = True,
         trust_git_tracked: bool = True,
+        max_entries: int = REPOSITORY_ENTRY_LIMIT,
+        max_depth: int = REPOSITORY_DEPTH_LIMIT,
+        max_total_read_bytes: int = REPOSITORY_READ_LIMIT_BYTES,
     ):
         self.input_path = Path(input_path).resolve()
         self.max_file_size = max_file_size
         self.include_hidden = include_hidden
         self.redact = redact
         self.trust_git_tracked = trust_git_tracked
+        self.max_entries = max_entries
+        self.max_depth = max_depth
+        self.max_total_read_bytes = max_total_read_bytes
+        self.total_read_bytes = 0
+        self.authority = {"status": "complete", "complete": True, "reason": None}
         self.included_files: list[IncludedFile] = []
         self.ignored_files: list[IgnoredFile] = []
         self.redactions: list[dict] = []
         self.total_seen = 0
+        self.producer_entries_seen = 0
 
     def ignore(self, path: Path, reason: str):
         rel = str(path.relative_to(self.input_path)) if path.is_absolute() or self.input_path in path.parents else str(path)
@@ -154,6 +166,9 @@ class SourceScanner:
 
         if size > self.max_file_size:
             self.ignored_files.append(IgnoredFile(rel_str, "max_file_size_exceeded"))
+            return
+        if self.total_read_bytes + size > self.max_total_read_bytes:
+            self.authority = {"status": "incomplete", "complete": False, "reason": "repository_read_limit"}
             return
 
         if fp.suffix and fp.suffix.lower() not in DEFAULT_TEXT_EXTENSIONS:
@@ -172,6 +187,7 @@ class SourceScanner:
         except OSError:
             self.ignored_files.append(IgnoredFile(rel_str, "read_error"))
             return
+        self.total_read_bytes += size
 
         source_sha256 = sha256_text(content)
         if self.redact:
@@ -200,16 +216,36 @@ class SourceScanner:
         if not self.input_path.is_dir():
             raise NotADirectoryError(f"Input path is not a directory: {self.input_path}")
 
-        tracked_paths = _git_tracked_paths(self.input_path) if self.trust_git_tracked else None
+        try:
+            tracked_paths = _git_tracked_paths(self.input_path) if self.trust_git_tracked else None
+        except GitProducerIncompleteError:
+            self.authority = {"status": "incomplete", "complete": False, "reason": "git_output_limit"}
+            return self
 
-        for root, dirs, files in os.walk(self.input_path, followlinks=False):
-            root_path = Path(root)
-            dirs[:] = sorted(dirs)
-            files = sorted(files)
-            kept_dirs = []
+        pending = [(self.input_path, 0)]
+        while pending and self.authority["complete"]:
+            root_path, depth = pending.pop()
+            try:
+                entries = []
+                with os.scandir(root_path) as iterator:
+                    for entry in iterator:
+                        self.producer_entries_seen += 1
+                        if self.producer_entries_seen > self.max_entries:
+                            self.authority = {"status": "incomplete", "complete": False, "reason": "repository_entry_limit"}
+                            break
+                        entries.append(entry)
+            except OSError:
+                self.ignore(root_path, "directory_read_error")
+                continue
+            if not self.authority["complete"]:
+                break
+            dirs = sorted((entry for entry in entries if entry.is_dir(follow_symlinks=False)), key=lambda item: item.name)
+            files = sorted((entry for entry in entries if not entry.is_dir(follow_symlinks=False)), key=lambda item: item.name)
+            kept_dirs: list[Path] = []
 
-            for d in dirs:
-                dpath = root_path / d
+            for entry in dirs:
+                d = entry.name
+                dpath = Path(entry.path)
                 rel = dpath.relative_to(self.input_path)
                 rel_str = str(rel).replace("\\", "/")
                 if d in DEFAULT_IGNORED_DIRS:
@@ -219,15 +255,20 @@ class SourceScanner:
                 elif dpath.is_symlink():
                     self.ignored_files.append(IgnoredFile(rel_str + "/", "symlink_skipped"))
                 else:
-                    kept_dirs.append(d)
-            dirs[:] = kept_dirs
+                    if depth >= self.max_depth:
+                        self.authority = {"status": "incomplete", "complete": False, "reason": "repository_depth_limit"}
+                        break
+                    kept_dirs.append(dpath)
+            if not self.authority["complete"]:
+                break
+            pending.extend((path, depth + 1) for path in reversed(kept_dirs))
 
-            for filename in files:
-                fp = root_path / filename
+            for entry in files:
+                filename = entry.name
+                fp = Path(entry.path)
+                self.total_seen += 1
                 rel = fp.relative_to(self.input_path)
                 rel_str = str(rel).replace("\\", "/")
-                self.total_seen += 1
-
                 if fp.is_symlink():
                     self.ignored_files.append(IgnoredFile(rel_str, "symlink_skipped"))
                     continue
@@ -245,6 +286,8 @@ class SourceScanner:
                     continue
 
                 self._include_file(fp, rel_str)
+                if not self.authority["complete"]:
+                    break
 
         self.included_files.sort(key=lambda x: x.relative_path)
         self.ignored_files.sort(key=lambda x: x.relative_path)
@@ -319,6 +362,7 @@ class PacketWriter:
             "total_files_ignored": len(ignored_records),
             "total_bytes_included": total_bytes,
             "total_estimated_tokens": total_tokens,
+            "authority": dict(self.scanner.authority),
             "included_files": included_records,
             "ignored_files": ignored_records,
         }
@@ -588,19 +632,11 @@ def verify_packet(packet_path: str | Path, against: str | Path | None = None) ->
                     print(f"FAIL source changed {rel}")
                     ok = False
 
-        tracked_paths = _git_tracked_paths(source)
-        current_files = []
-        for root, dirs, files in os.walk(source, followlinks=False):
-            dirs[:] = [d for d in sorted(dirs) if d not in DEFAULT_IGNORED_DIRS and not d.startswith(".")]
-            for filename in sorted(files):
-                fp = Path(root) / filename
-                if filename.startswith(".") or fp.suffix.lower() not in DEFAULT_TEXT_EXTENSIONS:
-                    continue
-                rel = str(fp.relative_to(source)).replace("\\", "/")
-                if tracked_paths is not None and rel not in tracked_paths:
-                    continue
-                if rel not in included:
-                    current_files.append(rel)
+        scanner = SourceScanner(source).scan()
+        if not scanner.authority["complete"]:
+            print(f"FAIL repository traversal incomplete: {scanner.authority['reason']}")
+            ok = False
+        current_files = [item.relative_path for item in scanner.included_files if item.relative_path not in included]
         for rel in current_files:
             print(f"WARN new source file not in packet {rel}")
     print("OVERALL", "PASS" if ok else "FAIL")

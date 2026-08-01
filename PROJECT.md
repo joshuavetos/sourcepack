@@ -14,8 +14,8 @@
 
 ## Verification
 
-- `PYTHONPATH=src python -m pytest -q` — 1104 passed, 18 skipped, 41 subtests passed.
-- `PYTHONPATH=src python -m pytest -q tests/test_producer_bounds.py` — 20 passed.
+- `PYTHONPATH=src python -m pytest -q` — 1112 passed, 18 skipped, 41 subtests passed.
+- `PYTHONPATH=src python -m pytest -q tests/test_producer_bounds.py` — 28 passed.
 - `pytest -q tests/test_command_center_snapshot_v1.py tests/test_command_center_contract.py tests/test_command_center_endpoint.py tests/test_command_center_error_integrity.py tests/test_command_center_activity_message_integrity.py tests/test_command_center_priority_integrity.py tests/test_workbench_remediation.py tests/test_command_center_aggregate_client.py tests/test_command_center_mission_control_contract.py tests/test_command_center_static.py tests/test_workbench.py` — 118 passed, 17 subtests passed.
 - `python scripts/release_smoke.py` — passed distribution build, metadata validation, fresh wheel/sdist installation, and authenticated Workbench smoke checks.
 - `node --check src/sourcepack/workbench_static/command-center-aggregate.js` — passed.
@@ -29,9 +29,10 @@
 - Persisted decision coverage is currently limited to the established override ledger view.
 - Operational scores remain coarse product indicators rather than security guarantees.
 - Producer bounds deliberately reject oversized canonical artifacts and policy inputs; callers needing complete oversized artifacts require a separate offline/indexed workflow.
-- Canonical generation bounds finding construction, but upstream Git diff acquisition and individual analyzer internals retain their existing independent limits and remain the next resource-hardening surface.
+- Git diff, tracked-path, base-tree, and untracked-file acquisition now drains producer output incrementally under byte and time limits. Limit hits fail closed and use canonical incomplete authority rather than treating retained prefixes as complete evidence.
+- Analyzer repository discovery now routes recursive source and verification traversal through the deterministic `SourceScanner` producer, with entry, depth, per-file, and aggregate-read limits. Baseline construction rejects incomplete scans.
 - Policy and canonical-report JSON structure checks occur after full `json.loads` construction; their strict byte caps provide finite input bounds, not streaming parser or per-object instantiation guarantees.
 
 ## Next recommended task
 
-Bound Git diff acquisition and analyzer-specific repository traversal before canonical finding production, preserving the new incomplete-authority semantics.
+The remaining producer-hardening surface is non-analyzer operational tooling (fleet artifact discovery and packet output cleanup), which does not contribute repository evidence to a PASS judgment but should adopt the same bounded iterator pattern in a future maintenance pass.

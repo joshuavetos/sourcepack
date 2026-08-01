@@ -6,6 +6,9 @@ import pytest
 
 from sourcepack.command_center import build_command_center_snapshot
 from sourcepack.policy import POLICY_FILE_LIMIT_BYTES, resolve_effective_policy
+from sourcepack.git import GIT_RETURNCODE_OUTPUT_LIMIT, run_git_bounded
+from sourcepack import baseline, git as git_module, judgment, packet
+from sourcepack.packet import SourceScanner
 from sourcepack.reports.json import REPORT_FINDING_LIMIT, traffic_report, validate_report_construction_metadata
 from sourcepack.workbench import (
     CANONICAL_REPORT_COLLECTION_LIMIT,
@@ -29,6 +32,101 @@ def _latest(tmp_path: Path) -> Path:
 
 def _record() -> bytes:
     return json.dumps({"data": {}}, separators=(",", ":")).encode() + b"\n"
+
+
+def test_git_diff_producer_stops_at_byte_limit(tmp_path: Path):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "bounds@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Bounds"], cwd=tmp_path, check=True)
+    target = tmp_path / "large.txt"
+    target.write_text("a\n", encoding="utf-8")
+    subprocess.run(["git", "add", "large.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    target.write_text("b\n" * 4096, encoding="utf-8")
+
+    cp = run_git_bounded(tmp_path, ["diff"], output_limit_bytes=1024)
+
+    assert cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT
+    assert cp.acquisition_state == "bounded"
+    assert len(cp.stdout.encode()) <= 1024
+    assert "producer limit" in cp.stderr
+    assert run_git_bounded(tmp_path, ["status", "--porcelain"]).acquisition_state == "complete"
+    assert run_git_bounded(tmp_path, ["not-a-command"]).acquisition_state == "failed"
+
+
+def test_repository_entry_limit_is_deterministic_incomplete_authority(tmp_path: Path):
+    for name in reversed(["a.py", "b.py", "c.py"]):
+        (tmp_path / name).write_text(name, encoding="utf-8")
+    scanner = SourceScanner(tmp_path, trust_git_tracked=False, max_entries=2).scan()
+    assert scanner.authority == {"status": "incomplete", "complete": False, "reason": "repository_entry_limit"}
+    assert scanner.included_files == []
+
+
+def test_repository_depth_and_read_limits_are_explicit(tmp_path: Path):
+    nested = tmp_path / "a" / "b" / "c"
+    nested.mkdir(parents=True)
+    (nested / "deep.py").write_text("x", encoding="utf-8")
+    depth = SourceScanner(tmp_path, trust_git_tracked=False, max_depth=1).scan()
+    assert depth.authority["reason"] == "repository_depth_limit"
+
+    (tmp_path / "large.py").write_text("x" * 20, encoding="utf-8")
+    read = SourceScanner(tmp_path, trust_git_tracked=False, max_total_read_bytes=10).scan()
+    assert read.authority == {"status": "incomplete", "complete": False, "reason": "repository_read_limit"}
+
+
+def test_bounded_tracked_paths_cannot_fall_back_to_complete_scan_or_baseline(monkeypatch, tmp_path: Path):
+    import subprocess
+
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    def bounded(_root, args):
+        return subprocess.CompletedProcess(["git", *args], GIT_RETURNCODE_OUTPUT_LIMIT, b"app.py\0", b"bounded")
+
+    monkeypatch.setattr(git_module, "run_git_bytes", bounded)
+    scanner = SourceScanner(tmp_path).scan()
+    assert scanner.authority == {"status": "incomplete", "complete": False, "reason": "git_output_limit"}
+    assert scanner.included_files == []
+    with pytest.raises(RuntimeError, match="git_output_limit"):
+        baseline._write_baseline_packet(tmp_path, tmp_path / "packet")
+
+
+def test_bounded_base_tree_is_fail_with_incomplete_authority(monkeypatch, tmp_path: Path):
+    def fake_git(_repo, args):
+        import subprocess
+        if args == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(["git", *args], 0, str(tmp_path), "")
+        if args == ["diff", "--binary", "base...head"]:
+            return subprocess.CompletedProcess(["git", *args], 0, "", "")
+        if args == ["ls-tree", "-r", "--name-only", "base"]:
+            return subprocess.CompletedProcess(["git", *args], GIT_RETURNCODE_OUTPUT_LIMIT, "partial", "bounded")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(judgment, "run_git", fake_git)
+    monkeypatch.setattr(judgment, "validate_baseline", lambda _repo: {"state": "present", "packet_path": ".sourcepack/baseline/packet"})
+    report = judgment.build_repo_change_report(tmp_path, base_ref="base", head_ref="head")
+    assert report["verdict"] == "FAIL"
+    assert report["authority"] == {"status": "incomplete", "complete": False, "reason": "git_output_limit"}
+    assert report["construction_bounds"]["git_base_tree"]["acquisition_state"] == "bounded"
+    validate_report_construction_metadata(report)
+
+
+@pytest.mark.parametrize(("reason", "state", "limited"), [("git_output_limit", "bounded", True), ("git_diff_failed", "failed", False)])
+def test_git_producer_incomplete_reports_round_trip_canonical_loader(tmp_path: Path, reason: str, state: str, limited: bool):
+    report = traffic_report("FAIL", findings=[{"id": "git_diff_failed", "severity": "error", "category": "git", "message": "incomplete"}])
+    report["authority"] = {"status": "incomplete", "complete": False, "reason": reason}
+    report["construction_bounds"]["git_untracked"] = {
+        "count_state": "lower_bound", "source_exhausted": False,
+        "limit_reached": limited, "acquisition_state": state,
+    }
+    report["replay_bundle"]["authority"] = report["authority"]
+    report["replay_bundle"]["construction_bounds"] = report["construction_bounds"]
+    validate_report_construction_metadata(report)
+    _latest(tmp_path).write_text(json.dumps(report), encoding="utf-8")
+    loaded, error = _read_canonical_report(tmp_path)
+    assert error is None
+    assert loaded == report
 
 
 def _findings(count: int, *, blocker_at: int | None = None):

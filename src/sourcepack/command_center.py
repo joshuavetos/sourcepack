@@ -86,7 +86,8 @@ def _capabilities(
 ) -> list[Capability]:
     baseline_state = str(baseline.get("state") or "missing")
     policy_state = str(policy.get("resolution_status") or "UNKNOWN")
-    report_available = isinstance(report, dict)
+    report_present = isinstance(report, dict)
+    report_complete = report_present and report.get("authority", {}).get("complete", True) is True
     automatic = bool(_status_value(status, "automatic_mode_enabled", False))
     hook = bool(_status_value(status, "pre_commit_hook_installed", False))
 
@@ -95,9 +96,9 @@ def _capabilities(
             "review",
             "Canonical patch review",
             "Live Patch Review",
-            "LIVE" if report_available else "READY",
-            "latest canonical report available" if report_available else "review engine available; no report recorded",
-            "run_review" if not report_available else None,
+            "LIVE" if report_complete else "PARTIAL" if report_present else "READY",
+            "latest canonical report available" if report_complete else "canonical report is incomplete" if report_present else "review engine available; no report recorded",
+            "run_review" if not report_complete else None,
         ),
         Capability(
             "baseline",
@@ -127,15 +128,15 @@ def _capabilities(
             "evidence",
             "Evidence and provenance explorer",
             "Evidence Graph",
-            "LIVE" if report_available else "READY",
-            "canonical evidence available" if report_available else "waiting for first canonical report",
+            "LIVE" if report_complete else "PARTIAL" if report_present else "READY",
+            "canonical evidence available" if report_complete else "bounded evidence from an incomplete report" if report_present else "waiting for first canonical report",
         ),
         Capability(
             "replay",
             "Deterministic replay",
             "Replay Theater",
-            "LIVE" if report_available and report.get("replay_bundle") else "PARTIAL",
-            "replay bundle recorded" if report_available and report.get("replay_bundle") else "no replay bundle available",
+            "LIVE" if report_complete and report.get("replay_bundle") else "PARTIAL",
+            "replay bundle recorded" if report_complete and report.get("replay_bundle") else "bounded replay from an incomplete report" if report_present and report.get("replay_bundle") else "no replay bundle available",
         ),
         Capability(
             "adversarial",
@@ -172,6 +173,7 @@ def _score(
     status: dict[str, Any],
     capabilities: list[Capability],
 ) -> dict[str, int]:
+    report_complete = bool(report and report.get("authority", {}).get("complete", True) is True)
     trust = 0
     if baseline.get("state") == "present":
         trust += 45
@@ -179,7 +181,7 @@ def _score(
         trust += 25
     if policy.get("resolution_status") == "PASS":
         trust += 35
-    if report:
+    if report_complete:
         trust += 20
 
     automation = 10
@@ -342,6 +344,7 @@ def build_command_center_snapshot(
     raw_verdict = report.get("verdict") if report else None
     supported_verdict = raw_verdict in {"PASS", "WARN", "FAIL"}
     canonical_report = report if supported_verdict else None
+    report_complete = not canonical_report or canonical_report.get("authority", {}).get("complete", True) is True
     capabilities = _capabilities(baseline=baseline, policy=policy, report=canonical_report, status=status)
     scores = _score(baseline=baseline, policy=policy, report=canonical_report, status=status, capabilities=capabilities)
 
@@ -356,6 +359,8 @@ def build_command_center_snapshot(
     report_state = (
         "unsupported"
         if report is not None and not supported_verdict
+        else "incomplete"
+        if canonical_report is not None and not report_complete
         else "available"
         if canonical_report is not None
         else "unsupported"
@@ -366,11 +371,11 @@ def build_command_center_snapshot(
     )
     baseline_state = str(baseline.get("state") or "unavailable")
     policy_state = "available" if policy.get("resolution_status") == "PASS" else "degraded"
-    replay_available = bool(canonical_report and canonical_report.get("replay_bundle"))
+    replay_available = bool(canonical_report and report_complete and canonical_report.get("replay_bundle"))
     verdict = raw_verdict if supported_verdict else None
     verdict_display = {
         "PASS": ("pass", "✓", "Change Passed"),
-        "WARN": ("warn", "!", "Review Warning"),
+        "WARN": ("warn", "!", "Incomplete Review" if not report_complete else "Review Warning"),
         "FAIL": ("fail", "×", "Change Blocked"),
         None: ("neutral", "·", "No Report Available"),
     }[verdict] if report is None or supported_verdict else ("neutral", "·", "Unsupported Report")
@@ -396,7 +401,9 @@ def build_command_center_snapshot(
         else "available"
     )
     review_message = (
-        f"Latest verdict: {verdict}"
+        f"Latest verdict: {verdict} (incomplete)"
+        if verdict is not None and not report_complete
+        else f"Latest verdict: {verdict}"
         if verdict is not None
         else "Latest report state: unsupported"
         if report_state == "unsupported"
@@ -450,9 +457,9 @@ def build_command_center_snapshot(
         "available_artifacts": [
             {"id": "baseline", "available": baseline_state in {"present", "stale"}},
             {"id": "policy", "available": policy_state == "available"},
-            {"id": "report", "available": canonical_report is not None},
+            {"id": "report", "available": canonical_report is not None and report_complete},
             {"id": "replay", "available": replay_available},
-            {"id": "decisions", "available": decisions.get("status") != "error"},
+            {"id": "decisions", "available": decisions.get("ledger_available") is True and decisions.get("ledger_complete") is True},
         ],
         "workbench": {
             "review_action": review_action,

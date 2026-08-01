@@ -58,6 +58,7 @@ class ReasonCode(StrEnum):
     POLICY_TEST_REQUIRED = "policy_test_required"
     POLICY_CHANGE_LIMIT = "policy_change_limit"
     POLICY_SECRET_PATTERN = "policy_secret_pattern"
+    REPORT_CONSTRUCTION_LIMIT = "report_construction_limit"
 
 
 _CANONICAL = {code.value for code in ReasonCode}

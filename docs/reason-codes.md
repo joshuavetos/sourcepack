@@ -462,3 +462,9 @@ Human-readable messages are remediation aids. Canonical reason-code IDs remain t
 - **Typical severity:** `FAIL`.
 - **Common cause:** Added plus deleted diff lines are greater than the configured positive limit.
 - **Likely fix:** Split the change or intentionally lower/raise policy through the policy resolver.
+
+## report_construction_limit
+
+- **Meaning:** Canonical report construction observed more than 1,000 findings and stopped after a one-record look-ahead.
+- **Authority:** `authority.status` is `incomplete` and `authority.complete` is false. A retained blocker preserves FAIL; otherwise WARN is explicitly non-final because unseen blockers may exist. The source finding total remains a lower bound, never a total inferred from retained or emitted records.
+- **Likely fix:** Reduce or split the proposed change, then rerun SourcePack to obtain a complete canonical report.

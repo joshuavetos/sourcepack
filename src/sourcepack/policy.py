@@ -8,6 +8,11 @@ from pathlib import Path, PurePosixPath
 
 from .git import run_git
 
+POLICY_FILE_LIMIT_BYTES = 256 * 1024
+POLICY_COLLECTION_LIMIT = 256
+POLICY_STRING_LIMIT_CHARS = 1024
+POLICY_NESTING_LIMIT = 12
+
 
 class PolicyMode(StrEnum):
     LOCAL = "local"
@@ -277,27 +282,31 @@ def validate_policy_config(repo: str | Path) -> PolicyValidationResult:
             valid=True,
         )
     warnings: list[str] = []
-    errors: list[str] = []
     invalid_entries: list[PolicyIgnoredEntryIssue] = []
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        return PolicyValidationResult(
-            schema_version="sourcepack.policy.validation.v1",
-            repo=str(repo_path),
-            policy_path=str(path),
-            policy_present=True,
-            valid=False,
-            errors=(f"policy_config_invalid_json:{exc.msg}:line={exc.lineno}:column={exc.colno}",),
+    raw, _, read_error = _read_json_file(path)
+    if read_error:
+        validation_error = (
+            "policy_config_invalid_json:" + read_error.removeprefix("malformed_json:")
+            if read_error.startswith("malformed_json:")
+            else f"policy_config_{read_error}"
         )
-    except OSError as exc:
         return PolicyValidationResult(
             schema_version="sourcepack.policy.validation.v1",
             repo=str(repo_path),
             policy_path=str(path),
             policy_present=True,
             valid=False,
-            errors=(f"policy_config_unreadable:{exc}",),
+            errors=(validation_error,),
+        )
+    shape_error = _policy_shape_error(raw)
+    if shape_error:
+        return PolicyValidationResult(
+            schema_version="sourcepack.policy.validation.v1",
+            repo=str(repo_path),
+            policy_path=str(path),
+            policy_present=True,
+            valid=False,
+            errors=(f"policy_config_{shape_error}",),
         )
     if not isinstance(raw, dict):
         return PolicyValidationResult(
@@ -364,10 +373,12 @@ def load_policy_config(repo: str | Path) -> PolicyConfig:
     if not path.exists():
         return PolicyConfig()
     warnings: list[str] = []
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return PolicyConfig(warnings=(f"policy_config_unreadable:{exc}",))
+    raw, _, read_error = _read_json_file(path)
+    if read_error:
+        return PolicyConfig(warnings=(f"policy_config_{read_error}",))
+    shape_error = _policy_shape_error(raw)
+    if shape_error:
+        return PolicyConfig(warnings=(f"policy_config_{shape_error}",))
     if not isinstance(raw, dict):
         return PolicyConfig(warnings=("policy_config_invalid:root_must_be_object",))
     if raw.get("prompt_context_authoritative") is True:
@@ -477,15 +488,33 @@ def _is_relative_to_path(child: Path, parent: Path) -> bool:
 
 def _read_json_file(path: Path) -> tuple[object | None, str | None, str | None]:
     try:
-        b = path.read_bytes()
+        with path.open("rb") as handle:
+            b = handle.read(POLICY_FILE_LIMIT_BYTES + 1)
     except OSError as exc:
         return None, None, f"unreadable:{exc}"
+    if len(b) > POLICY_FILE_LIMIT_BYTES:
+        return None, _sha256_bytes(b[:POLICY_FILE_LIMIT_BYTES]), f"limit_exceeded:file_bytes:{POLICY_FILE_LIMIT_BYTES}"
     try:
         return json.loads(b.decode("utf-8")), _sha256_bytes(b), None
     except UnicodeDecodeError as exc:
         return None, _sha256_bytes(b), f"malformed_json:utf8:{exc}"
     except json.JSONDecodeError as exc:
         return None, _sha256_bytes(b), f"malformed_json:{exc.msg}:line={exc.lineno}:column={exc.colno}"
+
+
+def _policy_shape_error(value: object, depth: int = 0) -> str | None:
+    if depth > POLICY_NESTING_LIMIT:
+        return f"limit_exceeded:nesting_depth:{POLICY_NESTING_LIMIT}"
+    if isinstance(value, str) and len(value) > POLICY_STRING_LIMIT_CHARS:
+        return f"limit_exceeded:string_chars:{POLICY_STRING_LIMIT_CHARS}"
+    if isinstance(value, (list, dict)) and len(value) > POLICY_COLLECTION_LIMIT:
+        return f"limit_exceeded:collection_items:{POLICY_COLLECTION_LIMIT}"
+    children = value.values() if isinstance(value, dict) else value if isinstance(value, list) else ()
+    for child in children:
+        error = _policy_shape_error(child, depth + 1)
+        if error:
+            return error
+    return None
 
 
 def _validate_rule_value(rule: str, value: object, source: str) -> tuple[object | None, str | None]:
@@ -619,6 +648,11 @@ def resolve_effective_policy(repo: str | Path, org_policy: str | Path | None = N
                     errors.append("org_policy_unsupported_schema")
                 else:
                     org_id = raw_org.get("policy_id")
+                    shape_error = _policy_shape_error(raw_org)
+                    if shape_error:
+                        org_status = "invalid"
+                        errors.append(f"org_policy_{shape_error}")
+                        org_id = None
                     if not isinstance(org_id, str) or not org_id.strip():
                         org_status = "invalid"; errors.append("org_policy_invalid:policy_id_required")
                     else:

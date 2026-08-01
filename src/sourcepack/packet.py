@@ -8,7 +8,7 @@ import re
 import tomllib
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Iterable
 from xml.sax.saxutils import escape as xml_escape
 
@@ -41,6 +41,10 @@ REPOSITORY_DEPTH_LIMIT = 64
 REPOSITORY_READ_LIMIT_BYTES = 64 * 1024 * 1024
 PACKET_CLEANUP_ENTRY_LIMIT = 10_000
 PACKET_CLEANUP_DEPTH_LIMIT = 64
+PACKET_VERIFY_METADATA_LIMIT_BYTES = 8 * 1024 * 1024
+PACKET_VERIFY_RECORD_LIMIT = 10_000
+PACKET_VERIFY_FILE_LIMIT_BYTES = 64 * 1024 * 1024
+PACKET_VERIFY_AGGREGATE_LIMIT_BYTES = 128 * 1024 * 1024
 SECRET_PATTERNS = [
     ("openai_key", re.compile(r"sk-proj-[A-Za-z0-9_\-]{12,}|sk-[A-Za-z0-9]{24,}")),
     ("aws_access_key", re.compile(r"AKIA[0-9A-Z]{16}")),
@@ -661,20 +665,100 @@ def load_manifest(packet: Path) -> dict:
     return json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
 
 
-def verify_packet(packet_path: str | Path, against: str | Path | None = None) -> bool:
+def _load_verification_json(path: Path, byte_limit: int) -> dict:
+    with path.open("rb") as handle:
+        raw = handle.read(byte_limit + 1)
+    if len(raw) > byte_limit:
+        raise ValueError(f"{path.name} exceeds {byte_limit} byte verification limit")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError(f"{path.name} must contain a JSON object")
+    return value
+
+
+def _confined_verification_file(root: Path, raw_path: object) -> tuple[Path | None, str | None]:
+    if not isinstance(raw_path, str) or not raw_path:
+        return None, "path must be a nonempty string"
+    portable = raw_path.replace("\\", "/")
+    windows_path = PureWindowsPath(raw_path)
+    if PurePosixPath(portable).is_absolute() or windows_path.is_absolute() or windows_path.drive:
+        return None, "absolute or drive-qualified path"
+    if ".." in PurePosixPath(portable).parts:
+        return None, "parent traversal"
+    normalized, unsafe = normalize_diff_path(portable)
+    if unsafe or not normalized:
+        return None, "unsafe path"
+
+    candidate = root.joinpath(*PurePosixPath(normalized).parts)
+    current = root
+    try:
+        for component in PurePosixPath(normalized).parts:
+            current = current / component
+            if current.is_symlink():
+                return None, "symlink traversal"
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+        if not resolved.is_file():
+            return None, "not a regular file"
+    except (OSError, ValueError):
+        return None, "missing, unreadable, or outside declared root"
+    return resolved, None
+
+
+def verify_packet(
+    packet_path: str | Path,
+    against: str | Path | None = None,
+    *,
+    metadata_byte_limit: int = PACKET_VERIFY_METADATA_LIMIT_BYTES,
+    record_limit: int = PACKET_VERIFY_RECORD_LIMIT,
+    file_byte_limit: int = PACKET_VERIFY_FILE_LIMIT_BYTES,
+    aggregate_byte_limit: int = PACKET_VERIFY_AGGREGATE_LIMIT_BYTES,
+) -> bool:
     packet = Path(packet_path)
-    ok = True
-    receipt_path = packet / "receipt.json"
-    if not receipt_path.exists():
-        print("FAIL receipt.json missing")
+    if packet.is_symlink():
+        print("FAIL packet root must not be a symlink")
         return False
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    for name, expected in receipt.get("hashes", {}).items():
-        path = packet / name
-        if not path.exists():
-            print(f"FAIL {name} missing")
+    try:
+        packet = packet.resolve(strict=True)
+    except OSError:
+        print("FAIL packet root missing or unreadable")
+        return False
+    if not packet.is_dir():
+        print("FAIL packet root is not a directory")
+        return False
+    ok = True
+    receipt_path, receipt_path_error = _confined_verification_file(packet, "receipt.json")
+    if receipt_path_error or receipt_path is None:
+        print(f"FAIL unsafe receipt.json: {receipt_path_error}")
+        return False
+    try:
+        receipt = _load_verification_json(receipt_path, metadata_byte_limit)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        print(f"FAIL receipt.json unavailable or malformed: {exc}")
+        return False
+    hashes = receipt.get("hashes", {})
+    if not isinstance(hashes, dict):
+        print("FAIL receipt.json hashes must be an object")
+        return False
+    if len(hashes) > record_limit:
+        print(f"FAIL packet verification record limit exceeded: {record_limit}")
+        return False
+    bytes_read = 0
+    for name, expected in hashes.items():
+        path, path_error = _confined_verification_file(packet, name)
+        if path_error or path is None:
+            print(f"FAIL unsafe packet artifact {name!r}: {path_error}")
+            return False
+        try:
+            size = path.stat().st_size
+        except OSError:
+            print(f"FAIL {name} unreadable")
             ok = False
             continue
+        if size > file_byte_limit or bytes_read + size > aggregate_byte_limit:
+            print(f"FAIL packet verification byte limit exceeded at {name}")
+            return False
+        bytes_read += size
         actual = sha256_file(path)
         if actual == expected:
             print(f"PASS {name}")
@@ -682,20 +766,51 @@ def verify_packet(packet_path: str | Path, against: str | Path | None = None) ->
             print(f"FAIL {name} hash mismatch")
             ok = False
     if against:
-        manifest = load_manifest(packet)
-        source = Path(against).resolve()
-        included = {rec["relative_path"]: rec for rec in manifest.get("included_files", [])}
+        manifest_path, manifest_path_error = _confined_verification_file(packet, "manifest.json")
+        if manifest_path_error or manifest_path is None:
+            print(f"FAIL unsafe manifest.json: {manifest_path_error}")
+            return False
+        try:
+            manifest = _load_verification_json(manifest_path, metadata_byte_limit)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            print(f"FAIL manifest.json unavailable or malformed: {exc}")
+            return False
+        source = Path(against)
+        if source.is_symlink():
+            print("FAIL against-source root must not be a symlink")
+            return False
+        try:
+            source = source.resolve(strict=True)
+        except OSError:
+            print("FAIL against-source root missing or unreadable")
+            return False
+        if not source.is_dir():
+            print("FAIL against-source root is not a directory")
+            return False
+        included_records = manifest.get("included_files", [])
+        if not isinstance(included_records, list) or len(included_records) > record_limit:
+            print(f"FAIL manifest included-file verification record limit exceeded: {record_limit}")
+            return False
+        if any(not isinstance(rec, dict) or not isinstance(rec.get("relative_path"), str) for rec in included_records):
+            print("FAIL manifest included-file records are malformed")
+            return False
+        included = {rec["relative_path"]: rec for rec in included_records}
         for rel, rec in included.items():
-            source_file = source / rel
-            if not source_file.exists():
-                print(f"FAIL source missing {rel}")
-                ok = False
-            elif is_probably_binary(source_file):
+            source_file, path_error = _confined_verification_file(source, rel)
+            if path_error or source_file is None:
+                print(f"FAIL unsafe source file {rel!r}: {path_error}")
+                return False
+            if is_probably_binary(source_file):
                 print(f"WARN source now binary {rel}")
             else:
                 try:
+                    size = source_file.stat().st_size
+                    if size > file_byte_limit or bytes_read + size > aggregate_byte_limit:
+                        print(f"FAIL source verification byte limit exceeded at {rel}")
+                        return False
+                    bytes_read += size
                     content = source_file.read_text(encoding="utf-8")
-                except Exception:
+                except OSError:
                     print(f"FAIL source unreadable {rel}")
                     ok = False
                     continue

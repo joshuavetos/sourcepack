@@ -23,7 +23,7 @@ from typing import Iterable
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
 from .baseline import build_current_baseline as canonical_build_current_baseline
 from .ecosystems.python import PY_IMPORT_ALIASES
-from .packet import PacketWriter, SourceScanner, sourcepack_bootstrap_file
+from .packet import PacketWriter, SourceScanner, sourcepack_bootstrap_file, verify_packet as canonical_verify_packet
 from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_paths
 from .reports.html import render_report_html
 from .reports.json import normalized_finding, traffic_report, write_user_report
@@ -342,62 +342,7 @@ def load_manifest(packet: Path) -> dict:
 
 
 def verify_packet(packet_path: str | Path, against: str | Path | None = None) -> bool:
-    packet = Path(packet_path)
-    ok = True
-    receipt_path = packet / "receipt.json"
-    if not receipt_path.exists():
-        print("FAIL receipt.json missing")
-        return False
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    for name, expected in receipt.get("hashes", {}).items():
-        path = packet / name
-        if not path.exists():
-            print(f"FAIL {name} missing")
-            ok = False
-            continue
-        actual = sha256_file(path)
-        if actual == expected:
-            print(f"PASS {name}")
-        else:
-            print(f"FAIL {name} hash mismatch")
-            ok = False
-    if against:
-        manifest = load_manifest(packet)
-        source = Path(against).resolve()
-        included = {rec["relative_path"]: rec for rec in manifest.get("included_files", [])}
-        for rel, rec in included.items():
-            source_file = source / rel
-            if not source_file.exists():
-                print(f"FAIL source missing {rel}")
-                ok = False
-            elif is_probably_binary(source_file):
-                print(f"WARN source now binary {rel}")
-            else:
-                try:
-                    content = source_file.read_text(encoding="utf-8")
-                except Exception:
-                    print(f"FAIL source unreadable {rel}")
-                    ok = False
-                    continue
-                expected_source_hash = rec.get("source_sha256")
-                if expected_source_hash is None:
-                    expected_source_hash = rec.get("sha256")
-                    redacted, _ = redact_secrets(content)
-                    content_hash = sha256_text(redacted)
-                else:
-                    content_hash = sha256_text(content)
-                if content_hash != expected_source_hash:
-                    print(f"FAIL source changed {rel}")
-                    ok = False
-        scanner = SourceScanner(source).scan()
-        if not scanner.authority["complete"]:
-            print(f"FAIL repository traversal incomplete: {scanner.authority['reason']}")
-            ok = False
-        current_files = [item.relative_path for item in scanner.included_files if item.relative_path not in included]
-        for rel in current_files:
-            print(f"WARN new source file not in packet {rel}")
-    print("OVERALL", "PASS" if ok else "FAIL")
-    return ok
+    return canonical_verify_packet(packet_path, against)
 
 
 PATHLIKE_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".toml", ".yaml", ".yml", ".md", ".txt", ".cfg", ".ini", ".css", ".html", ".rs", ".go", ".java", ".rb", ".php", ".sh"}

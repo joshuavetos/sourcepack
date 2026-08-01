@@ -3,9 +3,10 @@ from pathlib import Path
 
 import pytest
 
+from sourcepack import cli, packet as packet_module
 from sourcepack.decision_ledger import new_event, read_events
 from sourcepack.fleet import summarize_ledgers, summarize_reports
-from sourcepack.packet import PacketCleanupError, PacketWriter, SourceScanner
+from sourcepack.packet import PacketCleanupError, PacketWriter, SourceScanner, verify_packet
 
 
 def _report(path: Path) -> None:
@@ -107,6 +108,164 @@ def test_packet_partial_cleanup_is_explicit_and_output_root_symlink_is_rejected(
         PacketWriter(link, scanner, force=True).prepare_out()
     assert escaped.value.result["status"] == "failed"
     assert sentinel.exists()
+
+
+def test_packet_verification_metadata_and_record_limits_fail_closed(tmp_path: Path) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    (packet / "receipt.json").write_bytes(b" " * 9)
+    assert verify_packet(packet, metadata_byte_limit=8) is False
+
+    (packet / "receipt.json").write_text(
+        json.dumps({"hashes": {"a": "x", "b": "y"}}), encoding="utf-8"
+    )
+    assert verify_packet(packet, record_limit=1) is False
+
+
+def test_packet_verification_individual_and_aggregate_byte_limits_fail_closed(tmp_path: Path) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    (packet / "a").write_bytes(b"aa")
+    (packet / "b").write_bytes(b"bb")
+    (packet / "receipt.json").write_text(
+        json.dumps({"hashes": {"a": "x", "b": "y"}}), encoding="utf-8"
+    )
+    assert verify_packet(packet, file_byte_limit=1) is False
+    assert verify_packet(packet, aggregate_byte_limit=3) is False
+
+
+@pytest.mark.parametrize("unsafe_name", ["../outside.txt", "/outside.txt", "C:\\outside.txt"])
+def test_packet_verification_rejects_escaping_and_absolute_receipt_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe_name: str
+) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("external", encoding="utf-8")
+    before = outside.read_bytes()
+    (packet / "receipt.json").write_text(
+        json.dumps({"hashes": {unsafe_name: packet_module.sha256_file(outside)}}),
+        encoding="utf-8",
+    )
+    hashed: list[Path] = []
+    real_hash = packet_module.sha256_file
+
+    def recording_hash(path: Path) -> str:
+        hashed.append(path)
+        return real_hash(path)
+
+    monkeypatch.setattr(packet_module, "sha256_file", recording_hash)
+    assert verify_packet(packet) is False
+    assert hashed == []
+    assert outside.read_bytes() == before
+
+
+def test_packet_verification_rejects_symlinked_artifact_and_root(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.txt"
+    outside.write_text("external", encoding="utf-8")
+    before = outside.read_bytes()
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    (packet / "linked.txt").symlink_to(outside)
+    (packet / "receipt.json").write_text(
+        json.dumps({"hashes": {"linked.txt": packet_module.sha256_file(outside)}}),
+        encoding="utf-8",
+    )
+    assert verify_packet(packet) is False
+    linked_root = tmp_path / "linked-packet"
+    linked_root.symlink_to(packet, target_is_directory=True)
+    assert verify_packet(linked_root) is False
+    assert outside.read_bytes() == before
+
+
+def test_packet_verification_rejects_external_symlinked_receipt(tmp_path: Path) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    artifact = packet / "artifact.txt"
+    artifact.write_text("confined", encoding="utf-8")
+    external_receipt = tmp_path / "external-receipt.json"
+    external_receipt.write_text(
+        json.dumps({"hashes": {"artifact.txt": packet_module.sha256_file(artifact)}}),
+        encoding="utf-8",
+    )
+    before = external_receipt.read_bytes()
+    (packet / "receipt.json").symlink_to(external_receipt)
+    assert verify_packet(packet) is False
+    assert external_receipt.read_bytes() == before
+
+
+def test_packet_verification_rejects_external_symlinked_manifest(tmp_path: Path) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    source = tmp_path / "source"
+    source.mkdir()
+    external_manifest = tmp_path / "external-manifest.json"
+    external_manifest.write_text(json.dumps({"included_files": []}), encoding="utf-8")
+    before = external_manifest.read_bytes()
+    (packet / "manifest.json").symlink_to(external_manifest)
+    (packet / "receipt.json").write_text(json.dumps({"hashes": {}}), encoding="utf-8")
+    assert verify_packet(packet, source) is False
+    assert external_manifest.read_bytes() == before
+
+
+def _packet_with_manifest(packet: Path, records: list[dict[str, str]]) -> None:
+    manifest = packet / "manifest.json"
+    manifest.write_text(json.dumps({"included_files": records}), encoding="utf-8")
+    (packet / "receipt.json").write_text(
+        json.dumps({"hashes": {"manifest.json": packet_module.sha256_file(manifest)}}),
+        encoding="utf-8",
+    )
+
+
+def test_packet_verification_rejects_escaping_and_symlinked_source_paths(tmp_path: Path) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    source = tmp_path / "source"
+    source.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("external", encoding="utf-8")
+    before = outside.read_bytes()
+    expected = packet_module.sha256_text("external")
+
+    _packet_with_manifest(packet, [{"relative_path": "../outside.txt", "source_sha256": expected}])
+    assert verify_packet(packet, source) is False
+
+    (source / "linked.txt").symlink_to(outside)
+    _packet_with_manifest(packet, [{"relative_path": "linked.txt", "source_sha256": expected}])
+    assert verify_packet(packet, source) is False
+    linked_source = tmp_path / "linked-source"
+    linked_source.symlink_to(source, target_is_directory=True)
+    assert verify_packet(packet, linked_source) is False
+    assert outside.read_bytes() == before
+
+
+def test_packet_verification_accepts_confined_regular_files_and_cli_delegates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    artifact = packet / "artifact.txt"
+    artifact.write_text("confined", encoding="utf-8")
+    (packet / "receipt.json").write_text(
+        json.dumps({"hashes": {"artifact.txt": packet_module.sha256_file(artifact)}}),
+        encoding="utf-8",
+    )
+    assert verify_packet(
+        packet,
+        metadata_byte_limit=(packet / "receipt.json").stat().st_size,
+        record_limit=1,
+        file_byte_limit=artifact.stat().st_size,
+        aggregate_byte_limit=artifact.stat().st_size,
+    ) is True
+
+    calls: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        cli,
+        "canonical_verify_packet",
+        lambda packet_path, against=None: calls.append((packet_path, against)) or True,
+    )
+    assert cli.verify_packet(packet, tmp_path) is True
+    assert calls == [(packet, tmp_path)]
 
 
 @pytest.mark.parametrize(("count", "reached", "consumed", "exhausted", "total"), [

@@ -2,6 +2,17 @@
 
 ## Completed
 
+- **Producer hardening is closed.** The final closure audit covered bounded Git diff, tracked-path,
+  base-tree, and untracked-content acquisition; repository scanning and baseline packet inputs;
+  canonical report construction/loading; effective-policy and persisted-decision loading; fleet
+  discovery and artifact/event reads; packet-output cleanup; and packet verification. Incomplete
+  prefixes remain non-authoritative, cannot activate a trusted baseline, and are not reported with
+  exact totals unless their source was exhausted. This closure is limited to the implemented
+  producer and operational boundaries: it is not a claim that SourcePack is secure, correct,
+  universally bounded, or complete for external repositories and ecosystems. Maintenance outside
+  those authority/completeness contracts does not reopen this project without a demonstrated
+  regression against them.
+
 - Fleet artifact discovery and packet-output cleanup now have deterministic producer-owned entry, depth, record, file-byte, aggregate-byte, and cleanup limits. Decision-ledger metadata keeps artifact-path discovery counts and event consumption/retention counts in separate envelopes with independent limits, and ledger reads stop after one valid-event overflow probe. Structured outcomes distinguish complete, boundary-incomplete, and failed work without treating retained prefixes as exhaustive; cleanup remains symlink-safe and path-confined. This bounds operational resource use and cleanup completeness, not repository correctness, security, runtime validity, complete external fleet discovery, or PASS authority.
 
 - Canonical report loading/construction, effective-policy inputs, and persisted-decision dashboard iteration now stop at producer-owned byte, record, collection, string, and nesting limits before Command Center projection. Finding truncation propagates incomplete authority through report, overview, replay-evidence, and Command Center states; ledger metadata distinguishes consumed from retained records while reads use a strict total-byte budget plus one probe and whitespace-aware bounded look-ahead.
@@ -16,10 +27,10 @@
 
 ## Verification
 
-- `PYTHONPATH=src python -m pytest -q` — 1112 passed, 18 skipped, 41 subtests passed.
-- `PYTHONPATH=src python -m pytest -q tests/test_producer_bounds.py` — 28 passed.
+- `PYTHONPATH=src python -m pytest -q` — 1132 passed, 18 skipped, 41 subtests passed.
+- `PYTHONPATH=src python -m pytest -q tests/test_operational_producer_bounds.py tests/test_producer_bounds.py` — 40 passed.
 - `pytest -q tests/test_command_center_snapshot_v1.py tests/test_command_center_contract.py tests/test_command_center_endpoint.py tests/test_command_center_error_integrity.py tests/test_command_center_activity_message_integrity.py tests/test_command_center_priority_integrity.py tests/test_workbench_remediation.py tests/test_command_center_aggregate_client.py tests/test_command_center_mission_control_contract.py tests/test_command_center_static.py tests/test_workbench.py` — 118 passed, 17 subtests passed.
-- `python scripts/release_smoke.py` — passed distribution build, metadata validation, fresh wheel/sdist installation, and authenticated Workbench smoke checks.
+- `PYTHONPATH=src python scripts/release_smoke.py` — passed distribution build, metadata validation, fresh wheel/sdist installation, and authenticated Workbench smoke checks.
 - `node --check src/sourcepack/workbench_static/command-center-aggregate.js` — passed.
 - `python -m compileall -q src` — passed.
 - `ruff check src/sourcepack/command_center.py src/sourcepack/command_center_contract.py src/sourcepack/command_center_endpoint.py tests/test_command_center_snapshot_v1.py` — passed.
@@ -33,4 +44,9 @@
 - Producer bounds deliberately reject oversized canonical artifacts and policy inputs; callers needing complete oversized artifacts require a separate offline/indexed workflow.
 - Git diff, tracked-path, base-tree, and untracked-file acquisition now drains producer output incrementally under byte and time limits. Limit hits fail closed and use canonical incomplete authority rather than treating retained prefixes as complete evidence.
 - Analyzer repository discovery now routes recursive source and verification traversal through the deterministic `SourceScanner` producer, with entry, depth, per-file, and aggregate-read limits. Baseline construction rejects incomplete scans.
+- Packet verification bounds receipt and manifest bytes, receipt and manifest records, individual
+  artifact/source reads, aggregate reads, and any optional against-source traversal. Verification is
+  confined to non-symlink regular files beneath non-symlink packet and source roots. A boundary,
+  unsafe path, or symlink returns verification failure rather than PASS; these operational limits
+  do not create or upgrade canonical judgment authority.
 - Policy and canonical-report JSON structure checks occur after full `json.loads` construction; their strict byte caps provide finite input bounds, not streaming parser or per-object instantiation guarantees.

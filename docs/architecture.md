@@ -83,3 +83,55 @@ The evidence graph is not a new authority. Local project evidence remains the on
 JSON reports also include an additive replay bundle assembled by `src/sourcepack/reports/json.py`. The bundle records SourcePack version, replay schema version, generation timestamp when available, command/policy mode when provided, verdict, exit code when provided, normalized reason codes, checked and not-checked categories, findings, warnings, blockers, uncertainties, evidence items, reason-code-to-evidence mappings, and safe metadata about baselines, prompt context, patches, and environment when present. Replay/audit data reconstructs SourcePack's decision path, not reality itself, and avoids secrets or full file contents beyond information SourcePack already intentionally reports.
 
 JSON compatibility is additive: existing fields are not removed or renamed. The evidence graph fields (`evidence_items`, `reason_code_evidence`, and `replay_bundle`) are optional for older reports and mode-dependent for callers that build partial reports directly.
+
+### Producer-side construction bounds
+
+Command Center transport projection is not a producer limit. Before projection, its three
+repository-controlled producer paths enforce independent limits:
+
+* Canonical `latest.json` loading reads at most 2,097,153 bytes (the 2 MiB budget plus one
+  deliberate overflow probe) and rejects the artifact as
+  `incomplete`/`artifact_limit_exceeded` when the 2 MiB limit is exceeded. It does not parse or
+  expose a prefix, so an omitted finding can never create PASS authority. Canonical report
+  construction consumes at most 1,001 source findings, retains the first 1,000 in producer order,
+  and adds a deterministic `report_construction_limit` warning. `authority.complete` is false and
+  `authority.status` is `incomplete` even when a retained blocker preserves a `FAIL`; without a
+  retained blocker the `WARN` verdict is explicitly non-final because unseen blockers may exist.
+  The finding bounds separately record source consumed (including look-ahead), source retained
+  (excluding the synthetic warning), canonical emitted (including it), source exhaustion, the
+  retention limit, and an exact or lower-bound source total. Replay copies both authority and
+  construction metadata; Command Center reports `state.report=incomplete` and degrades replay.
+  The raw dashboard overview uses `report_status=incomplete`, while replay-evidence and report
+  diagnostics use `status=incomplete` but keep bounded replay/evidence inspectable with the report's
+  authority and construction metadata. The override dashboard likewise marks its policy-finding
+  projection incomplete while keeping independently complete ledger counts inspectable.
+  Remediation, blocker, warning, and evidence construction operate only on the bounded canonical set.
+  Loading also rejects, before authority use, parsed reports exceeding 2,000 list items, 512 mapping
+  entries, 65,536 Unicode code points per string, or 20 nested levels. Like policy shape checks,
+  this structural rejection follows full `json.loads` materialization within the strict byte cap.
+* Effective policy reads each of the only two resolution inputs—the repository
+  `.sourcepack/policy.json` and optional caller-designated organization policy—through a 256 KiB
+  plus-one-byte reader. Parsed inputs additionally allow at most 256 entries per collection,
+  1,024 Unicode code points per string, and 12 nested levels. There is no include or inheritance
+  traversal. Any boundary failure makes resolution `FAIL`; no prefix is merged and no successful
+  policy authority is claimed. Source and limit category remain in the bounded error list.
+* The persisted-decision dashboard streams `.sourcepack/decisions.jsonl` in ledger order. Ordinary
+  reads are capped by the remaining 2 MiB budget; only a one-byte overflow probe is permitted. It
+  accepts at most 512 nonblank records and 64 KiB per physical line. After record 512 it continues
+  bounded line-by-line look-ahead: blank/whitespace lines do not count, a malformed nonblank line is
+  malformed, record 513 establishes a lower bound, and exhaustion within the byte budget establishes
+  an exact total. It never scans beyond the byte budget merely to prove trailing whitespace. It neither
+  loads nor sorts the complete ledger. A complete scan reports an `exact` record count. A limit returns an
+  `incomplete` error with a `lower_bound`, null total, and `limit_reached`. Decision completeness
+  separately records nonblank records consumed, records retained/evaluated, source exhaustion, and
+  the 512-record retention limit; the legacy additive `observed_count` equals consumed records. Thus
+  later overrides and malformed trailing content are explicitly unknown and current applicability
+  is not claimed. Malformed content reached within the boundary retains the established malformed
+  envelope.
+
+Exact boundaries are accepted; a deliberate single byte or source/ledger record look-ahead is used only to prove overflow.
+Selection is producer/ledger order, duplicate handling is unchanged, JSON output remains
+repeatable for unchanged inputs, and repository-controlled strings remain JSON/text data. These
+read-only bounds do not create baselines, approve overrides, rewrite policy or reports, or otherwise
+mutate trust state. They also do not establish repository completeness, correctness, security,
+dependency safety, runtime validity, or user intent beyond the inspected evidence.

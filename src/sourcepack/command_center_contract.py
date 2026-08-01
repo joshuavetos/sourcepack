@@ -286,7 +286,7 @@ def command_center_snapshot_schema() -> dict[str, Any]:
                 "required": ["overall", "report", "baseline", "policy", "replay"],
                 "properties": {
                     "overall": {"enum": ["available", "degraded", "unavailable", "malformed", "unsupported"]},
-                    "report": {"enum": ["available", "unavailable", "malformed", "unsupported"]},
+                    "report": {"enum": ["available", "unavailable", "malformed", "unsupported", "incomplete"]},
                     "baseline": {"enum": ["available", "unavailable"]},
                     "policy": {"enum": ["available", "degraded"]},
                     "replay": {"enum": ["available", "degraded", "unavailable"]},

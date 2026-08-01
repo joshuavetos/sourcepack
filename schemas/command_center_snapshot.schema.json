@@ -645,7 +645,8 @@
             "available",
             "unavailable",
             "malformed",
-            "unsupported"
+            "unsupported",
+            "incomplete"
           ]
         }
       },

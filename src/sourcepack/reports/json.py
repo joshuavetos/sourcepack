@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from itertools import islice
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from sourcepack.finding_identity import attach_finding_id
 from sourcepack.remediation import attach_remediation, report_remediation
 
 SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
+REPORT_FINDING_LIMIT = 1000
 PROVENANCE_FIELDS = (
     "analysis_status",
     "evidence_class",
@@ -130,7 +132,61 @@ def build_replay_bundle(report: dict, *, generated_at: str | None = None, exit_c
         "prompt_context_metadata": report.get("prompt_context_metadata", {}),
         "patch_metadata": report.get("patch_metadata", {}),
         "environment_metadata": report.get("environment_metadata", {}),
+        "authority": report.get("authority", {"status": "complete", "complete": True, "reason": None}),
+        "construction_bounds": report.get("construction_bounds", {}),
     }
+
+
+def validate_report_construction_metadata(report: dict) -> None:
+    """Validate additive construction authority/count relationships."""
+    authority = report.get("authority")
+    bounds = report.get("construction_bounds")
+    if authority is None and bounds is None:
+        return
+    if not isinstance(authority, dict) or not isinstance(bounds, dict) or not isinstance(bounds.get("findings"), dict):
+        raise ValueError("canonical report construction metadata is missing")
+    finding_bounds = bounds["findings"]
+    required = {
+        "count_state", "source_consumed_count", "source_retained_count",
+        "canonical_emitted_count", "source_exhausted", "total_count",
+        "limit_reached", "source_retention_limit",
+    }
+    if not required <= finding_bounds.keys():
+        raise ValueError("canonical report finding count metadata is incomplete")
+    consumed = finding_bounds["source_consumed_count"]
+    retained = finding_bounds["source_retained_count"]
+    emitted = finding_bounds["canonical_emitted_count"]
+    limit = finding_bounds["source_retention_limit"]
+    values = (consumed, retained, emitted, limit)
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in values):
+        raise ValueError("canonical report finding counts must be non-negative integers")
+    reached = finding_bounds["limit_reached"]
+    exhausted = finding_bounds["source_exhausted"]
+    if not isinstance(reached, bool) or not isinstance(exhausted, bool):
+        raise ValueError("canonical report finding limit flags must be booleans")
+    if emitted != len(report.get("findings", [])):
+        raise ValueError("canonical emitted finding count does not match findings")
+    if reached:
+        if finding_bounds["count_state"] != "lower_bound" or finding_bounds["total_count"] is not None:
+            raise ValueError("limited canonical report requires an unknown lower-bound total")
+        if exhausted or consumed != limit + 1 or retained != limit or emitted != retained + 1:
+            raise ValueError("limited canonical report finding counts are inconsistent")
+        if authority != {"status": "incomplete", "complete": False, "reason": "finding_construction_limit"}:
+            raise ValueError("limited canonical report requires incomplete authority")
+        synthetic = [item for item in report.get("findings", []) if item.get("id") == "report_construction_limit"]
+        if len(synthetic) != 1:
+            raise ValueError("limited canonical report requires one synthetic limit finding")
+        if report.get("blockers") and report.get("verdict") != "FAIL":
+            raise ValueError("limited canonical report verdict does not match retained blocker authority")
+        if not report.get("blockers") and report.get("verdict") not in {"WARN", "FAIL"}:
+            raise ValueError("limited canonical report cannot claim PASS authority")
+    else:
+        if finding_bounds["count_state"] != "exact" or finding_bounds["total_count"] != consumed:
+            raise ValueError("complete canonical report requires an exact source total")
+        if not exhausted or retained != consumed or emitted != retained:
+            raise ValueError("complete canonical report finding counts are inconsistent")
+        if authority != {"status": "complete", "complete": True, "reason": None}:
+            raise ValueError("exhausted canonical report requires complete authority")
 
 
 def normalize_finding_evidence(finding: dict) -> dict:
@@ -170,7 +226,16 @@ def normalize_finding_evidence(finding: dict) -> dict:
 
 
 def traffic_report(verdict: str, headline: str | None = None, findings: list[dict] | None = None, checked_categories: list[str] | None = None, next_action: str | None = None, report_path: str = ".sourcepack/reports/latest.json", reason_type: str | None = None, not_checked: list[str] | None = None) -> dict:
-    findings = [attach_finding_id(normalize_finding_evidence(f)) for f in (findings or [])]
+    inspected = list(islice(iter(findings or ()), REPORT_FINDING_LIMIT + 1))
+    finding_limit_reached = len(inspected) > REPORT_FINDING_LIMIT
+    findings = [attach_finding_id(normalize_finding_evidence(f)) for f in inspected[:REPORT_FINDING_LIMIT]]
+    if finding_limit_reached:
+        findings.append(attach_finding_id(normalize_finding_evidence(normalized_finding(
+            "report_construction_limit", "warn", "tooling",
+            f"Canonical report finding construction stopped at {REPORT_FINDING_LIMIT} records; additional findings may exist.",
+        ))))
+        if verdict == "PASS":
+            verdict = "WARN"
     findings = sorted(findings, key=lambda f: (SEVERITY_ORDER.get(f.get("severity", "info"), 9), f.get("id", ""), f.get("path") or ""))
     findings = attach_remediation(findings)
     blockers = [f for f in findings if f.get("severity") == "error"]
@@ -209,6 +274,24 @@ def traffic_report(verdict: str, headline: str | None = None, findings: list[dic
     checked_names = sorted(set(checked_categories) | {f["category"] for f in findings if f.get("checked_status") == "checked"})
     confidence_summary = {"basis": "local evidence coverage, not AI confidence", "checked": checked_names, "partially_checked": partial, "not_checked": not_checked, "limitations": ["SourcePack does not prove code correctness", "SourcePack does not prove security", "SourcePack does not verify external API behavior unless local evidence exists"]}
     base_report = {"schema_version": "traffic_report.v1", "sourcepack_version": __version__, "verdict": verdict, "light": light, "headline": headline, "reason_type": reason_type, "commit_policy": commit_policy, "blockers": blockers, "warnings": warnings, "uncertainties": [f for f in warnings if f.get("category") == "uncertainty"], "checked_categories": checked_names, "checked": checked_names, "partially_checked": partial, "unavailable_evidence": evidence["missing_evidence"], "unsupported_evidence": [f for f in findings if f.get("id") == "unsupported_ecosystem"], "not_checked": not_checked, "confidence_summary": confidence_summary, "evidence": evidence, "next_action": next_action, "report_path": report_path, "findings": findings, "remediation": report_remediation(findings)}
+    base_report["authority"] = {
+        "status": "incomplete" if finding_limit_reached else "complete",
+        "complete": not finding_limit_reached,
+        "reason": "finding_construction_limit" if finding_limit_reached else None,
+    }
+    base_report["construction_bounds"] = {
+        "findings": {
+            "count_state": "lower_bound" if finding_limit_reached else "exact",
+            "source_consumed_count": len(inspected),
+            "source_retained_count": min(len(inspected), REPORT_FINDING_LIMIT),
+            "canonical_emitted_count": len(findings),
+            "source_exhausted": not finding_limit_reached,
+            "total_count": None if finding_limit_reached else len(inspected),
+            "limit_reached": finding_limit_reached,
+            "source_retention_limit": REPORT_FINDING_LIMIT,
+        }
+    }
+    validate_report_construction_metadata(base_report)
     evidence_items = _dedupe_evidence_items([_finding_evidence_item(f) for f in findings])
     reason_code_evidence = {}
     for item in evidence_items:

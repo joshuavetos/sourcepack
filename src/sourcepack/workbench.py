@@ -22,7 +22,7 @@ from .overrides import OVERRIDE_SCHEMA_VERSION, override_applies
 from .paths import sourcepack_paths
 from .policy import PolicyMode, resolve_effective_policy
 from .judgment import git_worktree_dirty, judge_repo_change, utc_now
-from .reports.json import write_user_report
+from .reports.json import validate_report_construction_metadata, write_user_report
 
 STATIC_ROOT = Path(__file__).with_name("workbench_static")
 REQUEST_TIMEOUT_SECONDS = 120
@@ -31,6 +31,31 @@ DASHBOARD_PREFIX = "/api/dashboard/v1/"
 WORKBENCH_REVIEW_ROUTE = "/api/workbench/v1/review"
 TRAFFIC_REPORT_SCHEMA_VERSION = "traffic_report.v1"
 WORKBENCH_EXCERPT_FILE_LIMIT_BYTES = 128 * 1024
+CANONICAL_REPORT_FILE_LIMIT_BYTES = 2 * 1024 * 1024
+DECISION_LEDGER_BYTE_LIMIT = 2 * 1024 * 1024
+DECISION_LEDGER_RECORD_LIMIT = 512
+DECISION_LEDGER_LINE_LIMIT_BYTES = 64 * 1024
+CANONICAL_REPORT_COLLECTION_LIMIT = 2_000
+CANONICAL_REPORT_MAPPING_LIMIT = 512
+CANONICAL_REPORT_STRING_LIMIT_CHARS = 65_536
+CANONICAL_REPORT_NESTING_LIMIT = 20
+
+
+def _report_shape_limit(value: Any, depth: int = 0) -> str | None:
+    if depth > CANONICAL_REPORT_NESTING_LIMIT:
+        return "nesting_depth"
+    if isinstance(value, str) and len(value) > CANONICAL_REPORT_STRING_LIMIT_CHARS:
+        return "string_chars"
+    if isinstance(value, list) and len(value) > CANONICAL_REPORT_COLLECTION_LIMIT:
+        return "collection_items"
+    if isinstance(value, dict) and len(value) > CANONICAL_REPORT_MAPPING_LIMIT:
+        return "mapping_items"
+    children = value.values() if isinstance(value, dict) else value if isinstance(value, list) else ()
+    for child in children:
+        failure = _report_shape_limit(child, depth + 1)
+        if failure:
+            return failure
+    return None
 
 
 def _workbench_action(report: dict[str, Any] | None) -> dict[str, Any]:
@@ -90,19 +115,125 @@ def _dashboard_error(section: str, code: str, message: str, status: str = "error
     return {"schema_version": f"sourcepack.dashboard.{section}.v1", "ok": False, "status": status, "error": {"code": code, "message": message}}
 
 
+def _decision_completeness(consumed: int, retained: int, *, exhausted: bool) -> dict[str, Any]:
+    return {
+        "count_state": "exact" if exhausted else "lower_bound",
+        "observed_count": consumed,
+        "nonblank_records_consumed": consumed,
+        "records_retained": retained,
+        "source_exhausted": exhausted,
+        "total_count": consumed if exhausted else None,
+        "limit_reached": not exhausted,
+        "retention_limit": DECISION_LEDGER_RECORD_LIMIT,
+    }
+
+
+def validate_decision_completeness(metadata: dict[str, Any]) -> None:
+    required = {
+        "count_state", "observed_count", "nonblank_records_consumed", "records_retained",
+        "source_exhausted", "total_count", "limit_reached", "retention_limit",
+    }
+    if not isinstance(metadata, dict) or not required <= metadata.keys():
+        raise ValueError("persisted decision completeness metadata is incomplete")
+    consumed = metadata["nonblank_records_consumed"]
+    retained = metadata["records_retained"]
+    limit = metadata["retention_limit"]
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in (consumed, retained, limit)):
+        raise ValueError("persisted decision counts must be non-negative integers")
+    if limit != DECISION_LEDGER_RECORD_LIMIT:
+        raise ValueError("persisted decision retention limit does not match the producer limit")
+    if metadata["observed_count"] != consumed or retained != min(consumed, limit):
+        raise ValueError("persisted decision consumed and retained counts are inconsistent")
+    exhausted = metadata["source_exhausted"]
+    reached = metadata["limit_reached"]
+    if not isinstance(exhausted, bool) or not isinstance(reached, bool) or exhausted == reached:
+        raise ValueError("persisted decision exhaustion and limit flags are inconsistent")
+    if exhausted:
+        if metadata["count_state"] != "exact" or metadata["total_count"] != consumed or consumed > limit:
+            raise ValueError("complete persisted decision counts must be exact and within the retention limit")
+    elif metadata["count_state"] != "lower_bound" or metadata["total_count"] is not None:
+        raise ValueError("incomplete persisted decision counts require an unknown lower-bound total")
+
+
+def _decision_limit_error(category: str, consumed: int) -> dict[str, Any]:
+    completeness = _decision_completeness(consumed, min(consumed, DECISION_LEDGER_RECORD_LIMIT), exhausted=False)
+    validate_decision_completeness(completeness)
+    return _dashboard_error("overrides", "artifact_limit_exceeded", "The persisted override record exceeds the producer limit.", "incomplete") | {
+        "limit_category": category,
+        "ledger_available": True,
+        "ledger_complete": False,
+        "completeness": completeness,
+    }
+
+
+def _read_decision_ledger(handle: Any) -> tuple[list[dict[str, Any]], dict[str, Any] | None, int, int]:
+    """Stream bounded JSONL; reads at most the total budget plus one probe byte."""
+    overrides: list[dict[str, Any]] = []
+    observed_records = 0
+    bytes_read = 0
+    while True:
+        remaining = DECISION_LEDGER_BYTE_LIMIT - bytes_read
+        if remaining == 0:
+            probe = handle.read(1)
+            bytes_read += len(probe)
+            if probe:
+                return overrides, _decision_limit_error("ledger_total_byte_limit", observed_records), observed_records, bytes_read
+            break
+        request = min(DECISION_LEDGER_LINE_LIMIT_BYTES + 1, remaining)
+        line = handle.readline(request)
+        bytes_read += len(line)
+        if not line:
+            break
+        if len(line) > DECISION_LEDGER_LINE_LIMIT_BYTES:
+            return overrides, _decision_limit_error("ledger_line_byte_limit", observed_records), observed_records, bytes_read
+        if not line.endswith(b"\n") and len(line) == request:
+            probe = handle.read(1)
+            bytes_read += len(probe)
+            if probe:
+                category = "ledger_line_byte_limit" if len(line) >= DECISION_LEDGER_LINE_LIMIT_BYTES else "ledger_total_byte_limit"
+                return overrides, _decision_limit_error(category, observed_records), observed_records, bytes_read
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return overrides, _dashboard_error("overrides", "artifact_malformed", "The persisted override record is malformed."), observed_records, bytes_read
+        if not isinstance(event, dict):
+            return overrides, _dashboard_error("overrides", "artifact_malformed", "The persisted override record is malformed."), observed_records, bytes_read
+        observed_records += 1
+        if observed_records > DECISION_LEDGER_RECORD_LIMIT:
+            return overrides, _decision_limit_error("ledger_record_limit", observed_records), observed_records, bytes_read
+        data = event.get("data")
+        override = data.get("override") if isinstance(data, dict) else None
+        if isinstance(override, dict) and override.get("schema_version") == OVERRIDE_SCHEMA_VERSION:
+            overrides.append({**override, "currently_applicable": override_applies(override), "related_finding": data.get("finding_id")})
+    return overrides, None, observed_records, bytes_read
+
+
 def _read_canonical_report(repo: Path) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Read only the established latest.json location; never search archives."""
     path = sourcepack_paths(repo)["latest_json"]
     if not path.is_file():
         return None, None
     try:
-        report = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        with path.open("rb") as handle:
+            raw = handle.read(CANONICAL_REPORT_FILE_LIMIT_BYTES + 1)
+        if len(raw) > CANONICAL_REPORT_FILE_LIMIT_BYTES:
+            return None, _dashboard_error("report", "artifact_limit_exceeded", "The canonical report exceeds the producer read limit.", "incomplete")
+        report = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None, _dashboard_error("report", "artifact_malformed", "The canonical report is malformed.")
     if not isinstance(report, dict):
         return None, _dashboard_error("report", "artifact_malformed", "The canonical report is malformed.")
     if report.get("schema_version") != TRAFFIC_REPORT_SCHEMA_VERSION:
         return None, _dashboard_error("report", "artifact_version_unsupported", "The canonical report version is unsupported.", "unsupported")
+    shape_failure = _report_shape_limit(report)
+    if shape_failure:
+        return None, _dashboard_error("report", "artifact_limit_exceeded", f"The canonical report exceeds the producer {shape_failure} limit.", "incomplete")
+    try:
+        validate_report_construction_metadata(report)
+    except ValueError:
+        return None, _dashboard_error("report", "artifact_malformed", "The canonical report construction metadata is malformed.")
     return report, None
 
 
@@ -181,7 +312,8 @@ def _report_payload(repo: Path) -> dict[str, Any]:
         return error
     if report is None:
         return {"schema_version": "sourcepack.dashboard.report.v1", "ok": True, "status": "empty", "error": {"code": "report_unavailable", "message": "No canonical report is available."}, "report": None, "action": _workbench_action(None)}
-    return {"schema_version": "sourcepack.dashboard.report.v1", "ok": True, "status": "success", "report_path": ".sourcepack/reports/latest.json", "report": report, "proposed_change": _bounded_changed_file_excerpt(repo, report), "action": _workbench_action(report)}
+    status = "incomplete" if report.get("authority", {}).get("complete") is False else "success"
+    return {"schema_version": "sourcepack.dashboard.report.v1", "ok": True, "status": status, "report_path": ".sourcepack/reports/latest.json", "report": report, "proposed_change": _bounded_changed_file_excerpt(repo, report), "action": _workbench_action(report)}
 
 
 def _hook_is_sourcepack(text: str) -> bool:
@@ -284,32 +416,33 @@ def _dashboard_payload(repo: Path, section: str) -> dict[str, Any]:
                 return error
             if report is None:
                 return {"schema_version": "sourcepack.dashboard.replay_evidence.v1", "ok": True, "status": "empty", "replay": None, "evidence": None}
-            return {"schema_version": "sourcepack.dashboard.replay_evidence.v1", "ok": True, "status": "success", "report_path": ".sourcepack/reports/latest.json", "replay": report.get("replay_bundle"), "evidence": report.get("evidence_items", report.get("evidence")), "reason_code_evidence": report.get("reason_code_evidence")}
+            status = "incomplete" if report.get("authority", {}).get("complete") is False else "success"
+            return {"schema_version": "sourcepack.dashboard.replay_evidence.v1", "ok": True, "status": status, "report_path": ".sourcepack/reports/latest.json", "authority": report.get("authority"), "construction_bounds": report.get("construction_bounds"), "replay": report.get("replay_bundle"), "evidence": report.get("evidence_items", report.get("evidence")), "reason_code_evidence": report.get("reason_code_evidence")}
         if section == "overrides":
             # The decision ledger is the persisted SourcePack override record.
             ledger = sourcepack_paths(repo)["base"] / "decisions.jsonl"
             overrides: list[dict[str, Any]] = []
+            observed_records = 0
             if ledger.is_file():
-                for line in ledger.read_text(encoding="utf-8").splitlines():
-                    try: event = json.loads(line)
-                    except json.JSONDecodeError:
-                        return _dashboard_error("overrides", "artifact_malformed", "The persisted override record is malformed.")
-                    data = event.get("data") if isinstance(event, dict) else None
-                    override = data.get("override") if isinstance(data, dict) else None
-                    if isinstance(override, dict) and override.get("schema_version") == OVERRIDE_SCHEMA_VERSION:
-                        overrides.append({**override, "currently_applicable": override_applies(override), "related_finding": data.get("finding_id")})
+                with ledger.open("rb") as handle:
+                    overrides, ledger_error, observed_records, _bytes_read = _read_decision_ledger(handle)
+                if ledger_error:
+                    return ledger_error
             report, report_error = _read_canonical_report(repo)
             if report_error:
                 report_error["schema_version"] = "sourcepack.dashboard.overrides.v1"
                 return report_error
             findings = [item for item in (report or {}).get("findings", []) if isinstance(item, dict) and item.get("category") == "policy"]
-            return {"schema_version": "sourcepack.dashboard.overrides.v1", "ok": True, "status": "success" if overrides or findings else "empty", "overrides": overrides, "policy_findings": findings}
+            completeness = _decision_completeness(observed_records, observed_records, exhausted=True)
+            validate_decision_completeness(completeness)
+            report_incomplete = bool(report and report.get("authority", {}).get("complete") is False)
+            return {"schema_version": "sourcepack.dashboard.overrides.v1", "ok": True, "status": "incomplete" if report_incomplete else "success" if overrides or findings else "empty", "ledger_available": ledger.is_file(), "ledger_complete": True, "overrides": overrides, "policy_findings": findings, "report_authority": report.get("authority") if report else None, "report_construction_bounds": report.get("construction_bounds") if report else None, "completeness": completeness}
         if section == "overview":
             git = git_metadata(repo)
             baseline = validate_baseline(repo)
             policy = resolve_effective_policy(repo)
             report, report_error = _read_canonical_report(repo)
-            report_state = "error" if report_error else "empty" if report is None else "available"
+            report_state = report_error.get("status", "error") if report_error else "empty" if report is None else "incomplete" if report.get("authority", {}).get("complete") is False else "available"
             return {"schema_version": "sourcepack.dashboard.overview.v1", "ok": True, "status": "success", "repository": {"path": str(repo), "sourcepack_version": __version__}, "git": git, "baseline": baseline, "policy_resolution_status": policy.get("resolution_status"), "report_status": report_state, "report_verdict": report.get("verdict") if report else None, "blocker_count": len(report.get("blockers", [])) if report else 0, "warning_count": len(report.get("warnings", [])) if report else 0}
     except Exception:
         return _dashboard_error(section, "internal_error", "Dashboard data could not be read.")
@@ -355,6 +488,7 @@ def run_bounded_workbench_review(repo: Path) -> dict[str, Any]:
         "elapsed_seconds": round(__import__("time").time() - started_at, 3),
         "report": payload.get("report"),
         "report_payload": payload,
+        "report_status": payload.get("status"),
         "action": payload.get("action"),
     }
 

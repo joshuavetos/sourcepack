@@ -9,6 +9,8 @@ def render_traffic(report: dict, verbose: bool = False) -> str:
     if report.get("reason_type"):
         lines.append(f"Reason type: {report.get('reason_type')}")
     lines.append(f"Commit policy: {report.get('commit_policy') or 'allowed.'}")
+    if report.get("authority", {}).get("complete") is False:
+        lines.append("Authority: INCOMPLETE — additional blockers may exist beyond the retained finding boundary.")
     lines.append("")
     if verdict == "PASS":
         info = [f for f in report.get("findings", []) if f.get("severity") == "info"]
@@ -58,4 +60,3 @@ def render_traffic(report: dict, verbose: bool = False) -> str:
             lines.extend(f"- {item}" for item in report.get("not_checked", []))
     lines.extend(["", f"Report path: {report.get('report_path', '.sourcepack/reports/latest.json')}"])
     return "\n".join(lines) + "\n"
-

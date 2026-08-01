@@ -62,6 +62,25 @@ Fleet report and decision-ledger discovery uses deterministic path ordering and 
 
 Forced packet-output cleanup is similarly bounded and reports complete, incomplete, or failed cleanup. It rejects a symlink output root and path escapes, never follows child symlinks, confines deletion to the canonical output root, and stops rather than broadening scope after traversal or metadata failure. An incomplete or failed cleanup prevents packet writing. Cleanup completeness is an operational property only and does not change trust state or review authority.
 
+Packet verification reads receipt and manifest metadata under an 8 MiB per-file cap, accepts at
+most 10,000 receipt hashes or manifest included-file records, hashes or compares no individual
+artifact/source file larger than 64 MiB, and stops at 128 MiB of aggregate artifact and source
+reads. Verification against a source tree additionally uses the bounded `SourceScanner` traversal.
+Receipt and manifest paths must be safe relative paths resolving to non-symlink regular files under
+non-symlink packet and source roots; absolute, drive-qualified, parent-traversing, escaping, or
+symlinked paths return FAIL. Malformed metadata, unavailable inputs, incomplete traversal, and any
+verification boundary likewise return FAIL rather than an exhaustive or authoritative PASS. These
+are packet-integrity and operational resource outcomes; they neither establish nor upgrade
+canonical review authority.
+
+The producer-hardening project is closed for the implemented canonical judgment and operational
+surfaces described here. Closure means that incomplete producer evidence is kept non-authoritative,
+trusted baseline creation rejects incomplete repository authority, emitted incomplete reports pass
+their canonical contract path, and operational prefixes are not called exhaustive. It does not
+claim that SourcePack is secure, correct, universally bounded, or complete for unsupported or
+external evidence. Work outside those properties is maintenance or product/ecosystem work unless a
+new regression demonstrates that one of these closure properties is false.
+
 ## Workbench and Command Center routing
 
 The canonical `WorkbenchHandler` owns registration and dispatch for the authenticated

@@ -56,6 +56,12 @@ The intended flow is:
 
 Prompt context is intentionally outside this enforcement evidence path.
 
+## Operational producer bounds
+
+Fleet report and decision-ledger discovery uses deterministic path ordering and producer-owned limits for directory entries, nesting depth, retained paths, individual artifact bytes, and aggregate bytes. Decision-ledger summaries report artifact-path discovery counts separately from consumed and retained event counts, with independent path and event limits and exhaustion metadata; bounded ledger reads stop after one valid-event probe beyond the retention limit rather than materializing the rest of the ledger. Its structured producer metadata distinguishes complete acquisition, boundary-limited incomplete acquisition, and acquisition failure; a retained prefix is never described as exhaustive. Symlinks are not followed. This bounds operational resource use, but does not prove repository correctness, security, runtime validity, or complete external fleet discovery, and fleet summaries cannot create or upgrade canonical PASS authority.
+
+Forced packet-output cleanup is similarly bounded and reports complete, incomplete, or failed cleanup. It rejects a symlink output root and path escapes, never follows child symlinks, confines deletion to the canonical output root, and stops rather than broadening scope after traversal or metadata failure. An incomplete or failed cleanup prevents packet writing. Cleanup completeness is an operational property only and does not change trust state or review authority.
+
 ## Workbench and Command Center routing
 
 The canonical `WorkbenchHandler` owns registration and dispatch for the authenticated

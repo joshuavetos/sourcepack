@@ -2,6 +2,8 @@
 
 ## Completed
 
+- Fleet artifact discovery and packet-output cleanup now have deterministic producer-owned entry, depth, record, file-byte, aggregate-byte, and cleanup limits. Decision-ledger metadata keeps artifact-path discovery counts and event consumption/retention counts in separate envelopes with independent limits, and ledger reads stop after one valid-event overflow probe. Structured outcomes distinguish complete, boundary-incomplete, and failed work without treating retained prefixes as exhaustive; cleanup remains symlink-safe and path-confined. This bounds operational resource use and cleanup completeness, not repository correctness, security, runtime validity, complete external fleet discovery, or PASS authority.
+
 - Canonical report loading/construction, effective-policy inputs, and persisted-decision dashboard iteration now stop at producer-owned byte, record, collection, string, and nesting limits before Command Center projection. Finding truncation propagates incomplete authority through report, overview, replay-evidence, and Command Center states; ledger metadata distinguishes consumed from retained records while reads use a strict total-byte budget plus one probe and whitespace-aware bounded look-ahead.
 
 - Backend-owned Workbench review actions include structured action type, label, reason, availability, prompt/target metadata, and remain bounded by the authenticated review endpoint.
@@ -32,7 +34,3 @@
 - Git diff, tracked-path, base-tree, and untracked-file acquisition now drains producer output incrementally under byte and time limits. Limit hits fail closed and use canonical incomplete authority rather than treating retained prefixes as complete evidence.
 - Analyzer repository discovery now routes recursive source and verification traversal through the deterministic `SourceScanner` producer, with entry, depth, per-file, and aggregate-read limits. Baseline construction rejects incomplete scans.
 - Policy and canonical-report JSON structure checks occur after full `json.loads` construction; their strict byte caps provide finite input bounds, not streaming parser or per-object instantiation guarantees.
-
-## Next recommended task
-
-The remaining producer-hardening surface is non-analyzer operational tooling (fleet artifact discovery and packet output cleanup), which does not contribute repository evidence to a PASS judgment but should adopt the same bounded iterator pattern in a future maintenance pass.

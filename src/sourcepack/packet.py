@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import tomllib
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -40,6 +39,8 @@ DEFAULT_TEXT_EXTENSIONS = {
 REPOSITORY_ENTRY_LIMIT = 10_000
 REPOSITORY_DEPTH_LIMIT = 64
 REPOSITORY_READ_LIMIT_BYTES = 64 * 1024 * 1024
+PACKET_CLEANUP_ENTRY_LIMIT = 10_000
+PACKET_CLEANUP_DEPTH_LIMIT = 64
 SECRET_PATTERNS = [
     ("openai_key", re.compile(r"sk-proj-[A-Za-z0-9_\-]{12,}|sk-[A-Za-z0-9]{24,}")),
     ("aws_access_key", re.compile(r"AKIA[0-9A-Z]{16}")),
@@ -324,24 +325,101 @@ def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
     return {"schema_version": "sourcepack.file_inventory.v1", "generated_at": utc_now(), "source": source, "files": files}
 
 
+class PacketCleanupError(RuntimeError):
+    def __init__(self, result: dict[str, object]):
+        self.result = result
+        super().__init__(f"packet output cleanup {result['status']}: {result.get('error') or result.get('limit_reached')}")
+
+
+def _cleanup_result(status: str, consumed: int, source_exhausted: bool, limit: int, limit_reached: str | None, error: str | None) -> dict[str, object]:
+    return {"status": status, "complete": status == "complete", "consumed": consumed, "retained": 0, "source_exhausted": source_exhausted, "total": consumed, "total_is_lower_bound": not source_exhausted, "configured_limit": limit, "limit_reached": limit_reached, "error": error}
+
+
+def _cleanup_packet_output(root: Path, *, max_entries: int, max_depth: int) -> dict[str, object]:
+    canonical_root = root.resolve(strict=True)
+    pending: list[tuple[Path, int, bool]] = [(root, 0, False)]
+    consumed = 0
+    while pending:
+        path, depth, visited = pending.pop()
+        if path != root and not visited:
+            if consumed == max_entries:
+                return _cleanup_result("incomplete", consumed, False, max_entries, "cleanup_entries", None)
+            consumed += 1
+        if path != root:
+            try:
+                path.parent.resolve(strict=True).relative_to(canonical_root)
+            except (OSError, ValueError) as exc:
+                return _cleanup_result("failed", consumed, False, max_entries, None, f"path escape or metadata failure: {exc}")
+        try:
+            if path.is_symlink():
+                path.unlink()
+                continue
+            if not path.is_dir():
+                path.unlink()
+                continue
+            try:
+                path.resolve(strict=True).relative_to(canonical_root)
+            except (OSError, ValueError) as exc:
+                return _cleanup_result("failed", consumed, False, max_entries, None, f"path escape or metadata failure: {exc}")
+            if visited:
+                if path != root:
+                    path.rmdir()
+                continue
+            if depth > max_depth:
+                return _cleanup_result("incomplete", consumed, False, max_entries, "cleanup_depth", None)
+            entries = []
+            with os.scandir(path) as iterator:
+                for entry in iterator:
+                    if len(entries) >= max_entries - consumed:
+                        return _cleanup_result("incomplete", consumed, False, max_entries, "cleanup_entries", None)
+                    entries.append(Path(entry.path))
+            pending.append((path, depth, True))
+            for child in reversed(sorted(entries, key=lambda item: item.name)):
+                pending.append((child, depth + 1, False))
+            # Entries are counted only after successful deletion, so failures never
+            # imply that an observed prefix was cleaned.
+            if not entries and path != root:
+                pending.pop()
+                path.rmdir()
+        except OSError as exc:
+            return _cleanup_result("failed", consumed, False, max_entries, None, f"cleanup failed: {exc}")
+    return _cleanup_result("complete", consumed, True, max_entries, None, None)
+
+
 class PacketWriter:
     OUTPUT_FILES = ["manifest.json", "context.md", "context.xml", "file_tree.txt", "ignored_files.txt", "token_report.json", "redactions.json", "reality_map.json", "ai_instructions.md", "file_inventory.json"]
 
-    def __init__(self, out: str | Path, scanner: SourceScanner, force: bool = False):
+    def __init__(self, out: str | Path, scanner: SourceScanner, force: bool = False, *, cleanup_entry_limit: int = PACKET_CLEANUP_ENTRY_LIMIT, cleanup_depth_limit: int = PACKET_CLEANUP_DEPTH_LIMIT):
         self.out = Path(out)
         self.scanner = scanner
         self.force = force
+        self.cleanup_entry_limit = cleanup_entry_limit
+        self.cleanup_depth_limit = cleanup_depth_limit
+        self.cleanup_result: dict[str, object] | None = None
 
     def prepare_out(self):
-        if self.out.exists() and any(self.out.iterdir()):
+        if self.out.is_symlink():
+            self.cleanup_result = _cleanup_result("failed", 0, False, self.cleanup_entry_limit, "output_root_symlink", "output root must not be a symlink")
+            raise PacketCleanupError(self.cleanup_result)
+        if self.out.exists():
+            if not self.out.is_dir():
+                self.cleanup_result = _cleanup_result("failed", 0, False, self.cleanup_entry_limit, None, "output root is not a directory")
+                raise PacketCleanupError(self.cleanup_result)
             if not self.force:
-                raise FileExistsError(f"Output directory is non-empty: {self.out}")
-            for child in self.out.iterdir():
-                if child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
+                try:
+                    nonempty = next(os.scandir(self.out), None) is not None
+                except OSError as exc:
+                    raise FileExistsError(f"Cannot inspect output directory: {self.out}: {exc}") from exc
+                if nonempty:
+                    raise FileExistsError(f"Output directory is non-empty: {self.out}")
+            else:
+                self.cleanup_result = _cleanup_packet_output(self.out, max_entries=self.cleanup_entry_limit, max_depth=self.cleanup_depth_limit)
+                if self.cleanup_result["status"] != "complete":
+                    raise PacketCleanupError(self.cleanup_result)
         self.out.mkdir(parents=True, exist_ok=True)
+        if self.cleanup_result is None:
+            self.cleanup_result = _cleanup_result("complete", 0, True, self.cleanup_entry_limit, None, None)
+        return self.cleanup_result
 
     def write_all(self):
         self.prepare_out()

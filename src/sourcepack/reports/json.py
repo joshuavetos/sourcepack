@@ -185,8 +185,23 @@ def validate_report_construction_metadata(report: dict) -> None:
             raise ValueError("complete canonical report requires an exact source total")
         if not exhausted or retained != consumed or emitted != retained:
             raise ValueError("complete canonical report finding counts are inconsistent")
-        if authority != {"status": "complete", "complete": True, "reason": None}:
-            raise ValueError("exhausted canonical report requires complete authority")
+        complete_authority = {"status": "complete", "complete": True, "reason": None}
+        if authority != complete_authority:
+            git_bounds = [value for key, value in bounds.items() if key.startswith("git_") and isinstance(value, dict)]
+            valid_states = {"bounded": ("git_output_limit", True), "failed": ("git_diff_failed", False)}
+            producer_valid = len(git_bounds) == 1
+            if producer_valid:
+                producer = git_bounds[0]
+                expected = valid_states.get(producer.get("acquisition_state"))
+                producer_valid = (
+                    expected is not None
+                    and authority == {"status": "incomplete", "complete": False, "reason": expected[0]}
+                    and producer.get("count_state") == "lower_bound"
+                    and producer.get("source_exhausted") is False
+                    and producer.get("limit_reached") is expected[1]
+                )
+            if not producer_valid:
+                raise ValueError("exhausted findings require complete or explicit producer-incomplete authority")
 
 
 def normalize_finding_evidence(finding: dict) -> dict:

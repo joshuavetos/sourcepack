@@ -374,7 +374,10 @@ def _unique_build_id() -> str:
 def _write_baseline_packet(repo: Path, packet: Path) -> None:
     from .packet import PacketWriter, SourceScanner
 
-    PacketWriter(packet, SourceScanner(repo).scan(), force=True).write_all()
+    scanner = SourceScanner(repo).scan()
+    if not scanner.authority["complete"]:
+        raise RuntimeError(f"repository traversal incomplete: {scanner.authority['reason']}")
+    PacketWriter(packet, scanner, force=True).write_all()
 
 
 def _verify_baseline_packet(packet: Path) -> bool:

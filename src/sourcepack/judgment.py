@@ -14,13 +14,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Final, Iterable
-from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git, run_git_bytes as canonical_run_git_bytes
+from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_OUTPUT_LIMIT, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git, run_git_bounded as canonical_run_git_bounded, run_git_bytes as canonical_run_git_bytes
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
 from .baseline import BaselineLockError, baseline_report_fields, build_current_baseline, validate_baseline
 from .ecosystems.python import PY_IMPORT_ALIASES
 from .packet import PacketWriter, SourceScanner
 from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs
-from .reports.json import normalized_finding, traffic_report, write_user_report
+from .reports.json import build_replay_bundle, normalized_finding, traffic_report, write_user_report
 from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code, load_policy_config, finding_ignored_by_policy, policy_path_matches, resolve_effective_policy
 from .execution_ledger import execution_findings
 from .commands import resolve_command
@@ -1601,6 +1601,12 @@ def run_git_bytes(repo: Path, args: list[str]):
     return canonical_run_git_bytes(repo, args)
 
 
+def run_git_bounded(repo: Path, args: list[str]):
+    if getattr(run_git, "__module__", __name__) != __name__:
+        return run_git(repo, args)
+    return canonical_run_git_bounded(repo, args)
+
+
 def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
     repo = Path(repo)
     cp = run_git(repo, ["rev-parse", "--show-toplevel"])
@@ -1658,17 +1664,29 @@ def _only_sourcepack_gitignore_change(repo: Path) -> bool:
     return bool(added) and set(added) <= {".sourcepack", ".sourcepack/"}
 
 
-def untracked_files_as_diff(repo: str | Path) -> str:
+def untracked_files_as_diff(repo: str | Path, *, with_authority: bool = False):
     repo = Path(repo)
-    cp = run_git(repo, ["ls-files", "--others", "--exclude-standard"])
+    cp = run_git_bounded(repo, ["ls-files", "--others", "--exclude-standard"])
     if cp.returncode != 0:
-        return ""
+        reason = "git_output_limit" if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "git_diff_failed"
+        state = "bounded" if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "failed"
+        result = ("", {"status": "incomplete", "complete": False, "reason": reason, "acquisition_state": state})
+        return result if with_authority else ""
     chunks = []
+    retained_bytes = 0
     for rel in [line.strip() for line in cp.stdout.splitlines() if line.strip()]:
         safe_rel, unsafe = _normalize_diff_path(rel)
         if unsafe or not safe_rel:
             continue
         path = repo / safe_rel
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if retained_bytes + size > 8 * 1024 * 1024:
+            result = ("\n".join(chunks) + ("\n" if chunks else ""), {"status": "incomplete", "complete": False, "reason": "git_output_limit", "acquisition_state": "bounded"})
+            return result if with_authority else result[0]
+        retained_bytes += size
         if safe_rel == ".gitignore":
             try:
                 ignore_lines = {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
@@ -1690,7 +1708,8 @@ def untracked_files_as_diff(repo: str | Path) -> str:
         lines = text.splitlines()
         chunks.append(f"@@ -0,0 +1,{len(lines)} @@")
         chunks.extend(f"+{line}" for line in lines)
-    return "\n".join(chunks) + ("\n" if chunks else "")
+    result = ("\n".join(chunks) + ("\n" if chunks else ""), {"status": "complete", "complete": True, "reason": None, "acquisition_state": "complete"})
+    return result if with_authority else result[0]
 
 def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, ci: bool = False, base_ref: str | None = None, head_ref: str | None = None, org_policy: str | Path | None = None, org_policy_mode: str = "optional", allow_missing_baseline_init: bool = True) -> dict:
     if (base_ref is None) != (head_ref is None):
@@ -1726,7 +1745,10 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             diff_args = ["diff", "--staged"] if staged else ["diff"]
         if repo != git_root:
             diff_args.append("--relative")
-        cp = run_git(repo, diff_args); diff_text = cp.stdout
+        cp = run_git_bounded(repo, diff_args); diff_text = cp.stdout
+        if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT:
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", cp.stderr.strip() or "Git diff acquisition was incomplete.")])
+            return _finalize_git_incomplete(repo, rep, policy_result, producer="git_diff", reason="git_output_limit", acquisition_state="bounded")
         if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
             rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable", "error", "git", "Git executable not found.")])
             return _finalize_early_core_failure(repo, rep, policy_result)
@@ -1738,7 +1760,10 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", message)])
             return _finalize_early_core_failure(repo, rep, policy_result)
         if base_ref is None and head_ref is None and not staged:
-            extra = untracked_files_as_diff(repo)
+            extra, extra_authority = untracked_files_as_diff(repo, with_authority=True)
+            if not extra_authority["complete"]:
+                rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", "Untracked-file diff acquisition exceeded its producer limit.")])
+                return _finalize_git_incomplete(repo, rep, policy_result, producer="git_untracked", reason=extra_authority["reason"], acquisition_state=extra_authority["acquisition_state"])
             if extra and not (added and _only_sourcepack_gitignore_change(repo)):
                 diff_text = (diff_text + "\n" + extra).strip() + "\n"
     else:
@@ -1779,7 +1804,10 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         rep_note = None
     trusted_base_files: set[str] | None = None
     if base_ref is not None:
-        base_tree = run_git(repo, ["ls-tree", "-r", "--name-only", base_ref])
+        base_tree = run_git_bounded(repo, ["ls-tree", "-r", "--name-only", base_ref])
+        if base_tree.returncode == GIT_RETURNCODE_OUTPUT_LIMIT:
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", base_tree.stderr.strip() or "Git base-tree acquisition was incomplete.")])
+            return _finalize_git_incomplete(repo, rep, policy_result, producer="git_base_tree", reason="git_output_limit", acquisition_state="bounded")
         if base_tree.returncode != 0:
             message = base_tree.stderr.strip() or "Git could not inspect the base revision."
             rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", message)])
@@ -2193,6 +2221,19 @@ def _apply_policy_finishers(repo: Path, packet_path: Path | None, diff_text: str
 def _finalize_early_core_failure(repo: Path, rep: dict, policy_result: dict) -> dict:
     finalized = _apply_policy_finishers(repo, None, "", rep, policy_result)
     finalized["repo_path"] = str(repo)
+    return finalized
+
+
+def _finalize_git_incomplete(repo: Path, rep: dict, policy_result: dict, *, producer: str, reason: str, acquisition_state: str) -> dict:
+    finalized = _finalize_early_core_failure(repo, rep, policy_result)
+    finalized["authority"] = {"status": "incomplete", "complete": False, "reason": reason}
+    finalized["construction_bounds"][producer] = {
+        "count_state": "lower_bound",
+        "source_exhausted": False,
+        "limit_reached": acquisition_state == "bounded",
+        "acquisition_state": acquisition_state,
+    }
+    finalized["replay_bundle"] = build_replay_bundle(finalized)
     return finalized
 
 def _policy_entries_for_judgment(repo: Path) -> list[dict]:

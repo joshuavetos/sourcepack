@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bound deterministic fleet artifact discovery and streaming ledger reads with separate artifact-path and ledger-event count contracts, and make forced packet-output cleanup bounded, path-confined, symlink-safe, and explicit about complete, incomplete, or failed outcomes without changing canonical review authority.
 - Tighten public-alpha onboarding around install, demo, baseline trust, and documented limitations.
 - Refuse trusted baseline creation or refresh from dirty Git working trees unless `--force` is used intentionally.
 - Keep public reason-code examples aligned with canonical reason-code documentation.

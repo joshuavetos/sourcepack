@@ -79,6 +79,8 @@ def _finding_evidence_item(finding: dict) -> dict:
         "severity": finding.get("severity"),
         "category": category,
     }
+    if "symlink_transition" in finding:
+        metadata["symlink_transition"] = finding["symlink_transition"]
     for field in PROVENANCE_FIELDS:
         if field in finding:
             metadata[field] = finding.get(field)
@@ -187,19 +189,51 @@ def validate_report_construction_metadata(report: dict) -> None:
             raise ValueError("complete canonical report finding counts are inconsistent")
         complete_authority = {"status": "complete", "complete": True, "reason": None}
         if authority != complete_authority:
+            producer_keys = set(bounds) - {"findings"}
+            symlink_bounds = bounds.get("symlink_worktree_inspection")
+            if producer_keys == {"symlink_worktree_inspection"} and isinstance(symlink_bounds, dict):
+                symlink_producer = symlink_bounds.get("producer")
+                producer_valid = (
+                    authority == {"status": "incomplete", "complete": False, "reason": "symlink_worktree_inspection_incomplete"}
+                    and symlink_bounds.get("acquisition_state") == "incomplete"
+                    and symlink_bounds.get("count_state") == "lower_bound"
+                    and symlink_bounds.get("source_exhausted") is False
+                    and isinstance(symlink_bounds.get("limit_reached"), bool)
+                    and isinstance(symlink_bounds.get("paths"), list)
+                    and bool(symlink_bounds["paths"])
+                    and isinstance(symlink_producer, dict)
+                    and symlink_producer.get("source_exhausted") is False
+                    and symlink_producer.get("transition_count_state") in {"exact", "lower_bound"}
+                    and isinstance(symlink_producer.get("transitions_consumed"), int)
+                    and isinstance(symlink_producer.get("transitions_retained"), int)
+                    and symlink_producer.get("transitions_consumed") >= symlink_producer.get("transitions_retained") >= 0
+                    and isinstance(symlink_producer.get("transition_limit_reached"), bool)
+                    and isinstance(symlink_producer.get("inspections"), list)
+                    and len(symlink_producer["inspections"]) == symlink_producer.get("transitions_retained")
+                    and isinstance(symlink_producer.get("ignore_authority"), dict)
+                    and isinstance(symlink_producer.get("tracked_path_authority"), dict)
+                    and isinstance(symlink_producer.get("limits"), dict)
+                )
+                if producer_valid and symlink_producer["transition_limit_reached"]:
+                    producer_valid = symlink_producer["transition_count_state"] == "lower_bound" and symlink_producer.get("total_transitions") is None and symlink_producer["transitions_consumed"] == symlink_producer["transitions_retained"] + 1
+                elif producer_valid:
+                    producer_valid = symlink_producer["transition_count_state"] == "exact" and symlink_producer.get("total_transitions") == symlink_producer["transitions_retained"] == symlink_producer["transitions_consumed"]
+            else:
+                producer_valid = False
             git_bounds = [value for key, value in bounds.items() if key.startswith("git_") and isinstance(value, dict)]
             valid_states = {"bounded": ("git_output_limit", True), "failed": ("git_diff_failed", False)}
-            producer_valid = len(git_bounds) == 1
-            if producer_valid:
+            git_producer_valid = len(producer_keys) == 1 and len(git_bounds) == 1
+            if git_producer_valid:
                 producer = git_bounds[0]
                 expected = valid_states.get(producer.get("acquisition_state"))
-                producer_valid = (
+                git_producer_valid = (
                     expected is not None
                     and authority == {"status": "incomplete", "complete": False, "reason": expected[0]}
                     and producer.get("count_state") == "lower_bound"
                     and producer.get("source_exhausted") is False
                     and producer.get("limit_reached") is expected[1]
                 )
+            producer_valid = producer_valid or git_producer_valid
             if not producer_valid:
                 raise ValueError("exhausted findings require complete or explicit producer-incomplete authority")
 

@@ -25,6 +25,7 @@ from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_
 from .execution_ledger import execution_findings
 from .commands import resolve_command
 from .dependencies import resolve_js_import, resolve_python_import
+from .worktree_collision import inspect_symlink_transitions
 
 try:
     from . import __version__
@@ -1418,7 +1419,7 @@ def _unsupported_ecosystem_uncertainties(files: set[str], changes: list[PatchFil
             uncertainties.append({"id": "unsupported_ecosystem", "message": f"{evidence} detected, but {message}", "evidence": evidence})
     return uncertainties
 
-def judge_patch_text(packet_path: str | Path, patch_text: str, *, trusted_files: set[str] | None = None) -> dict:
+def judge_patch_text(packet_path: str | Path, patch_text: str, *, trusted_files: set[str] | None = None, worktree_root: str | Path | None = None) -> dict:
     if re.search(r"(?m)^@@", patch_text) and "diff --git " not in patch_text:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     if re.search(r"(?m)^@@(?! -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)", patch_text):
@@ -1433,6 +1434,18 @@ def judge_patch_text(packet_path: str | Path, patch_text: str, *, trusted_files:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     report = analyze_patch(packet_path, patch_text, changes, trusted_files)
     packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest, packet); contents = _packet_file_contents(packet)
+    if worktree_root is not None:
+        baseline_files, baseline_inventory_loaded = _baseline_inventory_from_packet(packet, manifest)
+        if trusted_files is not None:
+            tracked_paths = set(trusted_files)
+            tracked_authority = {"source": "base_tree", "status": "complete", "complete": True, "reason": None}
+        elif baseline_inventory_loaded:
+            tracked_paths = set(baseline_files)
+            tracked_authority = {"source": "trusted_baseline_inventory", "status": "complete", "complete": True, "reason": None}
+        else:
+            tracked_paths = None
+            tracked_authority = {"source": "trusted_baseline_inventory", "status": "unavailable", "complete": False, "reason": "baseline_inventory_missing"}
+        report["symlink_worktree_inspection"] = inspect_symlink_transitions(Path(worktree_root), changes, tracked_paths=tracked_paths, tracked_authority=tracked_authority)
     existing_declared = _declared_dependency_names_by_ecosystem(manifest, packet)
     scopes = _declared_dependency_scopes_by_ecosystem(manifest, packet)
     ambiguous_requirements = _ambiguous_root_requirement_dependencies(packet)
@@ -1551,7 +1564,13 @@ def judge_patch_text(packet_path: str | Path, patch_text: str, *, trusted_files:
     if declared_only:
         report.setdefault("warnings", []).append("Patch declares new dependencies that require review.")
         report["declared_dependencies"] = sorted(declared_only)
-    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "git_path_modifications", "binary_diff_blockers", "path_escape"]
+    inspection_envelope = report.get("symlink_worktree_inspection", {})
+    inspections = inspection_envelope.get("inspections", [])
+    report["symlink_directory_collisions"] = [item for item in inspections if item.get("worktree_object_type") == "real_directory" and item.get("directory_nonempty") is True and item.get("unrepresented_content_observed")]
+    report["symlink_worktree_inspection_incomplete"] = [item for item in inspections if not item.get("source_exhausted")]
+    if inspection_envelope and not inspection_envelope.get("source_exhausted") and not report["symlink_worktree_inspection_incomplete"]:
+        report["symlink_worktree_inspection_incomplete"].append({"proposed_path": None, "acquisition_status": "transition_limit_reached", "source_exhausted": False, "inspection_envelope": inspection_envelope})
+    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "git_path_modifications", "binary_diff_blockers", "path_escape", "symlink_directory_collisions", "symlink_worktree_inspection_incomplete"]
     report["verdict"] = "FAIL" if any(report.get(k) for k in fail_keys) else "WARN" if (report.get("new_files") or report.get("deleted_files") or report.get("warnings") or declared_only or report.get("uncertainties") or report.get("binary_diffs")) else "PASS"
     return report
 
@@ -1576,6 +1595,20 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
     for p in report.get("binary_diffs", []):
         if p not in set(report.get("binary_diff_blockers", [])):
             findings.append(normalized_finding("binary_diff", "warn", "uncertainty", f"Binary content was detected at {p} and was not semantically evaluated.", p, evidence=p))
+    for collision in report.get("symlink_directory_collisions", []):
+        path = collision.get("proposed_path")
+        complete = collision.get("source_exhausted") and collision.get("acquisition_status") == "complete"
+        message = f"{path} currently exists as a nonempty real directory, but the proposed Git state replaces that path with a symlink. The directory contains entries absent from the selected trusted tracked-path evidence and from this proposed transition; applying it may overwrite, displace, hide, or delete data outside Git's recovery boundary."
+        if not complete:
+            message = f"Inspection of the real directory at {path} was incomplete or failed; SourcePack cannot establish that the proposed symlink transition is safe."
+        finding = normalized_finding("symlink_replaces_nonempty_directory", "error", "filesystem", message, path, evidence=path, suggestion="Inspect and preserve the directory contents, back up untracked or ignored data, remove the collision explicitly only after review, correct unsafe or cyclic targets, and rerun SourcePack.", evidence_class="current_worktree", checked_status="checked" if complete else "unavailable", required_evidence_class="current_worktree")
+        finding["symlink_transition"] = collision
+        findings.append(finding)
+    for incomplete in report.get("symlink_worktree_inspection_incomplete", []):
+        path = incomplete.get("proposed_path")
+        finding = normalized_finding("symlink_worktree_inspection_incomplete", "error", "filesystem", f"SourcePack could not completely acquire the worktree or prior-state evidence required to judge the proposed symlink transition{f' at {path}' if path else ''}; safety was not established.", path, evidence=path or "symlink transition inspection", suggestion="Restore or provide trustworthy pre-transition evidence, reduce the change to producer limits, resolve filesystem or Git acquisition failures, and rerun SourcePack.", evidence_class="current_worktree", checked_status="unavailable", required_evidence_class="current_worktree")
+        finding["symlink_transition"] = incomplete
+        findings.append(finding)
     for p in report.get("new_files", []): findings.append(normalized_finding("new_file", "warn", "review", f"{p} was created by the patch.", p))
     for p in report.get("deleted_files", []): findings.append(normalized_finding("deleted_file", "warn", "review", f"{p} was deleted by the patch.", p))
     for d in report.get("declared_dependencies", []): findings.append(normalized_finding("declared_dependency", "warn", "uncertainty", f"{d} was added to dependency files.", evidence=d))
@@ -1590,7 +1623,18 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
             fid = fid.strip() or "uncertainty"
             message = detail.strip() or str(w)
             findings.append(normalized_finding(fid, "warn", "uncertainty", message))
-    return traffic_report(report.get("verdict", "PASS"), findings=findings, checked_categories=["file references", "Python imports", "JS/TS imports", "known project commands", "protected SourcePack artifacts"], report_path=report_path)
+    traffic = traffic_report(report.get("verdict", "PASS"), findings=findings, checked_categories=["file references", "Python imports", "JS/TS imports", "known project commands", "protected SourcePack artifacts", "bounded worktree symlink collisions"], report_path=report_path)
+    incomplete = report.get("symlink_worktree_inspection_incomplete", [])
+    if incomplete:
+        traffic["authority"] = {"status": "incomplete", "complete": False, "reason": "symlink_worktree_inspection_incomplete"}
+        traffic["construction_bounds"]["symlink_worktree_inspection"] = {
+            "acquisition_state": "incomplete", "count_state": "lower_bound", "source_exhausted": False,
+            "limit_reached": any(str(item.get("acquisition_status", "")).endswith("limit_reached") for item in incomplete),
+            "paths": [item.get("proposed_path") for item in incomplete],
+            "producer": report.get("symlink_worktree_inspection", {}),
+        }
+        traffic["replay_bundle"] = build_replay_bundle(traffic)
+    return traffic
 
 
 def run_git(repo: Path, args: list[str]):
@@ -1826,7 +1870,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         rep = traffic_report(verdict, "SourcePack could not fully evaluate this change." if stale_findings else "good to continue.", [normalized_finding("no_diff", "info", "diff", "No uncommitted changes detected."), *stale_findings], ["diff", "baseline freshness"])
     else:
         packet_path = repo / baseline_status["packet_path"]
-        raw = judge_patch_text(packet_path, diff_text, trusted_files=trusted_base_files); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
+        raw = judge_patch_text(packet_path, diff_text, trusted_files=trusted_base_files, worktree_root=repo); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
         rep = _integrate_execution_findings(repo, diff_text, rep)
         rep = _apply_policy_finishers(repo, packet_path, diff_text, rep, policy_result)
         if stale_findings:
@@ -1858,6 +1902,12 @@ def _rebuild_from_findings(rep: dict, findings: list[dict]) -> dict:
     for key in ("raw_patch_judgment", "policy", "policy_overrides", "policy_config", "policy_config_ignores", "policy_config_warnings", "policy_rule_findings"):
         if key in rep:
             rebuilt[key] = rep[key]
+    if isinstance(rep.get("authority"), dict) and rep["authority"].get("complete") is False:
+        rebuilt["authority"] = rep["authority"]
+        for producer, bounds in (rep.get("construction_bounds") or {}).items():
+            if producer != "findings":
+                rebuilt["construction_bounds"][producer] = bounds
+        rebuilt["replay_bundle"] = build_replay_bundle(rebuilt)
     return rebuilt
 
 

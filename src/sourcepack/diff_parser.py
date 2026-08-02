@@ -19,6 +19,9 @@ class PatchFileChange:
     diff_lines: list[str] = field(default_factory=list)
     unsafe_path: bool = False
     operation: str = "modify"
+    old_mode: str | None = None
+    new_mode: str | None = None
+    proposed_symlink_target: str | None = None
 
 
 def normalize_diff_path(path: str) -> tuple[str, bool]:
@@ -72,12 +75,14 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
     new_file = False
     deleted_file = False
     operation = "modify"
+    old_mode: str | None = None
+    new_mode: str | None = None
 
     current_unsafe = False
     malformed = False
 
     def reset_file_state() -> None:
-        nonlocal current, old_path, new_path, new_file, deleted_file, operation, current_unsafe
+        nonlocal current, old_path, new_path, new_file, deleted_file, operation, current_unsafe, old_mode, new_mode
 
         if current is not None:
             changes.append(current)
@@ -88,6 +93,8 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
         new_file = False
         deleted_file = False
         operation = "modify"
+        old_mode = None
+        new_mode = None
         current_unsafe = False
 
     def mark_unsafe(unsafe: bool) -> None:
@@ -110,6 +117,8 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
             deleted_file=deleted_file or new_path is None,
             unsafe_path=current_unsafe,
             operation=operation,
+            old_mode=old_mode,
+            new_mode=new_mode,
         )
 
     for line in text.splitlines():
@@ -128,12 +137,29 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
 
             continue
 
+        if line.startswith("old mode "):
+            old_mode = line.removeprefix("old mode ").strip() or None
+            continue
+
+        if line.startswith("new mode "):
+            new_mode = line.removeprefix("new mode ").strip() or None
+            continue
+
+        if line.startswith("index "):
+            index_parts = line.split()
+            if len(index_parts) >= 3 and re.fullmatch(r"[0-7]{6}", index_parts[-1]):
+                old_mode = old_mode or index_parts[-1]
+                new_mode = new_mode or index_parts[-1]
+            continue
+
         if line.startswith("new file mode"):
             new_file = True
+            new_mode = line.removeprefix("new file mode").strip() or None
             continue
 
         if line.startswith("deleted file mode"):
             deleted_file = True
+            old_mode = line.removeprefix("deleted file mode").strip() or None
             continue
 
         if line.startswith("rename from "):
@@ -192,6 +218,8 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
                 current.deleted_file = deleted_file or new_path is None
                 current.unsafe_path = current.unsafe_path or current_unsafe
                 current.operation = operation
+                current.old_mode = old_mode
+                current.new_mode = new_mode
 
             continue
 
@@ -220,6 +248,11 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
 
     if current is not None:
         changes.append(current)
+
+    for change in changes:
+        if change.new_mode == "120000":
+            target = "\n".join(change.added_lines)
+            change.proposed_symlink_target = target if target else None
 
     if malformed:
         changes.append(

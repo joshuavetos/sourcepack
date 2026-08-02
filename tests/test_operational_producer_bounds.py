@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from sourcepack import cli, packet as packet_module
+from sourcepack import baseline as baseline_module, cli, packet as packet_module
 from sourcepack.decision_ledger import new_event, read_events
 from sourcepack.fleet import summarize_ledgers, summarize_reports
 from sourcepack.packet import PacketCleanupError, PacketWriter, SourceScanner, verify_packet
@@ -244,10 +244,10 @@ def test_packet_verification_accepts_confined_regular_files_and_cli_delegates(
 ) -> None:
     packet = tmp_path / "packet"
     packet.mkdir()
-    artifact = packet / "artifact.txt"
-    artifact.write_text("confined", encoding="utf-8")
+    artifact = packet / "manifest.json"
+    artifact.write_text('{"included_files": []}', encoding="utf-8")
     (packet / "receipt.json").write_text(
-        json.dumps({"hashes": {"artifact.txt": packet_module.sha256_file(artifact)}}),
+        json.dumps({"hashes": {"manifest.json": packet_module.sha256_file(artifact)}}),
         encoding="utf-8",
     )
     assert verify_packet(
@@ -266,6 +266,86 @@ def test_packet_verification_accepts_confined_regular_files_and_cli_delegates(
     )
     assert cli.verify_packet(packet, tmp_path) is True
     assert calls == [(packet, tmp_path)]
+
+
+@pytest.mark.parametrize("value", [123, "x" * 64, "G" * 64])
+def test_packet_verification_rejects_malformed_receipt_hashes(
+    tmp_path: Path, value: object
+) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    manifest = packet / "manifest.json"
+    manifest.write_text('{"included_files": []}', encoding="utf-8")
+    (packet / "receipt.json").write_text(
+        json.dumps({"hashes": {"manifest.json": value}}), encoding="utf-8"
+    )
+    assert verify_packet(packet) is False
+
+
+@pytest.mark.parametrize("hashes", [
+    {"receipt.json": "0" * 64, "manifest.json": "0" * 64},
+    {"artifact.txt": "0" * 64},
+])
+def test_packet_verification_rejects_incoherent_receipt_coverage(
+    tmp_path: Path, hashes: dict[str, str]
+) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    (packet / "receipt.json").write_text(json.dumps({"hashes": hashes}), encoding="utf-8")
+    assert verify_packet(packet) is False
+
+
+def test_packet_verification_rejects_duplicate_manifest_paths(tmp_path: Path) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "a.txt").write_text("a", encoding="utf-8")
+    record = {"relative_path": "a.txt", "source_sha256": packet_module.sha256_text("a")}
+    _packet_with_manifest(packet, [record, record.copy()])
+    assert verify_packet(packet, source) is False
+
+
+def test_packet_verification_rejects_file_growth_during_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    manifest = packet / "manifest.json"
+    manifest.write_text('{"included_files": []}', encoding="utf-8")
+    (packet / "receipt.json").write_text(
+        json.dumps({"hashes": {"manifest.json": packet_module.sha256_file(manifest)}}),
+        encoding="utf-8",
+    )
+    real_fstat = packet_module.os.fstat
+    calls = 0
+
+    def growing_fstat(fd: int):
+        nonlocal calls
+        result = real_fstat(fd)
+        calls += 1
+        if calls == 1:
+            with manifest.open("ab") as handle:
+                handle.write(b" ")
+        return result
+
+    monkeypatch.setattr(packet_module.os, "fstat", growing_fstat)
+    assert verify_packet(packet) is False
+
+
+def test_baseline_validation_delegates_to_canonical_packet_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        packet_module,
+        "verify_packet",
+        lambda path: calls.append(path) or False,
+    )
+    result = baseline_module._validate_packet_artifacts(tmp_path, tmp_path / "packet")
+    assert result is not None
+    assert result["details"]["reason"] == "canonical packet verification failed"
+    assert calls == [tmp_path / "packet"]
 
 
 @pytest.mark.parametrize(("count", "reached", "consumed", "exhausted", "total"), [

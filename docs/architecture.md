@@ -68,7 +68,11 @@ artifact/source file larger than 64 MiB, and stops at 128 MiB of aggregate artif
 reads. Verification against a source tree additionally uses the bounded `SourceScanner` traversal.
 Receipt and manifest paths must be safe relative paths resolving to non-symlink regular files under
 non-symlink packet and source roots; absolute, drive-qualified, parent-traversing, escaping, or
-symlinked paths return FAIL. Malformed metadata, unavailable inputs, incomplete traversal, and any
+symlinked paths return FAIL. Receipt and source digests must be lowercase SHA-256 values, the
+receipt must cover `manifest.json` without recursively naming itself, and duplicate manifest paths
+are rejected. Artifact and source bytes are read through one descriptor and verification rejects
+identity, size, or modification-time changes across that bounded read. Baseline validation delegates
+to this same canonical verifier. Malformed metadata, unavailable inputs, incomplete traversal, and any
 verification boundary likewise return FAIL rather than an exhaustive or authoritative PASS. These
 are packet-integrity and operational resource outcomes; they neither establish nor upgrade
 canonical review authority.

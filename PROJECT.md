@@ -46,7 +46,10 @@
 - Analyzer repository discovery now routes recursive source and verification traversal through the deterministic `SourceScanner` producer, with entry, depth, per-file, and aggregate-read limits. Baseline construction rejects incomplete scans.
 - Packet verification bounds receipt and manifest bytes, receipt and manifest records, individual
   artifact/source reads, aggregate reads, and any optional against-source traversal. Verification is
-  confined to non-symlink regular files beneath non-symlink packet and source roots. A boundary,
+  confined to non-symlink regular files beneath non-symlink packet and source roots, validates
+  SHA-256 shapes and coherent manifest coverage, rejects duplicate manifest paths, and rejects files
+  that change across their descriptor-backed bounded read. Baseline validation uses the same
+  canonical verifier. A boundary,
   unsafe path, or symlink returns verification failure rather than PASS; these operational limits
   do not create or upgrade canonical judgment authority.
 - Policy and canonical-report JSON structure checks occur after full `json.loads` construction; their strict byte caps provide finite input bounds, not streaming parser or per-object instantiation guarantees.

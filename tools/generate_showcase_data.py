@@ -77,7 +77,7 @@ def build_showcase_data() -> dict[str, Any]:
         _run_git(repo, "add", "app.py", "requirements.txt")
         _run_git(repo, "commit", "-qm", "trusted flask baseline")
         build_current_baseline(repo, quiet=True)
-        _run_git(repo, "add", ".sourcepack")
+        _run_git(repo, "add", "-f", ".sourcepack")
         _run_git(repo, "commit", "-qm", "trust sourcepack baseline")
 
         (repo / "app.py").write_text(AI_FASTAPI_CODE, encoding="utf-8")

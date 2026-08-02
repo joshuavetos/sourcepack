@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import fnmatch
+import base64
 import hashlib
 import json
 import os
 import tomllib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -15,11 +17,11 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Final, Iterable
 from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_OUTPUT_LIMIT, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git, run_git_bounded as canonical_run_git_bounded, run_git_bytes as canonical_run_git_bytes
-from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
+from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff, quote_git_path
 from .baseline import BaselineLockError, baseline_report_fields, build_current_baseline, validate_baseline
 from .ecosystems.python import PY_IMPORT_ALIASES
-from .packet import PacketWriter, SourceScanner
-from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs
+from .packet import PacketWriter, SourceScanner, _read_stable_verification_file
+from .paths import ensure_sourcepack_dirs
 from .reports.json import build_replay_bundle, normalized_finding, traffic_report, write_user_report
 from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code, load_policy_config, finding_ignored_by_policy, policy_path_matches, resolve_effective_policy
 from .execution_ledger import execution_findings
@@ -58,6 +60,11 @@ COMMON_DEPENDENCIES = ["fastapi", "flask", "django", "react", "vue", "svelte", "
 FEATURE_NAMES = ("pdf", "ocr", "web server", "react", "docker", "authentication", "database")
 GIT_TIMEOUT_SECONDS: Final[int] = 10
 NATURAL_LANGUAGE_COMMAND_TARGETS: Final[frozenset[str]] = frozenset({"a", "an", "the", "this", "that", "these", "those"})
+PACKET_ARTIFACT_LIMIT_BYTES: Final[int] = 16 * 1024 * 1024
+POLICY_LEDGER_LIMIT_BYTES: Final[int] = 1024 * 1024
+POLICY_LEDGER_LINE_LIMIT_BYTES: Final[int] = 16 * 1024
+POLICY_LEDGER_RECORD_LIMIT: Final[int] = 1000
+INVENTORY_RECORD_LIMIT: Final[int] = 100_000
 
 
 def _command_claims(pattern: str, text: str) -> set[str]:
@@ -92,7 +99,8 @@ def estimate_tokens(text: str) -> int:
 
 def is_probably_binary(path: Path, sample_size: int = 4096) -> bool:
     try:
-        data = path.read_bytes()[:sample_size]
+        with path.open("rb") as stream:
+            data = stream.read(sample_size)
     except OSError:
         return True
     if b"\x00" in data:
@@ -347,8 +355,23 @@ def render_ai_instructions(reality_map: dict) -> str:
     lines.extend(f"- {boundary}" for boundary in reality_map.get("claim_boundaries", []))
     return "\n".join(lines) + "\n"
 
+def _load_packet_bytes(packet: Path, name: str, *, limit: int = PACKET_ARTIFACT_LIMIT_BYTES) -> bytes:
+    root = packet.resolve(strict=True)
+    path = root / name
+    if path.parent != root or Path(name).name != name:
+        raise ValueError(f"packet artifact escapes packet directory: {name}")
+    return _read_stable_verification_file(path, limit)
+
+
+def _load_packet_json(packet: Path, name: str) -> object:
+    return json.loads(_load_packet_bytes(packet, name).decode("utf-8"))
+
+
 def load_manifest(packet: Path) -> dict:
-    return json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
+    data = _load_packet_json(packet, "manifest.json")
+    if not isinstance(data, dict):
+        raise ValueError("packet manifest must be an object")
+    return data
 
 
 
@@ -397,33 +420,52 @@ def extract_refs(text: str) -> set[str]:
 
 
 def _packet_file_contents(packet: Path) -> dict[str, str]:
-    context_path = packet / "context.md"
+    context_path = packet / "context.xml"
     if not context_path.exists():
-        return {}
-    text = context_path.read_text(encoding="utf-8", errors="ignore")
+        # Compatibility for pre-XML packets. Current packets always use the
+        # structured XML artifact as the canonical content store.
+        legacy = packet / "context.md"
+        if not legacy.exists():
+            return {}
+        text = _load_packet_bytes(packet, "context.md").decode("utf-8")
+        contents: dict[str, str] = {}
+        sections = text.split("\n## File: ")[1:]
+        for section in sections:
+            header, separator, remainder = section.partition("\n")
+            rel = _normalize_inventory_path(header.strip())
+            marker = "\nContent:\n"
+            if rel is None or not separator or marker not in remainder:
+                raise ValueError("malformed legacy packet context record")
+            body = remainder.split(marker, 1)[1]
+            terminator = body.rfind("\n---")
+            if terminator < 0:
+                raise ValueError("malformed legacy packet context terminator")
+            contents[rel] = body[:terminator].rstrip("\n")
+        return contents
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(_load_packet_bytes(packet, "context.xml"))
     contents: dict[str, str] = {}
-    current: str | None = None
-    body: list[str] = []
-    in_content = False
-    for line in text.splitlines():
-        if line.startswith("## File: "):
-            if current is not None:
-                contents[current] = "\n".join(body).rstrip("\n")
-            current = line.removeprefix("## File: ").strip()
-            body = []
-            in_content = False
-        elif current is not None and line == "Content:":
-            in_content = True
-            body = []
-        elif current is not None and in_content and line == "---":
-            contents[current] = "\n".join(body).rstrip("\n")
-            current = None
-            body = []
-            in_content = False
-        elif current is not None and in_content:
-            body.append(line)
-    if current is not None:
-        contents[current] = "\n".join(body).rstrip("\n")
+    for node in root.findall("./files/file"):
+        if node.get("path_b64") is not None:
+            try:
+                rel_value = base64.b64decode(node.get("path_b64"), validate=True).decode("utf-8", "surrogateescape")
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise ValueError("malformed packet context path") from exc
+        else:
+            rel_value = node.get("path")
+        rel = _normalize_inventory_path(rel_value)
+        content = node.find("content")
+        if rel is None or content is None:
+            raise ValueError("malformed packet context record")
+        value = content.text or ""
+        if content.get("encoding") == "base64":
+            try:
+                value = base64.b64decode(value, validate=True).decode("utf-8")
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise ValueError("malformed packet context content") from exc
+        elif value.startswith("\n") and value.endswith("\n      "):
+            value = value[1:-7]
+        contents[rel] = value
     return contents
 
 
@@ -637,7 +679,23 @@ def _normalize_inventory_path(value: object) -> str | None:
     return rel
 
 
-def _baseline_inventory_from_packet(packet: str | Path, manifest: dict | None = None) -> tuple[set[str], bool]:
+@dataclass(frozen=True)
+class InventoryAuthority:
+    files: frozenset[str]
+    status: str
+    reason: str | None = None
+
+    @property
+    def complete(self) -> bool:
+        return self.status == "complete"
+
+    def __iter__(self):
+        # Preserve the historical unpacking API while exposing explicit authority.
+        yield set(self.files)
+        yield self.complete
+
+
+def _baseline_inventory_from_packet(packet: str | Path, manifest: dict | None = None) -> InventoryAuthority:
     """Return authoritative enforcement baseline paths when a packet has them.
 
     Prompt context manifests may be selective, so diff enforcement must prefer the
@@ -645,25 +703,43 @@ def _baseline_inventory_from_packet(packet: str | Path, manifest: dict | None = 
     when a full inventory artifact was loaded successfully.
     """
     packet = Path(packet)
-    for name in ("file_inventory.json", "inventory.json", "baseline_inventory.json"):
+    candidate_names = [name for name in ("file_inventory.json", "inventory.json", "baseline_inventory.json") if (packet / name).exists()]
+    if len(candidate_names) > 1:
+        return InventoryAuthority(frozenset(), "failed", "multiple inventory artifacts are ambiguous")
+    for name in candidate_names:
         path = packet / name
         if not path.exists():
             continue
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+            data = _load_packet_json(packet, name)
+        except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            return InventoryAuthority(frozenset(), "failed", f"{name}: {exc}")
         raw_files = data.get("files") if isinstance(data, dict) else data
         if not isinstance(raw_files, list):
-            continue
+            return InventoryAuthority(frozenset(), "failed", f"{name}: files must be a list")
+        if len(raw_files) > INVENTORY_RECORD_LIMIT:
+            return InventoryAuthority(frozenset(), "failed", f"{name}: inventory record limit exceeded")
         files: set[str] = set()
+        allowed_fields = {"relative_path", "included_in_prompt_context", "source", "sha256", "file_type"}
         for item in raw_files:
-            raw_path = item.get("relative_path") if isinstance(item, dict) else item
+            if isinstance(item, dict):
+                if "relative_path" not in item:
+                    return InventoryAuthority(frozenset(), "failed", f"{name}: inventory record lacks relative_path")
+                if not set(item) <= allowed_fields:
+                    return InventoryAuthority(frozenset(), "failed", f"{name}: inventory record has unknown fields")
+                raw_path = item.get("relative_path")
+            elif isinstance(item, str):
+                raw_path = item
+            else:
+                return InventoryAuthority(frozenset(), "failed", f"{name}: invalid inventory record")
             rel = _normalize_inventory_path(raw_path)
-            if rel:
-                files.add(rel)
-        return files, True
-    return _included_paths(manifest or load_manifest(packet)), False
+            if rel is None:
+                return InventoryAuthority(frozenset(), "failed", f"{name}: unsafe inventory path")
+            if rel in files:
+                return InventoryAuthority(frozenset(), "failed", f"{name}: duplicate inventory path")
+            files.add(rel)
+        return InventoryAuthority(frozenset(files), "complete")
+    return InventoryAuthority(frozenset(_included_paths(manifest or load_manifest(packet))), "incomplete", "full_inventory_missing")
 
 
 def known_files(manifest: dict, packet_path: str | Path | None = None) -> set[str]:
@@ -742,16 +818,18 @@ def _materialize_packet_worktree(packet: Path, overlay: dict[str, str] | None = 
 
 
 def _dependency_additions_from_patch(changes: list[PatchFileChange]) -> set[str]:
-    return set()
+    return _declared_dependency_names_from_patch(changes)
 
 
 def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchFileChange] | None = None, trusted_files: set[str] | None = None) -> dict:
     packet = Path(packet_path)
     manifest = load_manifest(packet)
-    reality = json.loads((packet / "reality_map.json").read_text(encoding="utf-8")) if (packet / "reality_map.json").exists() else generate_reality_map(manifest, packet)
-    files, baseline_inventory_loaded = _baseline_inventory_from_packet(packet, manifest)
-    if trusted_files:
-        files.update(trusted_files)
+    reality_data = _load_packet_json(packet, "reality_map.json") if (packet / "reality_map.json").exists() else generate_reality_map(manifest, packet)
+    reality = reality_data if isinstance(reality_data, dict) else {}
+    inventory = _baseline_inventory_from_packet(packet, manifest)
+    files, baseline_inventory_loaded = inventory
+    if trusted_files is not None:
+        files = set(trusted_files)
     deps = dependency_inventory(manifest, packet)
     scripts = _package_json_scripts(packet)
     if changes is None:
@@ -763,6 +841,11 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
         "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [],
         "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "git_path_modifications": [], "warnings": [],
     }
+    report["baseline_inventory_authority"] = {"status": inventory.status, "complete": inventory.complete, "reason": inventory.reason}
+    if inventory.status == "failed":
+        report["verdict"] = "FAIL"
+        report["baseline_inventory_failed"] = True
+        report["warnings"].append("Trusted baseline inventory could not be acquired safely.")
     if any(ch.unsafe_path for ch in changes):
         report["path_escape"] = True
     all_added = []
@@ -860,7 +943,7 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
             report.setdefault("uncertainties", []).append({"id": "baseline_inventory_missing", "message": "Baseline packet lacks full file inventory; modified files outside prompt context could not be checked against tracked repo inventory.", "evidence": ", ".join(outside_context)})
     if report["new_files"]:
         report["warnings"].append("Patch creates new files that were not part of the original packet reality.")
-    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "git_path_modifications", "path_escape"]
+    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "git_path_modifications", "path_escape", "baseline_inventory_failed"]
     if any(report.get(k) for k in fail_keys):
         report["verdict"] = "FAIL"
     elif report["new_files"] or report["warnings"] or report.get("uncertainties"):
@@ -945,8 +1028,9 @@ def finalize_diff_report(repo: str | Path | None, report: dict, args, stem: str 
     if repo is not None:
         try:
             write_user_report(repo, full, stem)
-        except Exception:
-            full.setdefault("warnings", []).append("report_artifact_write_failed")
+            full["persistence"] = {"status": "written"}
+        except Exception as exc:
+            full["persistence"] = {"status": "failed", "reason": str(exc)}
     return full
 
 
@@ -1039,8 +1123,6 @@ def _apply_patch_change_to_text(original: str, change: PatchFileChange) -> str |
     if change.deleted_file:
         return ""
     result = original.splitlines()
-    if result and result[0] == "":
-        result = result[1:]
     out: list[str] = []
     idx = 0
     saw_hunk = False
@@ -1710,7 +1792,7 @@ def _only_sourcepack_gitignore_change(repo: Path) -> bool:
 
 def untracked_files_as_diff(repo: str | Path, *, with_authority: bool = False):
     repo = Path(repo)
-    cp = run_git_bounded(repo, ["ls-files", "--others", "--exclude-standard"])
+    cp = canonical_run_git_bounded(repo, ["ls-files", "--others", "--exclude-standard", "-z"], text=False)
     if cp.returncode != 0:
         reason = "git_output_limit" if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "git_diff_failed"
         state = "bounded" if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "failed"
@@ -1718,15 +1800,32 @@ def untracked_files_as_diff(repo: str | Path, *, with_authority: bool = False):
         return result if with_authority else ""
     chunks = []
     retained_bytes = 0
-    for rel in [line.strip() for line in cp.stdout.splitlines() if line.strip()]:
+    for raw_rel in (item for item in cp.stdout.split(b"\0") if item):
+        rel = raw_rel.decode("utf-8", "surrogateescape")
         safe_rel, unsafe = _normalize_diff_path(rel)
         if unsafe or not safe_rel:
-            continue
+            result = ("\n".join(chunks) + ("\n" if chunks else ""), {"status": "incomplete", "complete": False, "reason": "unsafe_git_path", "acquisition_state": "failed"})
+            return result if with_authority else result[0]
         path = repo / safe_rel
         try:
-            size = path.stat().st_size
+            stat_result = path.lstat()
         except OSError:
             continue
+        is_symlink = stat.S_ISLNK(stat_result.st_mode)
+        if is_symlink:
+            try:
+                link_target = os.readlink(path)
+            except OSError:
+                continue
+            target_bytes = os.fsencode(link_target)
+            if len(target_bytes) > 64 * 1024:
+                result = ("\n".join(chunks) + ("\n" if chunks else ""), {"status": "incomplete", "complete": False, "reason": "git_output_limit", "acquisition_state": "bounded"})
+                return result if with_authority else result[0]
+            size = len(target_bytes)
+        elif not stat.S_ISREG(stat_result.st_mode):
+            continue
+        else:
+            size = stat_result.st_size
         if retained_bytes + size > 8 * 1024 * 1024:
             result = ("\n".join(chunks) + ("\n" if chunks else ""), {"status": "incomplete", "complete": False, "reason": "git_output_limit", "acquisition_state": "bounded"})
             return result if with_authority else result[0]
@@ -1738,7 +1837,14 @@ def untracked_files_as_diff(repo: str | Path, *, with_authority: bool = False):
                 ignore_lines = set()
             if ignore_lines <= {".sourcepack", ".sourcepack/"}:
                 continue
-        chunks.extend([f"diff --git a/{safe_rel} b/{safe_rel}", "new file mode 100644", "--- /dev/null", f"+++ b/{safe_rel}"])
+        old_header = quote_git_path(f"a/{safe_rel}")
+        new_header = quote_git_path(f"b/{safe_rel}")
+        chunks.extend([f"diff --git {old_header} {new_header}", f"new file mode {'120000' if is_symlink else '100644'}", "--- /dev/null", f"+++ {new_header}"])
+        if is_symlink:
+            target_lines = link_target.split("\n")
+            chunks.append(f"@@ -0,0 +1,{len(target_lines)} @@")
+            chunks.extend(f"+{line}" for line in target_lines)
+            continue
         if is_probably_binary(path):
             chunks.append(f"Binary files /dev/null and b/{safe_rel} differ")
             continue
@@ -1776,12 +1882,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
     git_root = Path(cp.stdout.strip()).resolve()
     repo = repo_arg if validate_baseline(repo_arg).get("state") in {"present", "stale", "corrupt"} else git_root
     policy_result = resolve_effective_policy(repo, org_policy=org_policy, org_policy_mode=org_policy_mode)
-    paths = ensure_sourcepack_dirs(repo); added, err = ensure_gitignore_entry(repo)
-    if added:
-        paths.setdefault("gitignore_added", True)
-    if err:
-        rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("gitignore_unwritable", "error", "git", f"Cannot write .gitignore: {err}")])
-        return _finalize_early_core_failure(repo, rep, policy_result)
+    added = False
     if patch_text is None:
         if base_ref is not None and head_ref is not None:
             diff_args = ["diff", "--binary", f"{base_ref}...{head_ref}"]
@@ -2286,29 +2387,72 @@ def _finalize_git_incomplete(repo: Path, rep: dict, policy_result: dict, *, prod
     finalized["replay_bundle"] = build_replay_bundle(finalized)
     return finalized
 
-def _policy_entries_for_judgment(repo: Path) -> list[dict]:
+@dataclass(frozen=True)
+class PolicyLedgerResult:
+    entries: tuple[dict, ...]
+    status: str
+    reason: str | None = None
+
+
+def _parse_policy_expiry(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("expires_at must be a timestamp string")
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("expires_at must be timezone-aware")
+    return parsed.astimezone(timezone.utc)
+
+
+def _policy_entries_for_judgment(repo: Path) -> PolicyLedgerResult:
     path = repo / ".sourcepack" / "policy" / "allow.jsonl"
     if not path.exists():
-        return []
-    entries = []
-    now = utc_now()
-    for line in path.read_text(encoding="utf-8").splitlines():
+        return PolicyLedgerResult((), "complete")
+    try:
+        data = _read_stable_verification_file(path, POLICY_LEDGER_LIMIT_BYTES)
+    except (OSError, ValueError) as exc:
+        return PolicyLedgerResult((), "incomplete", str(exc))
+    lines = data.splitlines()
+    if len(lines) > POLICY_LEDGER_RECORD_LIMIT:
+        return PolicyLedgerResult((), "incomplete", "policy ledger record limit exceeded")
+    entries: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    now = datetime.now(timezone.utc)
+    for raw_line in lines:
+        if len(raw_line) > POLICY_LEDGER_LINE_LIMIT_BYTES:
+            return PolicyLedgerResult((), "malformed", "policy ledger line limit exceeded")
         try:
-            entry = json.loads(line)
-        except Exception:
-            continue
-        expires = entry.get("expires_at")
-        if expires and str(expires) < now:
+            entry = json.loads(raw_line.decode("utf-8"))
+            if not isinstance(entry, dict):
+                raise ValueError("record must be an object")
+            if not isinstance(entry.get("id"), str) or entry.get("scope") not in {"path", "dependency", "command"} or not isinstance(entry.get("value"), str) or not isinstance(entry.get("reason"), str):
+                raise ValueError("record does not match the allow policy schema")
+            expiry = _parse_policy_expiry(entry.get("expires_at"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            return PolicyLedgerResult((), "malformed", str(exc))
+        key = (entry["scope"], entry["value"])
+        if key in seen:
+            return PolicyLedgerResult((), "malformed", "duplicate or contradictory policy entry")
+        seen.add(key)
+        if expiry is not None and expiry < now:
             continue
         entries.append(entry)
-    return entries
+    return PolicyLedgerResult(tuple(entries), "complete")
 
 
 def _policy_matches(entry: dict, finding: dict) -> bool:
     scope = entry.get("scope")
     value = str(entry.get("value") or "")
     fid = finding.get("id")
-    if fid == "git_path_modification" or str(finding.get("path") or "").startswith(".git/"):
+    override_eligible = {
+        "unsupported_dependency", "policy_dependency_addition", "unsupported_command",
+        "missing_file", "new_file", "deleted_file", "binary_diff",
+        "policy_protected_path", "policy_test_required", "policy_change_limit",
+        "policy_secret_pattern", "policy_package_manager",
+    }
+    if fid not in override_eligible or str(finding.get("path") or "").startswith(".git/"):
         return False
     if fid == "policy_resolution_failed":
         return False
@@ -2323,7 +2467,11 @@ def _policy_matches(entry: dict, finding: dict) -> bool:
             return False
         if str(value).startswith(".sourcepack/baseline/") and not entry.get("high_risk"):
             return False
-        return fid not in {"git_path_modification"}
+        return fid in {
+            "missing_file", "new_file", "deleted_file", "binary_diff",
+            "policy_protected_path", "policy_test_required", "policy_change_limit",
+            "policy_secret_pattern", "policy_package_manager",
+        }
     return False
 
 
@@ -2341,7 +2489,13 @@ def _sync_existing_policy_rule_metadata(rep: dict) -> dict:
     return synced
 
 def _apply_local_policy(repo: Path, rep: dict) -> dict:
-    entries = _policy_entries_for_judgment(repo)
+    ledger = _policy_entries_for_judgment(repo)
+    if ledger.status != "complete":
+        finding = normalized_finding("policy_resolution_failed", "error", "policy", f"Local allow policy could not be acquired safely: {ledger.reason or ledger.status}.")
+        failed = dict(rep)
+        failed["authority"] = {"status": "incomplete", "complete": False, "reason": "local_policy_acquisition_failed"}
+        return _rebuild_from_findings(failed, list(rep.get("findings", [])) + [finding])
+    entries = ledger.entries
     if not entries:
         return rep
     kept = []

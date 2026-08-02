@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import base64
 import hashlib
 import json
 import os
@@ -11,7 +12,6 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Iterable
-from xml.sax.saxutils import escape as xml_escape
 
 from .diff_parser import normalize_diff_path
 from .git import GitProducerIncompleteError, tracked_paths as git_tracked_paths
@@ -459,10 +459,10 @@ class PacketWriter:
         (self.out / "context.md").write_text("\n".join(md_parts), encoding="utf-8")
         xml_parts = ["<sourcepack>", "  <files>"]
         for f in self.scanner.included_files:
-            xml_parts.append(f'    <file path="{xml_escape(f.relative_path)}" sha256="{f.sha256}" bytes="{f.size_bytes}" estimated_tokens="{f.estimated_tokens}">')
-            xml_parts.append("      <content>")
-            xml_parts.append(xml_escape(f.content))
-            xml_parts.append("      </content>")
+            encoded_path = base64.b64encode(f.relative_path.encode("utf-8", "surrogateescape")).decode("ascii")
+            encoded_content = base64.b64encode(f.content.encode("utf-8")).decode("ascii")
+            xml_parts.append(f'    <file path_b64="{encoded_path}" sha256="{f.sha256}" bytes="{f.size_bytes}" estimated_tokens="{f.estimated_tokens}">')
+            xml_parts.append(f'      <content encoding="base64">{encoded_content}</content>')
             xml_parts.append("    </file>")
         xml_parts.extend(["  </files>", "</sourcepack>"])
         (self.out / "context.xml").write_text("\n".join(xml_parts), encoding="utf-8")

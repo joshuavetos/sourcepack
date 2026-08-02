@@ -1,8 +1,10 @@
 import contextlib
 import io
 import json
+import os
 import subprocess
 import unittest
+from unittest import mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -76,6 +78,64 @@ class BaselineIntegrityTest(unittest.TestCase):
             code, data = self.json_cli(["status", str(repo)])
             self.assertEqual(data["baseline_state"], "corrupt")
 
+    def test_symlinked_active_pointer_is_never_trusted(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            repo = self.repo(root)
+            build_current_baseline(repo, quiet=True)
+            pointer = repo / ".sourcepack" / "baseline" / "active.json"
+            external = root / "external-pointer.json"
+            external.write_bytes(pointer.read_bytes())
+            pointer.unlink()
+            pointer.symlink_to(external)
+
+            status = validate_baseline(repo)
+
+            self.assertEqual(status["state"], "corrupt")
+            self.assertIn("symlink", status["details"]["reason"])
+
+    def test_symlinked_baseline_ancestors_are_never_trusted(self):
+        for ancestor in (".sourcepack", ".sourcepack/baseline"):
+            with self.subTest(ancestor=ancestor), TemporaryDirectory() as td:
+                root = Path(td)
+                repo = self.repo(root)
+                build_current_baseline(repo, quiet=True)
+                path = repo / ancestor
+                external = root / ("external-" + path.name)
+                path.rename(external)
+                path.symlink_to(external, target_is_directory=True)
+
+                status = validate_baseline(repo)
+
+                self.assertEqual(status["state"], "corrupt")
+                self.assertIn("ancestor", status["details"]["reason"])
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd, "requires POSIX dir-fd no-follow support")
+    def test_ancestor_replacement_during_pointer_open_fails_closed(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            repo = self.repo(root)
+            build_current_baseline(repo, quiet=True)
+            baseline = repo / ".sourcepack" / "baseline"
+            external = root / "replaced-baseline"
+            real_open = os.open
+            replaced = False
+
+            def replacing_open(path, flags, mode=0o777, *, dir_fd=None):
+                nonlocal replaced
+                if path == "baseline" and dir_fd is not None and not replaced:
+                    baseline.rename(external)
+                    baseline.symlink_to(external, target_is_directory=True)
+                    replaced = True
+                return real_open(path, flags, mode, dir_fd=dir_fd)
+
+            with mock.patch("sourcepack.baseline.os.open", side_effect=replacing_open):
+                status = validate_baseline(repo)
+
+            self.assertTrue(replaced)
+            self.assertEqual(status["state"], "corrupt")
+            self.assertIn("symlinked repository component", status["details"]["reason"])
+
     def test_corrupt_packet_artifacts_block_diff(self):
         cases = [
             ("manifest.json", None),
@@ -124,6 +184,58 @@ class BaselineIntegrityTest(unittest.TestCase):
             self.assertEqual(data["verdict"], "FAIL")
             ids = {f["id"] for f in data["findings"]}
             self.assertIn("unsupported_dependency", ids)
+
+    def test_dangling_stale_marker_cannot_report_baseline_present(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            repo = self.repo(root)
+            build_current_baseline(repo, quiet=True)
+            marker = repo / ".sourcepack" / "state" / "baseline_stale.json"
+            marker.symlink_to(root / "missing-stale-details.json")
+
+            status = validate_baseline(repo)
+
+            self.assertEqual(status["state"], "stale")
+            self.assertEqual(status["details"]["stale_details"]["reason"], "unreadable")
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd, "requires POSIX dir-fd no-follow support")
+    def test_stale_marker_replacement_during_open_cannot_report_present(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            repo = self.repo(root)
+            build_current_baseline(repo, quiet=True)
+            marker = repo / ".sourcepack" / "state" / "baseline_stale.json"
+            marker.write_text('{"reason":"test"}', encoding="utf-8")
+            real_open = os.open
+            replaced = False
+
+            def replacing_open(path, flags, mode=0o777, *, dir_fd=None):
+                nonlocal replaced
+                if path == "baseline_stale.json" and dir_fd is not None and not replaced:
+                    marker.unlink()
+                    marker.symlink_to(root / "missing-stale-details.json")
+                    replaced = True
+                return real_open(path, flags, mode, dir_fd=dir_fd)
+
+            with mock.patch("sourcepack.baseline.os.open", side_effect=replacing_open):
+                status = validate_baseline(repo)
+
+            self.assertTrue(replaced)
+            self.assertEqual(status["state"], "stale")
+            self.assertEqual(status["details"]["stale_details"]["reason"], "unreadable")
+
+    def test_missing_active_build_metadata_is_corrupt(self):
+        with TemporaryDirectory() as td:
+            repo = self.repo(Path(td))
+            build_current_baseline(repo, quiet=True)
+            status = validate_baseline(repo)
+            metadata = repo / status["metadata_path"]
+            metadata.unlink()
+
+            status = validate_baseline(repo)
+
+            self.assertEqual(status["state"], "corrupt")
+            self.assertIn("metadata.json missing", status["details"]["reason"])
 
     def test_status_reports_missing_stale_corrupt(self):
         with TemporaryDirectory() as td:

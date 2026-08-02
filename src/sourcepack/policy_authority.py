@@ -5,7 +5,7 @@ from pathlib import Path
 from types import ModuleType
 
 from .diff_parser import parse_unified_diff
-from .git import run_git
+from .git import decode_git_path, run_git_bounded
 
 POLICY_AUTHORITY_ERROR = "repository_policy_modified_in_proposed_state"
 
@@ -23,13 +23,16 @@ def is_policy_authority_path(value: object) -> bool:
 
 
 def _git_paths(repo: Path, args: list[str]) -> set[str]:
-    cp = run_git(repo, args)
+    nul_args = list(args)
+    separator = nul_args.index("--") if "--" in nul_args else len(nul_args)
+    nul_args.insert(separator, "-z")
+    cp = run_git_bounded(repo, nul_args, text=False)
     if cp.returncode != 0:
         return set()
     return {
         normalized
-        for line in cp.stdout.splitlines()
-        if (normalized := _normalize_path(line.strip())) and is_policy_authority_path(normalized)
+        for raw in cp.stdout.split(b"\0")
+        if raw and (normalized := _normalize_path(decode_git_path(raw))) and is_policy_authority_path(normalized)
     }
 
 

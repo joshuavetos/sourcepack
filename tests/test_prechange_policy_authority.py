@@ -97,6 +97,19 @@ class PrechangePolicyAuthorityTests(unittest.TestCase):
             [".sourcepack/policy/allow.jsonl"],
         )
 
+    def test_untracked_policy_filename_with_newline_preserves_identity(self) -> None:
+        td, repo = self._repo()
+        self.addCleanup(td.cleanup)
+        relative = ".sourcepack/policy/allow\nledger.jsonl"
+        allow = repo / relative
+        allow.parent.mkdir(parents=True, exist_ok=True)
+        allow.write_text('{"scope":"dependency","value":"demo"}\n', encoding="utf-8")
+
+        result = resolve_effective_policy(repo)
+
+        self.assertEqual(result["resolution_status"], "FAIL")
+        self.assertEqual(result["prechange_policy_authority"]["changed_paths"], [relative])
+
     def test_new_policy_cannot_authorize_accompanying_changes(self) -> None:
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)

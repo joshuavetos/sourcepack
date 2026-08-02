@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shutil
+import stat
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,11 @@ DEFAULT_SOURCEPACKIGNORE = (
 DEFAULT_SOURCEPACK_CONFIG = json.dumps(
     {"max_file_size": 1_000_000, "include_hidden": False, "redact_secrets": True},
     indent=2,
+)
+_DIR_FD_NOFOLLOW_SUPPORTED = (
+    hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "O_DIRECTORY")
+    and os.open in os.supports_dir_fd
 )
 
 
@@ -78,6 +84,89 @@ def _read_json_file(path: Path) -> tuple[dict | None, str | None]:
     return data, None
 
 
+def _read_repo_json_nofollow(repo: Path, relative: tuple[str, ...], *, byte_limit: int = 1024 * 1024) -> tuple[dict | None, str | None]:
+    """Read repository metadata without following any path component on POSIX."""
+    if not relative or any(part in {"", ".", ".."} or "/" in part or "\\" in part for part in relative):
+        return None, "unsafe repository-relative path"
+    if not _DIR_FD_NOFOLLOW_SUPPORTED:
+        # Windows lacks the dir-fd/no-follow primitives used for this trust
+        # boundary.  Reject symlinked components, then retain the existing
+        # stable final-path behavior rather than claiming descriptor authority.
+        current = repo
+        try:
+            for part in relative:
+                current = current / part
+                if current.is_symlink():
+                    return None, "symlinked repository component"
+            if not current.exists():
+                return None, "missing"
+        except OSError as exc:
+            return None, f"unreadable: {exc}"
+        return _read_json_file(current)
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_BINARY", 0)
+    descriptors: list[int] = []
+    try:
+        parent_fd = os.open(repo, directory_flags)
+        descriptors.append(parent_fd)
+        for component in relative[:-1]:
+            parent_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+            descriptors.append(parent_fd)
+        fd = os.open(relative[-1], file_flags, dir_fd=parent_fd)
+        descriptors.append(fd)
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > byte_limit:
+            return None, "not a regular file or byte limit exceeded"
+        raw = bytearray()
+        while len(raw) <= byte_limit:
+            block = os.read(fd, min(65536, byte_limit + 1 - len(raw)))
+            if not block:
+                break
+            raw.extend(block)
+        after = os.fstat(fd)
+        if len(raw) > byte_limit:
+            return None, "byte limit exceeded"
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+            after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
+        ) or len(raw) != before.st_size:
+            return None, "file changed during read"
+        data = json.loads(bytes(raw).decode("utf-8"))
+    except FileNotFoundError:
+        return None, "missing"
+    except json.JSONDecodeError as exc:
+        return None, f"malformed JSON: {exc}"
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, f"unreadable or symlinked repository component: {exc}"
+    finally:
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    if not isinstance(data, dict):
+        return None, "JSON root is not an object"
+    return data, None
+
+
+def _baseline_ancestor_error(repo: Path) -> str | None:
+    """Reject baseline storage reached through a symlinked repository component."""
+    current = repo
+    for component in (".sourcepack", "baseline"):
+        current = current / component
+        try:
+            info = current.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            return f"baseline ancestor unreadable: {exc}"
+        if stat.S_ISLNK(info.st_mode):
+            return f"baseline ancestor {component} must not be a symlink"
+        if not stat.S_ISDIR(info.st_mode):
+            return f"baseline ancestor {component} must be a directory"
+    return None
+
+
 def baseline_corrupt_result(
     repo: Path,
     message: str,
@@ -105,9 +194,16 @@ def baseline_corrupt_result(
 def resolve_active_baseline(repo: str | Path) -> dict:
     repo = Path(repo).resolve()
     paths = sourcepack_paths(repo)
+    ancestor_error = _baseline_ancestor_error(repo)
+    if ancestor_error:
+        return baseline_corrupt_result(repo, ancestor_error, mode="none")
     pointer = paths["active_pointer"]
+    if pointer.is_symlink():
+        return baseline_corrupt_result(
+            repo, "active.json must not be a symlink", active_pointer_path=pointer, mode="pointer"
+        )
     if pointer.exists():
-        data, err = _read_json_file(pointer)
+        data, err = _read_repo_json_nofollow(repo, (".sourcepack", "baseline", "active.json"))
         if err:
             return baseline_corrupt_result(
                 repo, f"active.json {err}", active_pointer_path=pointer, mode="pointer"
@@ -126,7 +222,16 @@ def resolve_active_baseline(repo: str | Path) -> dict:
                 active_pointer_path=pointer,
                 mode="pointer",
             )
-        build_dir = (paths["builds"] / build_id).resolve()
+        if paths["builds"].is_symlink():
+            return baseline_corrupt_result(
+                repo, "baseline builds directory must not be a symlink", active_pointer_path=pointer, mode="pointer", active_build_id=build_id
+            )
+        unresolved_build_dir = paths["builds"] / build_id
+        if unresolved_build_dir.is_symlink():
+            return baseline_corrupt_result(
+                repo, "active baseline build must not be a symlink", active_pointer_path=pointer, mode="pointer", active_build_id=build_id
+            )
+        build_dir = unresolved_build_dir.resolve()
         builds_dir = paths["builds"].resolve()
         try:
             build_dir.relative_to(builds_dir)
@@ -140,6 +245,10 @@ def resolve_active_baseline(repo: str | Path) -> dict:
             )
         packet = build_dir / "packet"
         meta = build_dir / "metadata.json"
+        if packet.is_symlink() or meta.is_symlink():
+            return baseline_corrupt_result(
+                repo, "active baseline artifacts must not be symlinks", packet_path=packet, metadata_path=meta, active_pointer_path=pointer, mode="pointer", active_build_id=build_id
+            )
         if not build_dir.exists() or not packet.exists():
             return baseline_corrupt_result(
                 repo,
@@ -161,6 +270,10 @@ def resolve_active_baseline(repo: str | Path) -> dict:
             "details": {},
         }
     legacy = paths["packet"]
+    if legacy.is_symlink() or paths["baseline_meta"].is_symlink():
+        return baseline_corrupt_result(
+            repo, "legacy baseline artifacts must not be symlinks", packet_path=legacy, metadata_path=paths["baseline_meta"], mode="legacy"
+        )
     if legacy.exists():
         legacy_artifacts = {
             "manifest.json",
@@ -223,6 +336,9 @@ def validate_baseline(repo: str | Path) -> dict:
         return resolved
     packet = repo / resolved["packet_path"] if resolved.get("packet_path") else None
     meta = repo / resolved["metadata_path"] if resolved.get("metadata_path") else None
+    ancestor_error = _baseline_ancestor_error(repo)
+    if ancestor_error:
+        return baseline_corrupt_result(repo, ancestor_error, packet_path=packet, metadata_path=meta, mode=resolved.get("mode", "none"))
     corrupt = _validate_packet_artifacts(repo, packet)
     if corrupt:
         corrupt.update(
@@ -234,29 +350,39 @@ def validate_baseline(repo: str | Path) -> dict:
             }
         )
         return corrupt
-    if meta and meta.exists():
-        _, err = _read_json_file(meta)
-        if err:
-            return baseline_corrupt_result(
-                repo,
-                f"metadata.json {err}",
-                packet_path=packet,
-                metadata_path=meta,
-                active_pointer_path=(
-                    repo / resolved["active_pointer_path"]
-                    if resolved.get("active_pointer_path")
-                    else None
-                ),
-                mode=resolved.get("mode", "none"),
-                active_build_id=resolved.get("active_build_id"),
-            )
+    ancestor_error = _baseline_ancestor_error(repo)
+    if ancestor_error:
+        return baseline_corrupt_result(repo, ancestor_error, packet_path=packet, metadata_path=meta, mode=resolved.get("mode", "none"))
+    if resolved.get("mode") == "pointer" and resolved.get("active_build_id"):
+        _, err = _read_repo_json_nofollow(
+            repo,
+            (".sourcepack", "baseline", "builds", str(resolved["active_build_id"]), "metadata.json"),
+        )
+    else:
+        _, err = _read_repo_json_nofollow(repo, (".sourcepack", "baseline", "metadata.json"))
+        if err == "missing":
+            err = None
+    if err:
+        return baseline_corrupt_result(
+            repo,
+            f"metadata.json {err}",
+            packet_path=packet,
+            metadata_path=meta,
+            active_pointer_path=(
+                repo / resolved["active_pointer_path"]
+                if resolved.get("active_pointer_path")
+                else None
+            ),
+            mode=resolved.get("mode", "none"),
+            active_build_id=resolved.get("active_build_id"),
+        )
     paths = sourcepack_paths(repo)
-    stale = paths["stale_marker"].exists()
-    stale_details = None
-    if stale:
-        stale_details, err = _read_json_file(paths["stale_marker"])
-        if err:
-            stale_details = {"reason": "unreadable"}
+    stale_details, stale_error = _read_repo_json_nofollow(
+        repo, (".sourcepack", "state", "baseline_stale.json")
+    )
+    stale = stale_error != "missing"
+    if stale_error:
+        stale_details = {"reason": "unreadable", "acquisition_error": stale_error}
     return {
         "ok": True,
         "state": "stale" if stale else "present",

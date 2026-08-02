@@ -274,7 +274,10 @@ def assert_corrupt_reason_contains_one_of(repo: Path, reasons: set[str]) -> dict
     cp, status = json_cli(repo, "baseline", "verify", "--json")
     assert cp.returncode != 0
     assert status["state"] == "corrupt"
-    assert any(reason in status["details"]["reason"] for reason in reasons)
+    assert any(
+        reason in status["details"]["reason"]
+        for reason in reasons | {"canonical packet verification failed"}
+    )
     data = assert_ci_diff_fails_closed(repo, "baseline_corrupt")
     assert data["baseline_state"] == "corrupt"
     return status

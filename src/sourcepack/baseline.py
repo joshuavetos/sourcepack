@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -203,67 +205,14 @@ def resolve_active_baseline(repo: str | Path) -> dict:
 
 
 def _validate_packet_artifacts(repo: Path, packet: Path) -> dict | None:
-    required = ["manifest.json", "receipt.json", "reality_map.json"]
-    for name in required:
-        if not (packet / name).exists():
-            return baseline_corrupt_result(
-                repo, f"active packet missing {name}", packet_path=packet
-            )
-    for name in [
-        "manifest.json",
-        "receipt.json",
-        "reality_map.json",
-        "token_report.json",
-        "redactions.json",
-    ]:
-        path = packet / name
-        if path.exists():
-            _, err = _read_json_file(path)
-            if err:
-                return baseline_corrupt_result(
-                    repo, f"{name} {err}", packet_path=packet
-                )
-    receipt, err = _read_json_file(packet / "receipt.json")
-    if err:
-        return baseline_corrupt_result(repo, f"receipt.json {err}", packet_path=packet)
-    hashes = receipt.get("hashes")
-    if not isinstance(hashes, dict) or not hashes:
+    from .packet import verify_packet
+
+    with redirect_stdout(io.StringIO()):
+        verified = verify_packet(packet)
+    if not verified:
         return baseline_corrupt_result(
-            repo, "receipt.json has no hashes", packet_path=packet
+            repo, "canonical packet verification failed", packet_path=packet
         )
-    for name, expected in hashes.items():
-        if not isinstance(name, str) or not isinstance(expected, str):
-            return baseline_corrupt_result(
-                repo, "receipt.json contains invalid hash entry", packet_path=packet
-            )
-        if Path(name).is_absolute() or ".." in Path(name).parts:
-            return baseline_corrupt_result(
-                repo, "receipt.json tracks unsafe artifact path", packet_path=packet
-            )
-        packet_root = packet.resolve()
-        path = (packet / name).resolve()
-        try:
-            path.relative_to(packet_root)
-        except ValueError:
-            return baseline_corrupt_result(
-                repo, "receipt.json tracks path outside packet", packet_path=packet
-            )
-        if not path.exists():
-            return baseline_corrupt_result(
-                repo, f"receipt-tracked artifact missing: {name}", packet_path=packet
-            )
-        try:
-            actual = sha256_file(path)
-        except OSError as exc:
-            return baseline_corrupt_result(
-                repo,
-                f"receipt-tracked artifact unreadable: {name}: {exc}",
-                packet_path=packet,
-            )
-        if actual != expected:
-            return baseline_corrupt_result(
-                repo, f"receipt hash mismatch: {name}", packet_path=packet
-            )
     return None
 
 

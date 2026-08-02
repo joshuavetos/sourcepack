@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tomllib
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -666,14 +667,36 @@ def load_manifest(packet: Path) -> dict:
 
 
 def _load_verification_json(path: Path, byte_limit: int) -> dict:
-    with path.open("rb") as handle:
-        raw = handle.read(byte_limit + 1)
-    if len(raw) > byte_limit:
-        raise ValueError(f"{path.name} exceeds {byte_limit} byte verification limit")
+    raw = _read_stable_verification_file(path, byte_limit)
     value = json.loads(raw)
     if not isinstance(value, dict):
         raise ValueError(f"{path.name} must contain a JSON object")
     return value
+
+
+def _read_stable_verification_file(path: Path, byte_limit: int) -> bytes:
+    """Read a regular file through one descriptor and reject boundary-changing races."""
+    before = path.stat(follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode) or before.st_size > byte_limit:
+        raise ValueError("not a regular file or byte limit exceeded")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("file changed before verification read")
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            raw = handle.read(byte_limit + 1)
+        after = os.fstat(fd)
+    finally:
+        os.close(fd)
+    if len(raw) > byte_limit:
+        raise ValueError("byte limit exceeded during verification read")
+    if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (
+        opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns
+    ) or len(raw) != opened.st_size:
+        raise ValueError("file changed during verification read")
+    return raw
 
 
 def _confined_verification_file(root: Path, raw_path: object) -> tuple[Path | None, str | None]:
@@ -743,23 +766,30 @@ def verify_packet(
     if len(hashes) > record_limit:
         print(f"FAIL packet verification record limit exceeded: {record_limit}")
         return False
+    if "receipt.json" in hashes or "manifest.json" not in hashes:
+        print("FAIL receipt.json has incoherent artifact coverage")
+        return False
+    digest_pattern = re.compile(r"^[0-9a-f]{64}$")
     bytes_read = 0
     for name, expected in hashes.items():
+        if not isinstance(expected, str) or digest_pattern.fullmatch(expected) is None:
+            print(f"FAIL invalid receipt hash for {name!r}")
+            return False
         path, path_error = _confined_verification_file(packet, name)
         if path_error or path is None:
             print(f"FAIL unsafe packet artifact {name!r}: {path_error}")
             return False
-        try:
-            size = path.stat().st_size
-        except OSError:
-            print(f"FAIL {name} unreadable")
-            ok = False
-            continue
-        if size > file_byte_limit or bytes_read + size > aggregate_byte_limit:
+        remaining = min(file_byte_limit, aggregate_byte_limit - bytes_read)
+        if remaining < 0:
             print(f"FAIL packet verification byte limit exceeded at {name}")
             return False
-        bytes_read += size
-        actual = sha256_file(path)
+        try:
+            raw = _read_stable_verification_file(path, remaining)
+        except (OSError, ValueError):
+            print(f"FAIL packet verification byte limit or stable-read check failed at {name}")
+            return False
+        bytes_read += len(raw)
+        actual = hashlib.sha256(raw).hexdigest()
         if actual == expected:
             print(f"PASS {name}")
         else:
@@ -794,36 +824,46 @@ def verify_packet(
         if any(not isinstance(rec, dict) or not isinstance(rec.get("relative_path"), str) for rec in included_records):
             print("FAIL manifest included-file records are malformed")
             return False
-        included = {rec["relative_path"]: rec for rec in included_records}
+        relative_paths = [rec["relative_path"] for rec in included_records]
+        if len(set(relative_paths)) != len(relative_paths):
+            print("FAIL manifest contains duplicate relative_path values")
+            return False
+        included = dict(zip(relative_paths, included_records))
         for rel, rec in included.items():
             source_file, path_error = _confined_verification_file(source, rel)
             if path_error or source_file is None:
                 print(f"FAIL unsafe source file {rel!r}: {path_error}")
                 return False
-            if is_probably_binary(source_file):
+            has_source_hash = rec.get("source_sha256") is not None
+            expected_source_hash = rec.get("source_sha256") if has_source_hash else rec.get("sha256")
+            if not isinstance(expected_source_hash, str) or digest_pattern.fullmatch(expected_source_hash) is None:
+                print(f"FAIL invalid source hash for {rel!r}")
+                return False
+            remaining = min(file_byte_limit, aggregate_byte_limit - bytes_read)
+            try:
+                raw = _read_stable_verification_file(source_file, remaining)
+            except (OSError, ValueError):
+                print(f"FAIL source verification byte limit or stable-read check failed at {rel}")
+                return False
+            bytes_read += len(raw)
+            if b"\x00" in raw[:1024]:
                 print(f"WARN source now binary {rel}")
+                content_hash = hashlib.sha256(raw).hexdigest()
             else:
                 try:
-                    size = source_file.stat().st_size
-                    if size > file_byte_limit or bytes_read + size > aggregate_byte_limit:
-                        print(f"FAIL source verification byte limit exceeded at {rel}")
-                        return False
-                    bytes_read += size
-                    content = source_file.read_text(encoding="utf-8")
-                except OSError:
+                    content = raw.decode("utf-8")
+                except UnicodeDecodeError:
                     print(f"FAIL source unreadable {rel}")
                     ok = False
                     continue
-                expected_source_hash = rec.get("source_sha256")
-                if expected_source_hash is None:
-                    expected_source_hash = rec.get("sha256")
+                if not has_source_hash:
                     redacted, _ = redact_secrets(content)
                     content_hash = sha256_text(redacted)
                 else:
                     content_hash = sha256_text(content)
-                if content_hash != expected_source_hash:
-                    print(f"FAIL source changed {rel}")
-                    ok = False
+            if content_hash != expected_source_hash:
+                print(f"FAIL source changed {rel}")
+                ok = False
 
         scanner = SourceScanner(source).scan()
         if not scanner.authority["complete"]:

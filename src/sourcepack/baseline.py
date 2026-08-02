@@ -17,7 +17,7 @@ from .git import (
     run_git,
     run_git_bytes,
 )
-from .paths import ensure_sourcepack_dirs, sourcepack_paths
+from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_paths
 
 DEFAULT_SOURCEPACKIGNORE = (
     "# SourcePack ignore rules\n.env\nnode_modules/\ndist/\nbuild/\n"
@@ -487,6 +487,9 @@ def build_current_baseline(
     force: bool = False,
 ) -> tuple[dict, bool]:
     repo = Path(repo).resolve()
+    _, gitignore_error = ensure_gitignore_entry(repo)
+    if gitignore_error:
+        raise RuntimeError(f"Cannot configure SourcePack ignore entry: {gitignore_error}")
     dirty, dirty_state = _git_worktree_dirty(repo)
     if dirty_state in {"git_unavailable", "git_timeout", "git_error"}:
         raise RuntimeError(

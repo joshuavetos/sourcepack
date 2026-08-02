@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Final
@@ -60,9 +61,46 @@ def _clean_diff_path(path: str) -> tuple[str, bool]:
     path = path.strip().split("\t", 1)[0]
 
     if len(path) >= 2 and path[0] == path[-1] == '"':
-        path = path[1:-1]
+        try:
+            decoded = json.loads(path)
+        except json.JSONDecodeError:
+            return path, True
+        if not isinstance(decoded, str):
+            return path, True
+        path = decoded
 
     return normalize_diff_path(path)
+
+
+def quote_git_path(path: str) -> str:
+    """Return an unambiguous quoted path for a synthetic Git diff header."""
+    if not any(character.isspace() or character in {'"', '\\'} or ord(character) < 32 or ord(character) > 126 for character in path):
+        return path
+    return json.dumps(path, ensure_ascii=True)
+
+
+def _diff_git_paths(header: str) -> tuple[str, str] | None:
+    decoder = json.JSONDecoder()
+    rest = header.removeprefix("diff --git ").lstrip()
+    values: list[str] = []
+    for _ in range(2):
+        if not rest:
+            return None
+        if rest.startswith('"'):
+            try:
+                value, end = decoder.raw_decode(rest)
+            except json.JSONDecodeError:
+                return None
+            if not isinstance(value, str):
+                return None
+            rest = rest[end:].lstrip()
+        else:
+            value, separator, rest = rest.partition(" ")
+            if not separator and len(values) == 0:
+                return None
+            rest = rest.lstrip()
+        values.append(value)
+    return values[0], values[1]
 
 
 def parse_unified_diff(text: str) -> list[PatchFileChange]:
@@ -124,11 +162,11 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
     for line in text.splitlines():
         if line.startswith("diff --git "):
             reset_file_state()
-            parts = line.split()
+            header_paths = _diff_git_paths(line)
 
-            if len(parts) >= 4:
-                parsed_old, old_unsafe = _clean_diff_path(parts[2])
-                parsed_new, new_unsafe = _clean_diff_path(parts[3])
+            if header_paths is not None:
+                parsed_old, old_unsafe = _clean_diff_path(header_paths[0])
+                parsed_new, new_unsafe = _clean_diff_path(header_paths[1])
                 old_path = parsed_old or old_path
                 new_path = parsed_new or new_path
                 mark_unsafe(old_unsafe or new_unsafe)

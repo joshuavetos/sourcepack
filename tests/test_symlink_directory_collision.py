@@ -159,11 +159,85 @@ def test_entry_and_depth_limits_are_lower_bounds_and_fail(repo: Path) -> None:
 def test_read_failure_is_not_safe(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (repo / "books_out").mkdir()
     import sourcepack.worktree_collision as collision
-    real_scandir = collision.os.scandir
-    monkeypatch.setattr(collision.os, "scandir", lambda path: (_ for _ in ()).throw(PermissionError()) if Path(path).name == "books_out" else real_scandir(path))
+    monkeypatch.setattr(collision.os, "listdir", lambda path: (_ for _ in ()).throw(PermissionError()))
     inspection = inspect(repo, change())
     assert inspection["acquisition_status"] == "read_failed"
     assert inspection["source_exhausted"] is False
+
+
+@pytest.mark.parametrize("unsafe", ["", "/outside", "../outside", r"..\outside", r"C:\outside", "C:relative", r"\\server\share", r"\\?\C:\path"])
+def test_direct_inspection_rejects_unsafe_change_paths(repo: Path, unsafe: str) -> None:
+    proposed = change(unsafe)
+    proposed.unsafe_path = False
+    result = inspect(repo, proposed)
+    assert result["acquisition_status"] == "unsafe_proposed_path"
+    assert result["source_exhausted"] is False
+
+
+@pytest.mark.parametrize(("target", "classification"), [
+    (r"..\outside", "escapes_repository"),
+    (r"\rooted", "windows_rooted"),
+    (r"\\server\share", "windows_unc"),
+    (r"\\?\C:\path", "windows_device_path"),
+    (r"C:\path", "windows_drive_qualified"),
+    ("C:relative", "windows_drive_qualified"),
+    ("", "malformed"),
+    ("safe/target", "confined_relative"),
+])
+def test_platform_neutral_target_classification(repo: Path, target: str, classification: str) -> None:
+    result = classify_symlink_target(repo, "link", target)
+    assert result["classification"] == classification
+    assert result["unsafe"] is (classification != "confined_relative")
+
+
+def test_custom_limits_are_enforced_and_reported_identically(repo: Path) -> None:
+    directory = repo / "books_out"
+    directory.mkdir()
+    for name in ("a", "b"):
+        (directory / name).write_text(name, encoding="utf-8")
+    envelope = inspect_symlink_transitions(
+        repo, [change()], tracked_paths=set(), tracked_authority={"source": "test", "status": "complete", "complete": True, "reason": None},
+        transition_limit=3, total_entry_limit=4, per_transition_entry_limit=2, depth_limit=1,
+        total_evidence_limit=1, per_transition_evidence_limit=1, string_limit=5,
+        ignore_input_limit_bytes=1234, ignore_output_limit_bytes=2345,
+    )
+    inspection = envelope["inspections"][0]
+    assert inspection["limits"] == envelope["limits"] == {
+        "transition_limit": 3, "total_entry_limit": 4, "per_transition_entry_limit": 2,
+        "depth_limit": 1, "total_evidence_limit": 1, "per_transition_evidence_limit": 1,
+        "string_limit": 5, "ignore_input_limit_bytes": 1234, "ignore_output_limit_bytes": 2345,
+    }
+    assert inspection["evidence_retained"] == envelope["evidence_retained"] == 1
+    assert inspection["evidence_limit_reached"] is envelope["evidence_limit_reached"] is True
+    assert inspection["evidence_omitted_lower_bound"] == envelope["evidence_omitted_lower_bound"] == 1
+    assert inspection["source_exhausted"] is True
+
+
+def test_long_evidence_uses_full_path_for_identity_and_ignore(repo: Path) -> None:
+    prefix = "x" * 40
+    directory = repo / "books_out"
+    directory.mkdir()
+    (directory / f"{prefix}a.ignored").write_text("a", encoding="utf-8")
+    (directory / f"{prefix}b").write_text("b", encoding="utf-8")
+    result = inspect_symlink_transition(
+        repo, change(), tracked_paths=set(),
+        tracked_authority={"source": "test", "status": "complete", "complete": True, "reason": None},
+        string_limit=12,
+    )
+    assert result["ignored_observed"] is True
+    assert result["untracked_observed"] is True
+    assert len(result["retained_entries"]) == 2
+    assert all(item["path_truncated"] for item in result["retained_entries"])
+
+
+def test_evidence_exact_boundary_is_not_exhausted(repo: Path) -> None:
+    directory = repo / "books_out"
+    directory.mkdir()
+    (directory / "only").write_text("x", encoding="utf-8")
+    result = inspect(repo, change(), evidence_limit=1)
+    assert result["evidence_retained"] == 1
+    assert result["evidence_limit_reached"] is False
+    assert result["evidence_omitted_lower_bound"] == 0
 
 
 def test_report_json_and_replay_preserve_finding_and_incomplete_authority(repo: Path, tmp_path: Path) -> None:

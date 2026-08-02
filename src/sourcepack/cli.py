@@ -2363,6 +2363,8 @@ REASON_EXPLANATIONS = {
     "declared_command": "The same patch declares command support and uses it; SourcePack requires review instead of treating it as established baseline evidence.",
     "command_manifest_missing": "A command check needed a local manifest/config file, but none was available.",
     "command_check_inconclusive": "SourcePack recognized the command family but could not safely infer support from dynamic or ambiguous config.",
+    "symlink_replaces_nonempty_directory": "A proposed symlink collides with a live nonempty real directory whose ignored or untracked contents are absent from the Git transition.",
+    "symlink_worktree_inspection_incomplete": "SourcePack could not completely acquire the current or prior worktree evidence required to judge a proposed symlink transition.",
 }
 
 def _policy_dir(repo: Path) -> Path:

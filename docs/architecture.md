@@ -115,6 +115,26 @@ JSON compatibility is additive: existing fields are not removed or renamed. The 
 
 ### Producer-side construction bounds
 
+Symlink-transition worktree acquisition is a canonical producer before report projection. It uses
+the already selected trusted tracked-path authority: the bounded base-tree inventory for range
+review, or the integrity-checked baseline packet inventory for local and supplied-patch review. It
+does not reacquire `git ls-files` per transition or silently substitute the current index. Per
+report it retains at most 64 proposed symlink transitions, inspects at most 2,048 filesystem entries
+in aggregate and 512 per transition, descends at most eight directory levels, retains at most 128
+entry records in aggregate and 32 per transition, and bounds individual strings to 4,096
+characters. Ignored-status classification uses one bounded `git check-ignore --stdin -z` call with
+256 KiB input and output budgets; timeout, unavailable Git, OS failure, ordinary Git failure, and
+output/input boundaries remain failed or bounded acquisition rather than being labeled untracked.
+
+The producer distinguishes observed pre-transition objects from a current post-transition symlink.
+If the current path is already the resulting symlink, historical directory state is unavailable
+unless separately preserved evidence exists; SourcePack does not reconstruct deleted ignored data.
+A proven nonempty real-directory collision and incomplete acquisition use distinct canonical reason
+codes. Any transition, traversal, aggregate, metadata, tracked-authority, ignored-status, or
+historical-state boundary produces incomplete authority and cannot become PASS through report
+rebuilding, replay, policy, or Command Center projection. These bounds do not prove the absence of
+filesystem races, prevent every data-loss event, or detect every possible symlink cycle.
+
 Command Center transport projection is not a producer limit. Before projection, its three
 repository-controlled producer paths enforce independent limits:
 

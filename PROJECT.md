@@ -13,6 +13,16 @@
   those authority/completeness contracts does not reopen this project without a demonstrated
   regression against them.
 
+- Directory-to-symlink collision judgment uses the trusted baseline inventory (or the explicitly
+  acquired base tree for range review) once per report, never a per-link current-index substitute.
+  It bounds proposed transitions, aggregate and per-transition entries, traversal depth, retained
+  evidence, strings, and batched `git check-ignore --stdin -z` input/output. Proven nonempty real
+  directories with content outside trusted tracked evidence fail as
+  `symlink_replaces_nonempty_directory`; producer limits, acquisition failures, symlinked parent
+  components, and unavailable historical state fail separately as
+  `symlink_worktree_inspection_incomplete`. A current resulting symlink is post-transition evidence,
+  not proof of what occupied the path earlier.
+
 - Fleet artifact discovery and packet-output cleanup now have deterministic producer-owned entry, depth, record, file-byte, aggregate-byte, and cleanup limits. Decision-ledger metadata keeps artifact-path discovery counts and event consumption/retention counts in separate envelopes with independent limits, and ledger reads stop after one valid-event overflow probe. Structured outcomes distinguish complete, boundary-incomplete, and failed work without treating retained prefixes as exhaustive; cleanup remains symlink-safe and path-confined. This bounds operational resource use and cleanup completeness, not repository correctness, security, runtime validity, complete external fleet discovery, or PASS authority.
 
 - Canonical report loading/construction, effective-policy inputs, and persisted-decision dashboard iteration now stop at producer-owned byte, record, collection, string, and nesting limits before Command Center projection. Finding truncation propagates incomplete authority through report, overview, replay-evidence, and Command Center states; ledger metadata distinguishes consumed from retained records while reads use a strict total-byte budget plus one probe and whitespace-aware bounded look-ahead.

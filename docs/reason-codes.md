@@ -2,6 +2,23 @@
 
 SourcePack reason codes explain why a repo-state transition is `PASS`, `WARN`, or `FAIL`.
 
+## symlink_replaces_nonempty_directory
+
+- **Verdict:** `FAIL`.
+- **Meaning:** A proposed Git result uses symlink mode `120000`, while that path is a live, real directory containing entries absent from the selected trusted tracked-path evidence and the symlink diff. Completed batched ignored-status acquisition further classifies those entries as ignored or untracked; failed classification is reported as incomplete rather than guessed.
+- **Evidence contract:** SourcePack performs deterministic, bounded, no-follow inspection. It records entry, nesting-depth, retained-evidence, and string limits; reports exact counts only after exhaustion; reports lower bounds at a limit; and records failed or incomplete acquisition rather than treating uncertainty as empty or safe.
+- **Target classification:** The proposed blob target is classified as confined relative, absolute POSIX, Windows drive-qualified, repository-escaping, self-referential, directly cyclic between proposed links, malformed, or unavailable. Target risk strengthens context; hidden directory content is independently blocking.
+- **Likely fix:** Inspect and preserve the directory, intentionally back up ignored or untracked content, remove the collision only after review, correct unsafe targets, and rerun SourcePack.
+- **Limits:** This check does not guarantee prevention of every data-loss event, detect every filesystem race, or prove every possible symlink cycle.
+
+## symlink_worktree_inspection_incomplete
+
+- **Verdict:** `FAIL`.
+- **Meaning:** SourcePack could not completely acquire the trusted tracked-path, live worktree, historical pre-transition, traversal, or ignored-status evidence required to judge a proposed symlink transition. This code does not claim that a nonempty directory was proved.
+- **Authority:** Report authority is incomplete. Transition, aggregate-entry, retained-evidence, depth, Git-input, and Git-output boundaries remain lower-bound evidence and cannot become PASS through policy, replay, or Command Center projection.
+- **Likely fix:** Restore or provide trustworthy pre-transition evidence, reduce the proposed change to the producer limits, resolve filesystem or Git acquisition failures, and rerun SourcePack.
+- **Limits:** When the current worktree already contains the resulting symlink, SourcePack records a post-transition observation and cannot reconstruct a previously displaced ignored directory without separately preserved prior evidence.
+
 Reason codes are machine-readable identifiers. Human-readable messages may change, but canonical reason-code IDs should remain stable.
 
 The canonical vocabulary lives in:

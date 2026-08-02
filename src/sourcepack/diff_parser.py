@@ -118,10 +118,18 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
 
     current_unsafe = False
     malformed = False
+    hunk_old_remaining = 0
+    hunk_new_remaining = 0
+    in_hunk = False
+
+    def finish_hunk() -> None:
+        nonlocal in_hunk
+        in_hunk = False
 
     def reset_file_state() -> None:
         nonlocal current, old_path, new_path, new_file, deleted_file, operation, current_unsafe, old_mode, new_mode
 
+        finish_hunk()
         if current is not None:
             changes.append(current)
 
@@ -160,6 +168,35 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
         )
 
     for line in text.splitlines():
+        # Hunk payload prefixes take precedence over header-like text.  A real
+        # added line may itself begin with ``+++``, ``---``, or ``diff --git``.
+        if in_hunk and (
+            line.startswith(("diff --git ", "@@ "))
+            or (
+                hunk_old_remaining <= 0
+                and hunk_new_remaining <= 0
+                and not line.startswith(("+", "-", " ", r"\ No newline at end of file"))
+            )
+        ):
+            finish_hunk()
+        if in_hunk:
+            if line == r"\ No newline at end of file":
+                continue
+            if line.startswith("+"):
+                current.added_lines.append(line[1:])
+                current.diff_lines.append(line)
+                hunk_new_remaining -= 1
+            elif line.startswith("-"):
+                current.diff_lines.append(line)
+                hunk_old_remaining -= 1
+            elif line.startswith(" "):
+                current.diff_lines.append(line)
+                hunk_old_remaining -= 1
+                hunk_new_remaining -= 1
+            else:
+                malformed = True
+            continue
+
         if line.startswith("diff --git "):
             reset_file_state()
             header_paths = _diff_git_paths(line)
@@ -262,28 +299,58 @@ def parse_unified_diff(text: str) -> list[PatchFileChange]:
             continue
 
         if line.startswith("@@ "):
+            finish_hunk()
             if current is None:
                 malformed = True
             else:
                 current.diff_lines.append(line)
+                match = re.match(r"^@@ -(?:\d+)(?:,(\d+))? \+(?:\d+)(?:,(\d+))? @@(?: |$)", line)
+                if match is None:
+                    malformed = True
+                else:
+                    hunk_old_remaining = int(match.group(1) or "1")
+                    hunk_new_remaining = int(match.group(2) or "1")
+                    in_hunk = True
             continue
 
         if current is None:
             continue
 
+        if line == r"\ No newline at end of file":
+            if current is None:
+                malformed = True
+            continue
+
         if line.startswith("+") and not line.startswith("+++"):
+            if not in_hunk or hunk_new_remaining <= 0:
+                malformed = True
+                continue
             current.added_lines.append(line[1:])
             current.diff_lines.append(line)
+            hunk_new_remaining -= 1
             continue
 
         if line.startswith("-") and not line.startswith("---"):
+            if not in_hunk or hunk_old_remaining <= 0:
+                malformed = True
+                continue
             current.diff_lines.append(line)
+            hunk_old_remaining -= 1
             continue
 
         if line.startswith(" "):
+            if not in_hunk or hunk_old_remaining <= 0 or hunk_new_remaining <= 0:
+                malformed = True
+                continue
             current.diff_lines.append(line)
+            hunk_old_remaining -= 1
+            hunk_new_remaining -= 1
             continue
 
+        if in_hunk:
+            malformed = True
+
+    finish_hunk()
     if current is not None:
         changes.append(current)
 

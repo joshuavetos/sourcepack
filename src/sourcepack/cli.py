@@ -21,7 +21,11 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
-from .baseline import build_current_baseline as canonical_build_current_baseline
+from .baseline import (
+    build_current_baseline as canonical_build_current_baseline,
+    resolve_active_baseline as canonical_resolve_active_baseline,
+    validate_baseline as canonical_validate_baseline,
+)
 from .ecosystems.python import PY_IMPORT_ALIASES
 from .packet import PacketWriter, SourceScanner, sourcepack_bootstrap_file, verify_packet as canonical_verify_packet
 from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_paths
@@ -1096,33 +1100,7 @@ def baseline_corrupt_result(repo: Path, message: str, details: dict | None = Non
 
 
 def resolve_active_baseline(repo: str | Path) -> dict:
-    repo = Path(repo).resolve(); paths = sourcepack_paths(repo); pointer = paths["active_pointer"]
-    if pointer.exists():
-        data, err = _read_json_file(pointer)
-        if err:
-            return baseline_corrupt_result(repo, f"active.json {err}", active_pointer_path=pointer, mode="pointer")
-        build_id = data.get("active_build_id")
-        if not isinstance(build_id, str) or not build_id or "/" in build_id or "\\" in build_id or build_id in {".", ".."}:
-            return baseline_corrupt_result(repo, "active.json has invalid active_build_id", active_pointer_path=pointer, mode="pointer")
-        build_dir = (paths["builds"] / build_id).resolve(); builds_dir = paths["builds"].resolve()
-        try:
-            build_dir.relative_to(builds_dir)
-        except ValueError:
-            return baseline_corrupt_result(repo, "active.json points outside baseline builds", active_pointer_path=pointer, mode="pointer", active_build_id=build_id)
-        packet = build_dir / "packet"; meta = build_dir / "metadata.json"
-        if not build_dir.exists() or not packet.exists():
-            return baseline_corrupt_result(repo, "active.json points to a missing build", packet_path=packet, metadata_path=meta, active_pointer_path=pointer, mode="pointer", active_build_id=build_id)
-        return {"ok": True, "state": "resolved", "mode": "pointer", "packet_path": _rel_to_repo(repo, packet), "metadata_path": _rel_to_repo(repo, meta), "active_pointer_path": _rel_to_repo(repo, pointer), "active_build_id": build_id, "details": {}}
-    legacy = paths["packet"]
-    if legacy.exists():
-        legacy_artifacts = {"manifest.json", "receipt.json", "reality_map.json", "context.md", "ai_instructions.md"}
-        present = {child.name for child in legacy.iterdir()} if legacy.is_dir() else set()
-        if (legacy / "manifest.json").exists():
-            return {"ok": True, "state": "resolved", "mode": "legacy", "packet_path": _rel_to_repo(repo, legacy), "metadata_path": _rel_to_repo(repo, paths["baseline_meta"]), "active_pointer_path": None, "active_build_id": None, "details": {}}
-        if present & legacy_artifacts:
-            return baseline_corrupt_result(repo, "legacy baseline packet has baseline artifacts but is missing manifest.json", packet_path=legacy, mode="legacy")
-    return {"ok": False, "state": "missing", "finding_id": "baseline_missing", "message": "No trusted SourcePack baseline exists while changes are present.", "details": {}, "packet_path": None, "metadata_path": None, "active_pointer_path": None, "mode": "none", "active_build_id": None}
-
+    return canonical_resolve_active_baseline(repo)
 
 def _validate_packet_artifacts(repo: Path, packet: Path) -> dict | None:
     required = ["manifest.json", "receipt.json", "reality_map.json"]
@@ -1164,29 +1142,7 @@ def _validate_packet_artifacts(repo: Path, packet: Path) -> dict | None:
 
 
 def validate_baseline(repo: str | Path) -> dict:
-    repo = Path(repo).resolve(); resolved = resolve_active_baseline(repo)
-    if resolved.get("state") == "corrupt":
-        return resolved
-    if resolved.get("state") == "missing":
-        return resolved
-    packet = repo / resolved["packet_path"] if resolved.get("packet_path") else None
-    meta = repo / resolved["metadata_path"] if resolved.get("metadata_path") else None
-    corrupt = _validate_packet_artifacts(repo, packet)
-    if corrupt:
-        corrupt.update({"mode": resolved.get("mode", "none"), "metadata_path": resolved.get("metadata_path"), "active_pointer_path": resolved.get("active_pointer_path"), "active_build_id": resolved.get("active_build_id")})
-        return corrupt
-    if meta and meta.exists():
-        _, err = _read_json_file(meta)
-        if err:
-            return baseline_corrupt_result(repo, f"metadata.json {err}", packet_path=packet, metadata_path=meta, active_pointer_path=repo / resolved["active_pointer_path"] if resolved.get("active_pointer_path") else None, mode=resolved.get("mode", "none"), active_build_id=resolved.get("active_build_id"))
-    paths = sourcepack_paths(repo); stale = paths["stale_marker"].exists()
-    stale_details = None
-    if stale:
-        stale_details, err = _read_json_file(paths["stale_marker"])
-        if err:
-            stale_details = {"reason": "unreadable"}
-    return {"ok": True, "state": "stale" if stale else "present", "finding_id": "baseline_stale" if stale else None, "message": "Trusted SourcePack baseline may not match current repo state." if stale else "Trusted SourcePack baseline is present.", "details": {"stale_details": stale_details} if stale else {}, "packet_path": resolved.get("packet_path"), "metadata_path": resolved.get("metadata_path"), "active_pointer_path": resolved.get("active_pointer_path"), "mode": resolved.get("mode"), "active_build_id": resolved.get("active_build_id")}
-
+    return canonical_validate_baseline(repo)
 
 def acquire_baseline_lock(repo: str | Path, command: str | None = None) -> tuple[Path, int]:
     paths = ensure_sourcepack_dirs(repo); lock = paths["baseline_lock"]

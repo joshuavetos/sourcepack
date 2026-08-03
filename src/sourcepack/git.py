@@ -23,21 +23,24 @@ class GitProducerIncompleteError(RuntimeError):
 
 def _bounded_process(repo: Path, args: list[str], limit: int, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
     """Drain git incrementally, killing it before retained output exceeds limit."""
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+        raise ValueError("output limit must be a non-negative integer")
     command = ["git", *args]
     process = subprocess.Popen(command, cwd=repo, stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    assert process.stdout is not None and process.stderr is not None
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
-    input_offset = 0
-    if input_bytes is not None:
-        assert process.stdin is not None
-        selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+    selector: selectors.BaseSelector | None = None
     chunks: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
     retained = 0
-    deadline = time.monotonic() + GIT_TIMEOUT_SECONDS
     state = "complete"
     try:
+        assert process.stdout is not None and process.stderr is not None
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        input_offset = 0
+        if input_bytes is not None:
+            assert process.stdin is not None
+            selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+        deadline = time.monotonic() + GIT_TIMEOUT_SECONDS
         while selector.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -77,13 +80,26 @@ def _bounded_process(repo: Path, args: list[str], limit: int, input_bytes: bytes
                 retained += len(data)
             if state != "complete":
                 break
-        process.wait()
     finally:
-        selector.close()
-        process.stdout.close()
-        process.stderr.close()
-        if process.stdin is not None and not process.stdin.closed:
-            process.stdin.close()
+        try:
+            if process.poll() is None:
+                try:
+                    process.kill()
+                finally:
+                    process.wait()
+            else:
+                process.wait()
+        finally:
+            try:
+                if selector is not None:
+                    selector.close()
+            finally:
+                if process.stdout is not None:
+                    process.stdout.close()
+                if process.stderr is not None:
+                    process.stderr.close()
+                if process.stdin is not None and not process.stdin.closed:
+                    process.stdin.close()
     stdout = b"".join(chunks["stdout"])
     stderr = b"".join(chunks["stderr"])
     if state == "bounded":
@@ -97,6 +113,8 @@ def _bounded_process(repo: Path, args: list[str], limit: int, input_bytes: bytes
 
 def run_git_bounded(repo: str | Path, args: list[str], *, output_limit_bytes: int = GIT_OUTPUT_LIMIT_BYTES, text: bool = True) -> subprocess.CompletedProcess:
     """Acquire Git evidence with complete/bounded/failed states encoded by return code."""
+    if not isinstance(output_limit_bytes, int) or isinstance(output_limit_bytes, bool) or output_limit_bytes < 0:
+        raise ValueError("output limit must be a non-negative integer")
     cwd_failure = _cwd_error(repo)
     if cwd_failure is not None:
         result = _completed_git_process(args, cwd_failure.returncode, str(cwd_failure.stderr), stdout=b"" if not text else "")
@@ -116,8 +134,12 @@ def run_git_bounded(repo: str | Path, args: list[str], *, output_limit_bytes: in
     return result
 
 
-def run_git_bounded_input(repo: str | Path, args: list[str], input_bytes: bytes, *, input_limit_bytes: int, output_limit_bytes: int, text: bool = False) -> subprocess.CompletedProcess:
+def run_git_bounded_input(repo: str | Path, args: list[str], input_bytes: bytes, *, input_limit_bytes: int, output_limit_bytes: int, text: bool = False, accepted_returncodes: frozenset[int] = frozenset({0})) -> subprocess.CompletedProcess:
     """Run Git with bounded stdin and incrementally bounded combined output."""
+    if not isinstance(input_limit_bytes, int) or isinstance(input_limit_bytes, bool) or input_limit_bytes < 0:
+        raise ValueError("input limit must be a non-negative integer")
+    if not isinstance(output_limit_bytes, int) or isinstance(output_limit_bytes, bool) or output_limit_bytes < 0:
+        raise ValueError("output limit must be a non-negative integer")
     if len(input_bytes) > input_limit_bytes:
         cp = subprocess.CompletedProcess(["git", *args], GIT_RETURNCODE_OUTPUT_LIMIT, b"", b"git input exceeded producer limit")
         cp.acquisition_state = "bounded"
@@ -132,7 +154,12 @@ def run_git_bounded_input(repo: str | Path, args: list[str], input_bytes: bytes,
             cp = _completed_git_process(args, GIT_RETURNCODE_NOT_FOUND, b"git executable not found", stdout=b"")
         except OSError as exc:
             cp = _completed_git_process(args, GIT_RETURNCODE_OS_ERROR, _os_error_text(exc).encode("utf-8", "replace"), stdout=b"")
-    cp.acquisition_state = "bounded" if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "complete" if cp.returncode in {0, 1} else "failed"
+    if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT:
+        cp.acquisition_state = "bounded"
+    elif cp.returncode in {GIT_RETURNCODE_TIMEOUT, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_NOT_FOUND}:
+        cp.acquisition_state = "failed"
+    else:
+        cp.acquisition_state = "complete" if cp.returncode in accepted_returncodes else "failed"
     if not text:
         return cp
     result = subprocess.CompletedProcess(cp.args, cp.returncode, cp.stdout.decode("utf-8", "replace"), cp.stderr.decode("utf-8", "replace"))
@@ -168,14 +195,6 @@ def _git_failure_state(cp: subprocess.CompletedProcess[str]) -> str | None:
     return None
 
 
-def _timeout_output_text(value: str | bytes | None) -> str:
-    if isinstance(value, bytes):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, str):
-        return value
-    return ""
-
-
 def _cwd_error(repo: str | Path) -> subprocess.CompletedProcess[str] | None:
     cwd = Path(repo)
     if not cwd.exists():
@@ -191,85 +210,20 @@ def _os_error_text(exc: OSError) -> str:
 
 def run_git(repo: str | Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     """Run a bounded text-mode git command in repo without invoking a shell."""
-    cwd_failure = _cwd_error(repo)
-    if cwd_failure is not None:
-        cwd_failure.args = ["git", *args]
-        return cwd_failure
-    try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=Path(repo),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=GIT_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except FileNotFoundError:
-        return _completed_git_process(
-            args,
-            GIT_RETURNCODE_NOT_FOUND,
-            "git executable not found",
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = _timeout_output_text(exc.stdout)
-        stderr = _timeout_output_text(exc.stderr)
-
-        timeout_message = f"git command timed out after {GIT_TIMEOUT_SECONDS} seconds"
-        if stderr:
-            stderr = f"{stderr.rstrip()}\n{timeout_message}"
-        else:
-            stderr = timeout_message
-
-        return _completed_git_process(
-            args,
-            GIT_RETURNCODE_TIMEOUT,
-            stderr,
-            stdout=stdout,
-        )
-    except OSError as exc:
-        return _completed_git_process(args, GIT_RETURNCODE_OS_ERROR, _os_error_text(exc))
-
-
-def _timeout_output_bytes(value: str | bytes | None) -> bytes:
-    if isinstance(value, bytes):
-        return value
-    if isinstance(value, str):
-        return value.encode("utf-8", "surrogateescape")
-    return b""
+    return run_git_bounded(repo, args, text=True)
 
 
 def run_git_bytes(repo: str | Path, args: list[str]) -> subprocess.CompletedProcess[bytes]:
     """Run a bounded bytes-mode git command in repo without decoding stdout/stderr."""
-    cwd_failure = _cwd_error(repo)
-    if cwd_failure is not None:
-        return subprocess.CompletedProcess(["git", *args], cwd_failure.returncode, b"", str(cwd_failure.stderr).encode("utf-8", "replace"))
-    try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=Path(repo),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=GIT_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except FileNotFoundError:
-        return _completed_git_process(args, GIT_RETURNCODE_NOT_FOUND, b"git executable not found", stdout=b"")
-    except subprocess.TimeoutExpired as exc:
-        stdout = _timeout_output_bytes(exc.stdout)
-        stderr = _timeout_output_bytes(exc.stderr)
-        timeout_message = f"git command timed out after {GIT_TIMEOUT_SECONDS} seconds".encode("utf-8")
-        stderr = stderr.rstrip() + b"\n" + timeout_message if stderr else timeout_message
-        return _completed_git_process(args, GIT_RETURNCODE_TIMEOUT, stderr, stdout=stdout)
-    except OSError as exc:
-        return _completed_git_process(args, GIT_RETURNCODE_OS_ERROR, _os_error_text(exc).encode("utf-8", "replace"), stdout=b"")
+    return run_git_bounded(repo, args, text=False)
 
 
 _DEFAULT_RUN_GIT_BYTES = run_git_bytes
 
 
 def decode_git_path(raw: bytes) -> str:
-    return os.fsdecode(raw).replace("\\", "/")
+    path = os.fsdecode(raw)
+    return path.replace("\\", "/") if os.name == "nt" else path
 
 
 def split_nul_paths(raw: bytes) -> list[str]:

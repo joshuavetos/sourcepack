@@ -238,7 +238,7 @@ def _classify_ignored(repo: Path, inspections: list[dict], limits: dict) -> dict
                 entry.pop("_full_path", None)
         return {"status": "complete", "complete": True, "reason": None, "path_count": 0, "git_invocations": 0}
     encoded = b"".join(os.fsencode(path) + b"\0" for path in paths)
-    cp = run_git_bounded_input(repo, ["check-ignore", "--stdin", "-z"], encoded, input_limit_bytes=limits["ignore_input_limit_bytes"], output_limit_bytes=limits["ignore_output_limit_bytes"])
+    cp = run_git_bounded_input(repo, ["check-ignore", "--stdin", "-z"], encoded, input_limit_bytes=limits["ignore_input_limit_bytes"], output_limit_bytes=limits["ignore_output_limit_bytes"], accepted_returncodes=frozenset({0, 1}))
     if cp.returncode not in {0, 1}:
         status = "bounded" if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "failed"
         reason = {GIT_RETURNCODE_OUTPUT_LIMIT: "git_output_limit", GIT_RETURNCODE_TIMEOUT: "git_timeout", GIT_RETURNCODE_NOT_FOUND: "git_unavailable", GIT_RETURNCODE_OS_ERROR: "git_os_error"}.get(cp.returncode, "git_check_ignore_failed")

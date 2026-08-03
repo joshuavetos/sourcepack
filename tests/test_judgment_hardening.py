@@ -12,7 +12,7 @@ def test_run_git_missing_executable_returns_127(monkeypatch, tmp_path):
     def fake_run(*args, **kwargs):
         raise FileNotFoundError()
 
-    monkeypatch.setattr(judgment.subprocess, "run", fake_run)
+    monkeypatch.setattr("sourcepack.git._bounded_process", fake_run)
 
     cp = judgment.run_git(tmp_path, ["status"])
 
@@ -23,9 +23,9 @@ def test_run_git_missing_executable_returns_127(monkeypatch, tmp_path):
 
 def test_run_git_timeout_returns_124(monkeypatch, tmp_path):
     def fake_run(*args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd=["git", "status"], timeout=10, output=b"partial out", stderr=b"partial err")
+        return subprocess.CompletedProcess(["git", "status"], judgment.GIT_RETURNCODE_TIMEOUT, b"partial out", b"partial err\ngit command timed out after 10 seconds")
 
-    monkeypatch.setattr(judgment.subprocess, "run", fake_run)
+    monkeypatch.setattr("sourcepack.git._bounded_process", fake_run)
 
     cp = judgment.run_git(tmp_path, ["status"])
 

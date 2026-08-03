@@ -358,9 +358,7 @@ Binary files a/assets/foo bar.bin and b/assets/foo bar.bin differ
     assert "binary_diff_blockers" not in report
 
 
-def test_cli_binary_diff_path_helper_matches_judgment_for_spaces():
-    from sourcepack import cli
-
+def test_canonical_binary_diff_path_helper_handles_spaces():
     patch = """diff --git a/.github/workflows/foo bar.bin b/.github/workflows/foo bar.bin
 new file mode 100644
 index 0000000..1234567
@@ -368,8 +366,7 @@ GIT binary patch
 literal 4
 """
 
-    assert cli._binary_diff_paths_from_patch(patch) == judgment._binary_diff_paths_from_patch(patch)
-    assert cli._binary_diff_paths_from_patch(patch) == [".github/workflows/foo bar.bin"]
+    assert judgment._binary_diff_paths_from_patch(patch) == [".github/workflows/foo bar.bin"]
 
 
 def test_build_repo_change_report_initial_git_os_error_is_not_no_git_repo(monkeypatch, tmp_path):

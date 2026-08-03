@@ -195,13 +195,13 @@ def test_packet_tracked_file_discovery_uses_canonical_helper(monkeypatch, tmp_pa
     assert {item.relative_path: item.reason for item in scanner.ignored_files}["untracked.py"] == "untracked_file_skipped"
 
 
-def test_cli_tracked_inventory_uses_canonical_byte_preserving_helper(monkeypatch, tmp_path: Path) -> None:
+def test_judgment_tracked_inventory_uses_canonical_byte_preserving_helper(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / "spaced name.py").write_text("print('space')\n", encoding="utf-8")
     (tmp_path / "unicodé.py").write_text("print('unicode')\n", encoding="utf-8")
 
-    monkeypatch.setattr(cli, "canonical_tracked_paths", lambda root: {"spaced name.py", "unicodé.py"})
+    monkeypatch.setattr(judgment, "run_git_bytes", lambda root, args: _cp(args, 0, stdout="spaced name.py\0unicodé.py\0".encode()))
 
-    inventory = cli._tracked_file_inventory(tmp_path, [])
+    inventory = judgment._tracked_file_inventory(tmp_path, [])
 
     assert [item["relative_path"] for item in inventory["files"]] == ["spaced name.py", "unicodé.py"]
     assert {item["source"] for item in inventory["files"]} == {"git_ls_files"}
@@ -616,21 +616,22 @@ def test_cli_baseline_passes_user_force_value(monkeypatch, tmp_path: Path) -> No
 
 def test_auto_no_diff_baseline_creation_passes_false_force(monkeypatch, tmp_path: Path) -> None:
     seen: list[bool] = []
-    monkeypatch.setattr(cli, "run_git", lambda repo, args: _cp(args, 0, stdout=str(tmp_path) if args == ["rev-parse", "--show-toplevel"] else ""))
-    monkeypatch.setattr(cli, "validate_baseline", lambda repo: {"state": "missing"})
-    monkeypatch.setattr(cli, "git_worktree_dirty", lambda repo: (False, None))
-    monkeypatch.setattr(cli, "ensure_sourcepack_dirs", lambda repo: {})
-    monkeypatch.setattr(cli, "ensure_gitignore_entry", lambda repo: (False, None))
-    monkeypatch.setattr(cli, "untracked_files_as_diff", lambda repo: "")
-    monkeypatch.setattr(cli, "baseline_report_fields", lambda status: {})
+    policy_result = judgment.resolve_effective_policy(Path.cwd())
+    monkeypatch.setattr(judgment, "run_git", lambda repo, args: _cp(args, 0, stdout=str(tmp_path) if args == ["rev-parse", "--show-toplevel"] else ""))
+    monkeypatch.setattr(judgment, "validate_baseline", lambda repo: {"state": "missing"})
+    monkeypatch.setattr(judgment, "git_worktree_dirty", lambda repo: (False, None))
+    monkeypatch.setattr(judgment, "ensure_sourcepack_dirs", lambda repo: {})
+    monkeypatch.setattr(judgment, "untracked_files_as_diff", lambda repo, **kwargs: ("", {"status": "complete", "complete": True, "reason": None, "acquisition_state": "complete"}) if kwargs.get("with_authority") else "")
+    monkeypatch.setattr(judgment, "baseline_report_fields", lambda status: {})
+    monkeypatch.setattr(judgment, "resolve_effective_policy", lambda *args, **kwargs: policy_result)
 
     def fake_build(repo, quiet=False, fail_stage=None, force=False):
         seen.append(force)
         return {}, True
 
-    monkeypatch.setattr(cli, "build_current_baseline", fake_build)
+    monkeypatch.setattr(judgment, "build_current_baseline", fake_build)
 
-    report = cli.build_repo_change_report(tmp_path)
+    report = judgment.build_repo_change_report(tmp_path)
 
     assert report["verdict"] == "PASS"
     assert seen == [False]

@@ -376,7 +376,8 @@ new file mode 100644
 """)
             self.assertEqual(report["verdict"], "FAIL")
             self.assertIn("docker compose up", report["unsupported_commands"])
-            self.assertIn("npm run dev", report["unsupported_commands"])
+            self.assertNotIn("npm run dev", report["unsupported_commands"])
+            self.assertIn("command_manifest_missing", {item["id"] for item in report["uncertainties"]})
 
     def test_protected_artifact_patch_fails(self):
         with TemporaryDirectory() as td:

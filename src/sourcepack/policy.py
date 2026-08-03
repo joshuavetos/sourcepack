@@ -598,7 +598,7 @@ def _repo_rules_from_validation(validation: PolicyValidationResult) -> dict:
     return dict(validation.repository_rules)
 
 
-def resolve_effective_policy(repo: str | Path, org_policy: str | Path | None = None, org_policy_mode: str = "optional") -> dict:
+def _resolve_effective_policy(repo: str | Path, org_policy: str | Path | None = None, org_policy_mode: str = "optional") -> dict:
     requested_path = Path(repo).resolve()
     repo_root, repo_root_error = _canonical_repository_root(requested_path)
     errors: list[str] = []
@@ -729,6 +729,14 @@ def resolve_effective_policy(repo: str | Path, org_policy: str | Path | None = N
     identity_material = {"schema_version": EFFECTIVE_POLICY_SCHEMA_VERSION, "org_policy_mode": org_policy_mode, "org_policy_status": org_status, "org_policy_hash": org_hash, "repository_policy_hash": repo_hash, "organization_policy_id": org_id, "effective_policy": effective, "rules": rule_results, "rejected_weakening_attempts": rejected, "conflicts": conflicts, "errors": errors}
     eid = "epol_" + _sha256_bytes(_canonical_json(identity_material).encode("utf-8"))[:32]
     return {"schema_version": EFFECTIVE_POLICY_SCHEMA_VERSION, "resolution_status": verdict, "organization_policy_mode": org_policy_mode, "organization_policy_status": org_status, "organization_policy_source": org_source, "organization_policy_id": org_id, "organization_policy_hash": org_hash, "repository_policy_source": {"path": ".sourcepack/policy.json", "status": "loaded" if repo_validation.policy_present and repo_validation.valid else "absent" if not repo_validation.policy_present else "invalid"}, "repository_policy_hash": repo_hash, "effective_policy": effective, "rules": rule_results, "strengthening_contributions": sorted(set(strengthen)), "rejected_weakening_attempts": rejected, "conflicts": conflicts, "errors": errors, "effective_policy_id": eid}
+
+
+def resolve_effective_policy(repo: str | Path, org_policy: str | Path | None = None, org_policy_mode: str = "optional") -> dict:
+    """Resolve trusted policy and explicitly enforce proposed-state authority."""
+    from .policy_authority import guard_effective_policy_result
+
+    result = _resolve_effective_policy(repo, org_policy=org_policy, org_policy_mode=org_policy_mode)
+    return guard_effective_policy_result(repo, result)
 
 
 def _rule_provenance(rule: str, o_present: bool, r_present: bool, o: object, r: object, eff: object) -> dict:

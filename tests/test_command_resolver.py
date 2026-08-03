@@ -1,3 +1,5 @@
+import builtins
+
 from sourcepack.commands import resolve_command
 
 
@@ -29,6 +31,27 @@ def test_justfile_taskfile_detected(tmp_path):
     assert resolve_command(tmp_path, "just test").verdict == "PASS"
     (tmp_path/"Taskfile.yml").write_text("tasks:\n  build:\n    cmds: [echo ok]\n")
     assert resolve_command(tmp_path, "task build").verdict == "PASS"
+
+
+def test_taskfile_resolution_does_not_import_optional_yaml(tmp_path, monkeypatch):
+    (tmp_path/"Taskfile.yml").write_text("version: '3'\ntasks:\n  build:\n    cmds:\n      - echo ok\n")
+    original_import = builtins.__import__
+
+    def rejecting_import(name, *args, **kwargs):
+        if name == "yaml":
+            raise AssertionError("Taskfile resolution must not import optional PyYAML")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", rejecting_import)
+    assert resolve_command(tmp_path, "task build").verdict == "PASS"
+
+
+def test_taskfile_unsupported_yaml_is_visible(tmp_path):
+    (tmp_path/"Taskfile.yml").write_text("common: &common\n  cmds: [echo ok]\ntasks:\n  build: *common\n")
+    result = resolve_command(tmp_path, "task build")
+    assert result.verdict == "FAIL"
+    assert result.reason_code == "manifest_parse_failure"
+    assert "supported deterministic subset" in result.message
 
 
 def test_tox_env_present_and_dynamic_inconclusive(tmp_path):

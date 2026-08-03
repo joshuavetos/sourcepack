@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +21,21 @@ def _git(repo: Path, *args: str) -> None:
 
 
 class PrechangePolicyAuthorityTests(unittest.TestCase):
+    def test_package_import_does_not_mutate_pythonpath(self) -> None:
+        src = Path(__file__).resolve().parents[1] / "src"
+        code = "import os; before=os.environ.get('PYTHONPATH'); import sourcepack; assert os.environ.get('PYTHONPATH') == before"
+        env = {**os.environ, "PYTHONPATH": str(src), "SOURCEPACK_IMPORT_SENTINEL": "unchanged"}
+        subprocess.run([sys.executable, "-c", code], check=True, env=env)
+
+    def test_policy_authority_is_independent_of_import_order(self) -> None:
+        td, repo = self._repo()
+        self.addCleanup(td.cleanup)
+        (repo / ".sourcepack" / "policy.json").write_text("{}", encoding="utf-8")
+        src = Path(__file__).resolve().parents[1] / "src"
+        code = "import sys; from sourcepack.policy import resolve_effective_policy; r=resolve_effective_policy(sys.argv[1]); assert r['resolution_status']=='FAIL'; assert 'repository_policy_modified_in_proposed_state' in r['errors']"
+        env = {**os.environ, "PYTHONPATH": str(src)}
+        subprocess.run([sys.executable, "-c", code, str(repo)], check=True, env=env)
+
     def _repo(self) -> tuple[tempfile.TemporaryDirectory, Path]:
         td = tempfile.TemporaryDirectory()
         repo = Path(td.name)

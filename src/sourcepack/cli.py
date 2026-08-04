@@ -79,63 +79,23 @@ supported_commands_inventory = _judgment.supported_commands_inventory
 untracked_files_as_diff = _judgment.untracked_files_as_diff
 utc_now = _judgment.utc_now
 
-DEFAULT_IGNORED_DIRS = {
-    ".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
-    ".next", ".cache", "target", "coverage", ".pytest_cache", ".sourcepack"
-}
-DEFAULT_IGNORED_PATTERNS = {
-    ".env", ".env.*", "*.pem", "*.key", "*.sqlite", "*.db", "*.png", "*.jpg",
-    "*.jpeg", "*.gif", "*.webp", "*.pdf", "*.zip", "*.tar", "*.gz", "*.exe",
-    "*.dll", "*.so", "*.dylib", "*.bin", "*.pyc"
-}
-DEFAULT_TEXT_EXTENSIONS = {
-    ".txt", ".md", ".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".yaml", ".yml",
-    ".html", ".css", ".csv", ".toml", ".ini", ".sql", ".sh", ".bat", ".ps1", ".rs",
-    ".go", ".java", ".c", ".cpp", ".h", ".hpp", ".rb", ".php", ".xml"
-}
-SECRET_PATTERNS = [
-    ("openai_key", re.compile(r"sk-proj-[A-Za-z0-9_\-]{12,}|sk-[A-Za-z0-9]{24,}")),
-    ("aws_access_key", re.compile(r"AKIA[0-9A-Z]{16}")),
-    ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
-    ("generic_api_key", re.compile(r"(?i)(api[_-]?key|secret|token)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{16,}")),
-    ("github_token", re.compile(r"ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}")),
-    ("slack_token", re.compile(r"xox[baprs]-[A-Za-z0-9\-]{20,}")),
-]
-COMMON_DEPENDENCIES = ["fastapi", "flask", "django", "react", "vue", "svelte", "pytest", "typer", "click", "sqlalchemy", "prisma", "pydantic", "pyyaml", "pillow", "beautifulsoup4", "opencv-python", "scikit-learn", "python-dotenv", "pyjwt", "python-dateutil", "boto3", "requests"]
-FEATURE_NAMES = ("pdf", "ocr", "web server", "react", "docker", "authentication", "database")
-
-
-@dataclass
-class IncludedFile:
-    relative_path: str
-    absolute_path: str
-    size_bytes: int
-    sha256: str
-    source_sha256: str
-    packet_sha256: str
-    estimated_tokens: int
-    extension: str
-    content: str
-
-
-@dataclass
-class IgnoredFile:
-    relative_path: str
-    reason: str
-
+# Legacy import compatibility: canonical models and classifications are owned by
+# the judgment facade and its internal evidence modules.
+DEFAULT_IGNORED_DIRS = _judgment.DEFAULT_IGNORED_DIRS
+DEFAULT_IGNORED_PATTERNS = _judgment.DEFAULT_IGNORED_PATTERNS
+DEFAULT_TEXT_EXTENSIONS = _judgment.DEFAULT_TEXT_EXTENSIONS
+SECRET_PATTERNS = _judgment.SECRET_PATTERNS
+COMMON_DEPENDENCIES = _judgment.COMMON_DEPENDENCIES
+FEATURE_NAMES = _judgment.FEATURE_NAMES
+IncludedFile = _judgment.IncludedFile
+IgnoredFile = _judgment.IgnoredFile
+PATHLIKE_EXTENSIONS = _judgment.PATHLIKE_EXTENSIONS
+PROJECT_PATH_PREFIXES = _judgment.PROJECT_PATH_PREFIXES
+PDF_DEPENDENCIES = _judgment.PDF_DEPENDENCIES
+PROTECTED_PACKET_ARTIFACTS = _judgment.PROTECTED_PACKET_ARTIFACTS
 
 def verify_packet(packet_path: str | Path, against: str | Path | None = None) -> bool:
     return canonical_verify_packet(packet_path, against)
-
-
-PATHLIKE_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".toml", ".yaml", ".yml", ".md", ".txt", ".cfg", ".ini", ".css", ".html", ".rs", ".go", ".java", ".rb", ".php", ".sh"}
-PROJECT_PATH_PREFIXES = {"src", "sourcepack", "tests", "test", "frontend", "backend", "docs", "app", "lib", "packages", "public", "config", "scripts"}
-
-
-PDF_DEPENDENCIES = {"pypdf", "pdfplumber", "fitz", "pymupdf"}
-
-
-PROTECTED_PACKET_ARTIFACTS = {"manifest.json", "receipt.json", "reality_map.json", "ai_instructions.md"}
 
 
 def render_patch_judgment_report(report: dict) -> str:
@@ -216,13 +176,6 @@ def judge_ai_answer(packet_path: str | Path, ai_answer_path: str | Path, out_dir
         (out / "judgment_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print("\n".join(lines))
     return report
-
-
-LIGHT_BY_VERDICT = {"PASS": "GREEN LIGHT", "WARN": "YELLOW LIGHT", "FAIL": "RED LIGHT"}
-SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
-PY_STDLIB = set(getattr(sys, "stdlib_module_names", set())) | {"typing", "pathlib", "json", "os", "sys", "re", "subprocess", "datetime", "unittest"}
-PY_DEP_FILES = {"requirements.txt", "pyproject.toml", "setup.py", "setup.cfg"}
-JS_EXTS = {".js", ".jsx", ".ts", ".tsx"}
 
 
 def finalize_diff_report(repo: str | Path | None, report: dict, args, stem: str = "diff") -> dict:
@@ -367,25 +320,6 @@ DIRTY_BASELINE_REFUSAL = "SourcePack refused to create a trusted baseline from a
 
 def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: str | None = None, force: bool = False) -> tuple[dict, bool]:
     return canonical_build_current_baseline(repo, quiet=quiet, fail_stage=fail_stage, force=force)
-
-
-JS_DEP_SECTIONS = {"dependencies", "devDependencies", "peerDependencies", "optionalDependencies"}
-
-
-UNSUPPORTED_ECOSYSTEM_MARKERS = {
-    "gemfile": ("Gemfile", "Ruby/Bundler dependency validation is not implemented"),
-    "composer.json": ("composer.json", "PHP/Composer dependency validation is not implemented"),
-    "main.tf": ("main.tf", "Terraform module/provider validation is not implemented"),
-    "flake.nix": ("flake.nix", "Nix flake validation is not implemented"),
-    "cargo.toml": ("Cargo.toml", "Rust dependency validation is not implemented"),
-    "go.mod": ("go.mod", "Go module dependency validation is not implemented"),
-    "pom.xml": ("pom.xml", "Maven dependency validation is not implemented"),
-    "build.gradle": ("build.gradle", "Gradle dependency validation is not implemented"),
-    "build.gradle.kts": ("build.gradle.kts", "Gradle dependency validation is not implemented"),
-    "settings.gradle": ("settings.gradle", "Gradle workspace validation is not implemented"),
-    "settings.gradle.kts": ("settings.gradle.kts", "Gradle workspace validation is not implemented"),
-    "*.csproj": ("*.csproj", ".NET/NuGet dependency validation is not implemented"),
-}
 
 
 def baseline_report_fields(status: dict) -> dict:

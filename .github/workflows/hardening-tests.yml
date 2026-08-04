@@ -37,19 +37,10 @@ jobs:
 
       - name: Install package and test dependencies
         run: |
-          python -m pip install -e .
-          python -m pip install pytest build twine
+          python -m pip install -e ".[dev]"
 
       - name: Compile SourcePack modules
-        run: |
-          python -m py_compile src/sourcepack/cli.py
-          python -m py_compile src/sourcepack/git.py
-          python -m py_compile src/sourcepack/baseline.py
-          python -m py_compile src/sourcepack/diff_parser.py
-          python -m py_compile src/sourcepack/judgment.py
-          python -m py_compile src/sourcepack/policy.py
-          python -m py_compile tools/behavior_matrix.py
-          python -m py_compile tools/golden_demo.py
+        run: python -m compileall -q src tests scripts tools
 
       - name: Unit tests
         run: python -m unittest
@@ -82,4 +73,11 @@ jobs:
         run: sourcepack demo
 
       - name: Release smoke
-        run: python tools/release_smoke.py
+        run: python scripts/release_smoke.py
+
+      - name: CLI help smoke
+        run: sourcepack --help
+
+      - name: Diff hygiene
+        if: runner.os != 'Windows'
+        run: git diff --check

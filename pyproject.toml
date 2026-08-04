@@ -32,6 +32,7 @@ sourcepack = "sourcepack.cli:main"
 sourcepack-hosted = "sourcepack.hosted:main"
 
 [project.optional-dependencies]
+dev = ["pytest>=7,<9", "build>=1,<2", "twine>=5,<7"]
 browser-test = ["playwright>=1.45,<2", "pytest>=7,<9"]
 
 [tool.setuptools.package-data]

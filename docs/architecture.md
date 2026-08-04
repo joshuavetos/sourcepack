@@ -44,6 +44,13 @@ SourcePack does not prove semantic correctness, find vulnerabilities, scan secre
 
 The public-alpha core exposes `sourcepack.judgment.judge_repo_change(repo_path, *, staged=False, patch_text=None, policy_mode=PolicyMode.LOCAL) -> Judgment`. The CLI `sourcepack diff` now delegates repo judgment to that API, while keeping rendering, report persistence, and process exit behavior in the CLI layer.
 
+`sourcepack.judgment` remains the single public, authority-bearing facade and owns report
+orchestration. Focused internal modules do not expose an alternative engine:
+`repository_evidence.py` owns packet/reality-map construction and dependency/feature evidence,
+`ai_analysis.py` owns advisory AI-answer analysis, and `git_acquisition.py` owns worktree-state
+acquisition. The facade re-exports established compatibility names, while `cli.py` only aliases
+those names for legacy imports rather than copying their models or classifications.
+
 The intended flow is:
 
 1. CLI parses command-line arguments.

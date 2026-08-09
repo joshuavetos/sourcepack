@@ -1,0 +1,13 @@
+diff --git a/package.json b/package.json
+new file mode 100644
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1 @@
++{"dependencies":{"axios":"1.7.9"}}
+diff --git a/app.js b/app.js
+index a70d2e7..17f65c2 100644
+--- a/app.js
++++ b/app.js
+@@ -1 +1,2 @@
++import axios from "axios";
+ console.log("baseline");

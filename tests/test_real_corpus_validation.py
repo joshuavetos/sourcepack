@@ -6,6 +6,77 @@ from pathlib import Path
 import pytest
 
 from tools import real_corpus_validation as rcv
+from tools import adversarial_runner
+
+
+def _adversarial_expectation() -> dict:
+    return {
+        "schema_version": "sourcepack.adversarial-case.v1",
+        "case_id": "case",
+        "expected_verdict": "FAIL",
+        "required_findings": [{"id": "unsupported_dependency"}],
+        "forbidden_findings": ["malformed_diff", "baseline_corrupt"],
+        "allowed_additional_findings": [],
+        "deterministic": True,
+    }
+
+
+def test_adversarial_expectation_rejects_unknown_fields():
+    expected = _adversarial_expectation()
+    expected["verdit"] = expected.pop("expected_verdict")
+
+    with pytest.raises(ValueError, match="expectation fields invalid"):
+        adversarial_runner._validate_expected(expected, "case")
+
+
+def test_adversarial_matcher_rejects_unexpected_failure_routes():
+    expected = adversarial_runner._validate_expected(_adversarial_expectation(), "case")
+    actual = {
+        "verdict": "FAIL",
+        "findings": [
+            {"id": "unsupported_dependency"},
+            {"id": "baseline_failed"},
+        ],
+    }
+
+    assert adversarial_runner._matches_expected(actual, expected) == [
+        "unexpected findings present: ['baseline_failed']"
+    ]
+
+
+def test_adversarial_matcher_rejects_extra_projection_for_required_reason():
+    raw = _adversarial_expectation()
+    raw["required_findings"] = [
+        {"id": "unsupported_dependency", "trust_status": "no_supporting_evidence"}
+    ]
+    expected = adversarial_runner._validate_expected(raw, "case")
+    actual = {
+        "verdict": "FAIL",
+        "findings": [
+            {"id": "unsupported_dependency", "trust_status": "no_supporting_evidence"},
+            {"id": "unsupported_dependency", "trust_status": "trusted_preexisting"},
+        ],
+    }
+
+    errors = adversarial_runner._matches_expected(actual, expected)
+
+    assert errors == [
+        "unexpected projection for required finding 'unsupported_dependency': "
+        "{'id': 'unsupported_dependency', 'trust_status': 'trusted_preexisting'}"
+    ]
+
+
+@pytest.mark.parametrize("invalid_finding", [{}, {"id": None}, {"id": "not_a_reason_code"}])
+def test_adversarial_matcher_rejects_invalid_actual_reason_codes(invalid_finding):
+    expected = adversarial_runner._validate_expected(_adversarial_expectation(), "case")
+    actual = {
+        "verdict": "FAIL",
+        "findings": [{"id": "unsupported_dependency"}, invalid_finding],
+    }
+
+    errors = adversarial_runner._matches_expected(actual, expected)
+
+    assert errors[0].startswith("findings contain invalid reason codes:")
 
 
 def run_tool(*args):

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import fnmatch
+import base64
 import hashlib
 import json
 import os
+import platform
 import tomllib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -14,715 +17,90 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Final, Iterable
-from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git, run_git_bytes as canonical_run_git_bytes
-from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
-from .baseline import BaselineLockError, baseline_report_fields, build_current_baseline, validate_baseline
+from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_OUTPUT_LIMIT, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git, run_git_bounded as canonical_run_git_bounded, run_git_bytes as canonical_run_git_bytes
+from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff, quote_git_path
+from .baseline import BaselineLockError, baseline_report_fields, build_current_baseline, generated_untracked_baseline_artifacts, validate_baseline
 from .ecosystems.python import PY_IMPORT_ALIASES
-from .packet import PacketWriter, SourceScanner
-from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs
-from .reports.json import normalized_finding, traffic_report, write_user_report
+from .packet import PacketWriter, SourceScanner, _read_stable_verification_file
+from .paths import ensure_sourcepack_dirs, operational_sourcepack_artifact_path
+from .reports.json import build_replay_bundle, normalized_finding, traffic_report, write_user_report
 from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code, load_policy_config, finding_ignored_by_policy, policy_path_matches, resolve_effective_policy
+from .policy_authority import POLICY_AUTHORITY_ERROR, guard_effective_policy_result
 from .execution_ledger import execution_findings
+from .local_allow_trust import active_allow_records, readable_allow_file_matches_active
 from .commands import resolve_command
 from .dependencies import resolve_js_import, resolve_python_import
+from .worktree_collision import inspect_symlink_transitions
 
 try:
     from . import __version__
 except Exception:
     __version__ = "1.10.0-alpha"
 
-DEFAULT_IGNORED_DIRS = {
-    ".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
-    ".next", ".cache", "target", "coverage", ".pytest_cache", ".sourcepack"
-}
-DEFAULT_IGNORED_PATTERNS = {
-    ".env", ".env.*", "*.pem", "*.key", "*.sqlite", "*.db", "*.png", "*.jpg",
-    "*.jpeg", "*.gif", "*.webp", "*.pdf", "*.zip", "*.tar", "*.gz", "*.exe",
-    "*.dll", "*.so", "*.dylib", "*.bin", "*.pyc"
-}
-DEFAULT_TEXT_EXTENSIONS = {
-    ".txt", ".md", ".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".yaml", ".yml",
-    ".html", ".css", ".csv", ".toml", ".ini", ".sql", ".sh", ".bat", ".ps1", ".rs",
-    ".go", ".java", ".c", ".cpp", ".h", ".hpp", ".rb", ".php", ".xml"
-}
-SECRET_PATTERNS = [
-    ("openai_key", re.compile(r"sk-proj-[A-Za-z0-9_\-]{12,}|sk-[A-Za-z0-9]{24,}")),
-    ("aws_access_key", re.compile(r"AKIA[0-9A-Z]{16}")),
-    ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
-    ("generic_api_key", re.compile(r"(?i)(api[_-]?key|secret|token)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{16,}")),
-    ("github_token", re.compile(r"ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}")),
-    ("slack_token", re.compile(r"xox[baprs]-[A-Za-z0-9\-]{20,}")),
-]
-COMMON_DEPENDENCIES = ["fastapi", "flask", "django", "react", "vue", "svelte", "pytest", "typer", "click", "sqlalchemy", "prisma", "pydantic", "pyyaml", "pillow", "beautifulsoup4", "opencv-python", "scikit-learn", "python-dotenv", "pyjwt", "python-dateutil", "boto3", "requests"]
-FEATURE_NAMES = ("pdf", "ocr", "web server", "react", "docker", "authentication", "database")
-GIT_TIMEOUT_SECONDS: Final[int] = 10
-NATURAL_LANGUAGE_COMMAND_TARGETS: Final[frozenset[str]] = frozenset({"a", "an", "the", "this", "that", "these", "those"})
-
-
-def _command_claims(pattern: str, text: str) -> set[str]:
-    commands = set()
-    for command in re.findall(pattern, text):
-        parts = command.split()
-        if len(parts) >= 2 and parts[1].lower() in NATURAL_LANGUAGE_COMMAND_TARGETS:
-            continue
-        commands.add(command)
-    return commands
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
-def sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def estimate_tokens(text: str) -> int:
-    return (len(text) + 3) // 4
-
-
-def is_probably_binary(path: Path, sample_size: int = 4096) -> bool:
-    try:
-        data = path.read_bytes()[:sample_size]
-    except OSError:
-        return True
-    if b"\x00" in data:
-        return True
-    if not data:
-        return False
-    nonprintable = sum(1 for b in data if b < 9 or (13 < b < 32))
-    return (nonprintable / max(len(data), 1)) > 0.30
-
-
-def matches_any(name: str, patterns: Iterable[str]) -> bool:
-    return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
-
-
-def redact_secrets(text: str):
-    redactions = []
-    redacted = text
-    for label, pattern in SECRET_PATTERNS:
-        def repl(match):
-            redactions.append({"pattern": label, "span_start": match.start(), "span_end": match.end()})
-            return f"[REDACTED:{label}]"
-        redacted = pattern.sub(repl, redacted)
-    return redacted, redactions
-
-
-@dataclass
-class IncludedFile:
-    relative_path: str
-    absolute_path: str
-    size_bytes: int
-    sha256: str
-    source_sha256: str
-    packet_sha256: str
-    estimated_tokens: int
-    extension: str
-    content: str
-
-
-@dataclass
-class IgnoredFile:
-    relative_path: str
-    reason: str
-
-
-
-def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
-    included = {str(rec.get("relative_path", "")).replace("\\", "/") for rec in included_records}
-    files: list[dict] = []
-    source = "scanner_included_files"
-    cp = run_git_bytes(root, ["ls-files", "-z"])
-    if cp.returncode == 0:
-        raw_paths = [os.fsdecode(p).replace("\\", "/") for p in cp.stdout.split(b"\0") if p]
-        source = "git_ls_files" if raw_paths else "scanner_included_files"
-        if not raw_paths:
-            raw_paths = sorted(included)
-    else:
-        raw_paths = sorted(included)
-    for raw in raw_paths:
-        safe_rel, unsafe = _normalize_diff_path(raw)
-        if unsafe or not safe_rel:
-            files.append({
-                "relative_path": raw.replace("\\", "/"),
-                "included_in_prompt_context": False,
-                "source": source,
-                "file_type": "unsafe_path",
-            })
-            continue
-        rel = safe_rel
-        path = root / rel
-        rec = {"relative_path": rel, "included_in_prompt_context": rel in included, "source": source}
-        try:
-            if path.exists() and path.is_file():
-                rec["sha256"] = sha256_file(path)
-                rec["file_type"] = "binary" if is_probably_binary(path) else "text"
-            else:
-                rec["file_type"] = "missing"
-        except OSError:
-            rec["file_type"] = "unreadable"
-        files.append(rec)
-    return {"schema_version": "sourcepack.file_inventory.v1", "generated_at": utc_now(), "source": source, "files": files}
-
-
-def _included_paths(manifest: dict) -> set[str]:
-    return {rec.get("relative_path", "").replace("\\", "/") for rec in manifest.get("included_files", [])}
-
-
-def _package_json_scripts(packet: Path) -> dict[str, str]:
-    contents = _packet_file_contents(packet)
-    for rel, content in contents.items():
-        if Path(rel).name.lower() == "package.json":
-            try:
-                package = json.loads(content)
-            except json.JSONDecodeError:
-                return {}
-            scripts = package.get("scripts")
-            return scripts if isinstance(scripts, dict) else {}
-    return {}
-
-
-def _is_poetry_project(packet: Path) -> bool:
-    for rel, content in _packet_file_contents(packet).items():
-        if Path(rel).name.lower() == "pyproject.toml" and re.search(r"(?m)^\s*\[tool\.poetry\]\s*$", content):
-            return True
-    return False
-
-
-def _uses_unittest(packet: Path) -> bool:
-    for rel, content in _packet_file_contents(packet).items():
-        if Path(rel).suffix.lower() == ".py" and re.search(r"(?m)^\s*(import\s+unittest|from\s+unittest\s+import\s+)", content):
-            return True
-    return False
-
-
-def generate_reality_map(manifest: dict, packet: Path) -> dict:
-    files = _included_paths(manifest)
-    lower_files = {f.lower() for f in files}
-    deps = dependency_inventory(manifest, packet)
-    features = feature_inventory(manifest, packet, deps)
-    scripts = _package_json_scripts(packet)
-    project_types = []
-    package_managers = []
-    frameworks = []
-    supported_commands = []
-    test_commands = []
-    build_commands = []
-    run_commands = []
-    if "pyproject.toml" in lower_files:
-        project_types.append("python")
-    if any(Path(f).name.lower().startswith("requirements") and f.endswith(".txt") for f in lower_files):
-        project_types.append("python")
-        package_managers.append("pip")
-    if _is_poetry_project(packet):
-        package_managers.append("poetry")
-    if "package.json" in lower_files:
-        project_types.append("node")
-        package_managers.append("npm")
-        for name in sorted(scripts):
-            cmd = "npm test" if name == "test" else f"npm run {name}"
-            supported_commands.append(cmd)
-            if name == "test": test_commands.append(cmd)
-            elif name in {"build", "compile"}: build_commands.append(cmd)
-            elif name in {"start", "dev", "serve"}: run_commands.append(cmd)
-    if any(Path(f).name.lower() == "dockerfile" for f in files):
-        supported_commands.append("docker build")
-        build_commands.append("docker build")
-    if any(Path(f).name.lower() in {"docker-compose.yml", "compose.yaml", "compose.yml"} for f in files):
-        supported_commands.append("docker compose up")
-        run_commands.append("docker compose up")
-    if "pytest" in deps or any(f == "tests" or f.startswith("tests/") for f in lower_files):
-        supported_commands.append("pytest")
-        test_commands.append("pytest")
-    if _uses_unittest(packet):
-        supported_commands.append("python -m unittest")
-        test_commands.append("python -m unittest")
-    framework_map = {"fastapi": "FastAPI", "flask": "Flask", "django": "Django", "react": "React"}
-    for dep, label in framework_map.items():
-        if dep in deps or (dep == "react" and "react" in features):
-            frameworks.append(label)
-    ignored = manifest.get("ignored_files", [])
-    ignored_reasons = {}
-    for rec in ignored:
-        reason = rec.get("reason", "unknown")
-        ignored_reasons[reason] = ignored_reasons.get(reason, 0) + 1
-    included_count = len(manifest.get("included_files", []))
-    safe_claims = [
-        f"This packet includes {included_count} source files.",
-        f"SourcePack scanned input path: {manifest.get('input_path', '')}.",
-    ]
-    for name in ["pyproject.toml", "package.json", "Dockerfile"]:
-        present = name.lower() in {Path(f).name.lower() for f in files}
-        safe_claims.append(f"The project {'contains' if present else 'does not include'} {name}.")
-    if "react" not in deps and "react" not in features:
-        safe_claims.append("No React dependency was detected.")
-    if "pdf" not in features:
-        safe_claims.append("No PDF parsing capability was detected.")
-    if ignored:
-        safe_claims.append("The packet includes ignored file records for safety or relevance reasons.")
-    claim_boundaries = [
-        "SourcePack did not execute the application.",
-        "SourcePack did not prove semantic correctness.",
-        "SourcePack did not verify external services.",
-        "SourcePack did not prove security.",
-        "SourcePack did not prove production readiness.",
-        "Absence of evidence means unknown, not impossible.",
-        "Unsupported claims should be treated as ungrounded.",
-    ]
-    return {
-        "reality_map_schema_version": "1.0",
-        "tool_version": __version__,
-        "generated_at": utc_now(),
-        "input_path": manifest.get("input_path", ""),
-        "project_types": sorted(set(project_types)),
-        "package_managers": sorted(set(package_managers)),
-        "frameworks": sorted(set(frameworks)),
-        "entry_points": sorted(f for f in files if Path(f).name in {"main.py", "app.py", "server.py", "cli.py"}),
-        "test_commands": sorted(set(test_commands)),
-        "build_commands": sorted(set(build_commands)),
-        "run_commands": sorted(set(run_commands)),
-        "supported_commands": sorted(set(supported_commands)),
-        "detected_dependencies": sorted(deps),
-        "supported_capabilities": sorted(features),
-        "excluded_files_summary": {"total": len(ignored), "reasons": ignored_reasons, "records": ignored[:25]},
-        "included_file_count": included_count,
-        "confirmed_files": sorted(files),
-        "ignored_file_count": len(ignored),
-        "safe_claims": safe_claims,
-        "unknowns": [
-            "Runtime behavior was not executed.",
-            "Semantic correctness was not proven.",
-            "External services were not verified.",
-            "Capabilities not present in structural evidence must be treated as unknown.",
-            "Missing files must not be invented.",
-        ],
-        "claim_boundaries": claim_boundaries,
-        "ai_constraints": [
-            "Use only the packet and reality map as project evidence.",
-            "Do not invent files, commands, dependencies, frameworks, services, or capabilities.",
-            "If a required file is missing, say it is missing.",
-            "If a command is unsupported by detected evidence, say it is unsupported.",
-            "If a capability is not in supported_capabilities, treat it as unknown or unsupported.",
-            "Cite file paths when making project-specific claims.",
-            "Do not claim SourcePack proves semantic truth.",
-            "Ask for missing files rather than hallucinating them.",
-        ],
-    }
-
-
-def render_ai_instructions(reality_map: dict) -> str:
-    lines = [
-        "# AI Instructions for This SourcePack Packet", "",
-        "Use only the packet and `reality_map.json` as project evidence.",
-        "Do not invent files, commands, dependencies, frameworks, services, or capabilities.",
-        "If a required file is missing, say it is missing and ask for it rather than hallucinating it.",
-        "If a command is unsupported by detected evidence, say it is unsupported.",
-        "If a capability is not listed in `supported_capabilities`, treat it as unknown or unsupported.",
-        "If you introduce a new external dependency, modify the appropriate dependency manifest in the same patch and list it under Dependency Changes.",
-        "Only recommend commands listed under Supported Commands unless your patch also adds the project file that defines the new command.",
-        "Before referencing a file as existing, it must appear in Confirmed Files; label intentional creations as NEW FILE.",
-        "If required evidence is missing, say UNKNOWN and ask for the missing file/output instead of guessing.",
-        "Cite file paths when making project-specific claims.",
-        "Do not claim SourcePack proves semantic truth, security, production readiness, or external service behavior.", "",
-        "## Supported Commands", "",
-    ]
-    cmds = reality_map.get("supported_commands", [])
-    lines.extend([f"- `{cmd}`" for cmd in cmds] or ["- None detected"])
-    lines.extend(["", "## Supported Capabilities", ""])
-    caps = reality_map.get("supported_capabilities", [])
-    lines.extend([f"- {cap}" for cap in caps] or ["- None detected"])
-    lines.extend(["", "## Confirmed Files", ""])
-    lines.extend(f"- `{path}`" for path in reality_map.get("confirmed_files", [])[:200])
-    lines.extend(["", "## Required Answer Contract", "", "- Files to modify", "- New files", "- Dependency changes", "- Commands to run", "- Assumptions/unknowns", "- Patch or code", "", "## Claim Boundaries", ""])
-    lines.extend(f"- {boundary}" for boundary in reality_map.get("claim_boundaries", []))
-    return "\n".join(lines) + "\n"
-
-def load_manifest(packet: Path) -> dict:
-    return json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
-
-
-
-
-PATHLIKE_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".toml", ".yaml", ".yml", ".md", ".txt", ".cfg", ".ini", ".css", ".html", ".rs", ".go", ".java", ".rb", ".php", ".sh"}
-PROJECT_PATH_PREFIXES = {"src", "sourcepack", "tests", "test", "frontend", "backend", "docs", "app", "lib", "packages", "public", "config", "scripts"}
-
-
-def _normalize_ai_ref(ref: str) -> str | None:
-    ref = ref.strip().strip("`'\".,;)")
-    ref = ref.replace("\\", "/")
-    if ref.endswith(":"):
-        ref = ref[:-1]
-    while ref.startswith("./"):
-        ref = ref[2:]
-    if not ref or ref.startswith("/") or re.match(r"^[A-Za-z]:/", ref):
-        return None
-    normalized, unsafe = _normalize_diff_path(ref)
-    if unsafe or not normalized:
-        return None
-    return normalized
-
-
-def _looks_like_ai_file_ref(ref: str) -> bool:
-    normalized = ref.replace("\\", "/")
-    name = PurePosixPath(normalized).name
-    if name in {"Dockerfile", "docker-compose.yml", "compose.yaml", "compose.yml", "pyproject.toml", "package.json", "requirements.txt"}:
-        return True
-    suffix = PurePosixPath(normalized).suffix.lower()
-    if suffix not in PATHLIKE_EXTENSIONS:
-        return False
-    parts = [p for p in PurePosixPath(normalized).parts if p not in {"."}]
-    return "/" in normalized or (parts and parts[0] in PROJECT_PATH_PREFIXES)
-
-
-def extract_refs(text: str) -> set[str]:
-    refs: set[str] = set()
-    token = r"(?:\./)?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9_.-]+:?|Dockerfile"
-    patterns = [rf"[`'\"]({token})[`'\"]", rf"(?m)^\s*[-*]\s+({token})\b", rf"\b(?:edit|open|update|modify|change|in|file)\s+({token})\b", r"\b((?:\./)?(?:src|sourcepack|tests|test|frontend|backend|docs|app|lib|packages|public|config|scripts)[\\/][A-Za-z0-9_./\\-]+\.[A-Za-z0-9_.-]+:?)\b"]
-    for pattern in patterns:
-        for candidate in re.findall(pattern, text, re.I):
-            normalized = _normalize_ai_ref(candidate)
-            if normalized and _looks_like_ai_file_ref(normalized):
-                refs.add(normalized)
-    return refs
-
-
-def _packet_file_contents(packet: Path) -> dict[str, str]:
-    context_path = packet / "context.md"
-    if not context_path.exists():
-        return {}
-    text = context_path.read_text(encoding="utf-8", errors="ignore")
-    contents: dict[str, str] = {}
-    current: str | None = None
-    body: list[str] = []
-    in_content = False
-    for line in text.splitlines():
-        if line.startswith("## File: "):
-            if current is not None:
-                contents[current] = "\n".join(body).rstrip("\n")
-            current = line.removeprefix("## File: ").strip()
-            body = []
-            in_content = False
-        elif current is not None and line == "Content:":
-            in_content = True
-            body = []
-        elif current is not None and in_content and line == "---":
-            contents[current] = "\n".join(body).rstrip("\n")
-            current = None
-            body = []
-            in_content = False
-        elif current is not None and in_content:
-            body.append(line)
-    if current is not None:
-        contents[current] = "\n".join(body).rstrip("\n")
-    return contents
-
-
-def _normalize_dependency_name(name: str) -> str:
-    return name.strip().lower().replace("_", "-")
-
-
-def _dependency_name_for_import(name: str) -> str:
-    normalized = _normalize_dependency_name(name)
-    return PY_IMPORT_ALIASES.get(normalized, normalized)
-
-
-def _is_js_local_specifier(imported: str) -> bool:
-    return imported.startswith((".", "/"))
-
-
-def _js_package_root(imported: str) -> str:
-    imported = imported.strip().lower()
-    if _is_js_local_specifier(imported):
-        return imported
-    parts = imported.split("/")
-    if imported.startswith("@") and len(parts) >= 2 and parts[0] != "@":
-        return "/".join(parts[:2])
-    if imported.startswith("@/"):
-        return imported
-    return parts[0]
-
-
-def _python_dependency_names_from_requirement_lines(text: str) -> set[str]:
-    deps: set[str] = set()
-    for line in text.splitlines():
-        cleaned = line.split("#", 1)[0].strip()
-        if cleaned and not cleaned.startswith(("-", "--")):
-            deps.add(_normalize_dependency_name(re.split(r"[<>=!~;\[]", cleaned, maxsplit=1)[0]))
-    return deps
-
-
-def _python_dependency_names_from_pyproject(content: str) -> set[str]:
-    try:
-        data = tomllib.loads(content)
-    except tomllib.TOMLDecodeError:
-        return set()
-    deps: set[str] = set()
-
-    def add_requirement(req: object) -> None:
-        if isinstance(req, str):
-            name = re.split(r"[<>=!~;\[]", req.strip(), maxsplit=1)[0]
-            if name:
-                deps.add(_normalize_dependency_name(name))
-
-    project = data.get("project", {})
-    if isinstance(project, dict):
-        for req in project.get("dependencies", []) if isinstance(project.get("dependencies"), list) else []:
-            add_requirement(req)
-        optional = project.get("optional-dependencies", {})
-        if isinstance(optional, dict):
-            for group in optional.values():
-                if isinstance(group, list):
-                    for req in group:
-                        add_requirement(req)
-
-    tool = data.get("tool", {})
-    if isinstance(tool, dict):
-        poetry = tool.get("poetry", {})
-        if isinstance(poetry, dict):
-            for section_name in ("dependencies", "dev-dependencies"):
-                section = poetry.get(section_name, {})
-                if isinstance(section, dict):
-                    for dep in section:
-                        if dep.lower() != "python":
-                            deps.add(_normalize_dependency_name(dep))
-            group = poetry.get("group", {})
-            if isinstance(group, dict):
-                for group_data in group.values():
-                    if isinstance(group_data, dict):
-                        section = group_data.get("dependencies", {})
-                        if isinstance(section, dict):
-                            deps.update(_normalize_dependency_name(dep) for dep in section)
-        for tool_name in ("pdm", "uv"):
-            tool_data = tool.get(tool_name, {})
-            if isinstance(tool_data, dict):
-                for key in ("dev-dependencies", "dependency-groups"):
-                    groups = tool_data.get(key, {})
-                    if isinstance(groups, dict):
-                        for group in groups.values():
-                            if isinstance(group, list):
-                                for req in group:
-                                    add_requirement(req)
-    dependency_groups = data.get("dependency-groups", {})
-    if isinstance(dependency_groups, dict):
-        for group in dependency_groups.values():
-            if isinstance(group, list):
-                for req in group:
-                    add_requirement(req)
-    return deps
-
-
-def _add_common_dependency(deps: set[str], name: str):
-    normalized = _normalize_dependency_name(name)
-    for dep in COMMON_DEPENDENCIES:
-        if normalized == _normalize_dependency_name(dep):
-            deps.add(dep.lower())
-
-
-def dependency_inventory(manifest: dict, packet: Path) -> set[str]:
-    deps: set[str] = set()
-    contents = _packet_file_contents(packet)
-    for rec in manifest.get("included_files", []):
-        rel = rec.get("relative_path", "")
-        content = contents.get(rel, "")
-        name = Path(rel).name.lower()
-        suffix = Path(rel).suffix.lower()
-        if name == "pyproject.toml":
-            for dep in _python_dependency_names_from_pyproject(content):
-                _add_common_dependency(deps, dep)
-        elif name.startswith("requirements") and name.endswith(".txt"):
-            for dep in _python_dependency_names_from_requirement_lines(content):
-                _add_common_dependency(deps, dep)
-        elif name == "package.json":
-            try:
-                package = json.loads(content)
-            except json.JSONDecodeError:
-                package = {}
-            for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
-                section_deps = package.get(section)
-                if isinstance(section_deps, dict):
-                    for dep_name in section_deps:
-                        _add_common_dependency(deps, dep_name)
-        elif suffix == ".py":
-            for imported in re.findall(r"(?m)^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", content):
-                _add_common_dependency(deps, imported)
-        elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
-            for imported in re.findall(r"""(?:from\s+["']|import\s*\(\s*["']|require\s*\(\s*["'])(@?[A-Za-z0-9_.-]+)""", content):
-                _add_common_dependency(deps, _js_package_root(imported))
-    return deps
-
-
-def _has_import(content: str, *modules: str) -> bool:
-    module_pattern = "|".join(re.escape(module) for module in modules)
-    return bool(re.search(rf"(?m)^\s*(?:import|from)\s+({module_pattern})(?:\b|[._])", content))
-
-
-PDF_DEPENDENCIES = {"pypdf", "pdfplumber", "fitz", "pymupdf"}
-
-
-def _declares_pdf_dependency(rel: str, content: str) -> bool:
-    name = Path(rel).name.lower()
-    if name == "pyproject.toml":
-        return any(dep in PDF_DEPENDENCIES for dep in _python_dependency_names_from_pyproject(content))
-    if name.startswith("requirements") and name.endswith(".txt"):
-        return any(dep in PDF_DEPENDENCIES for dep in _python_dependency_names_from_requirement_lines(content))
-    return False
-
-
-def feature_inventory(manifest: dict, packet: Path, deps: set[str] | None = None) -> set[str]:
-    if deps is None:
-        deps = dependency_inventory(manifest, packet)
-    contents = _packet_file_contents(packet)
-    files = {rec.get("relative_path", "").replace("\\", "/") for rec in manifest.get("included_files", [])}
-    lower_files = {rel.lower() for rel in files}
-    features: set[str] = set()
-
-    if any(Path(rel).name.lower() in {"dockerfile", "docker-compose.yml", "compose.yaml", "compose.yml"} for rel in files):
-        features.add("docker")
-    if any(rel.endswith(("/pdf_parser.py", "pdf_parser.py")) for rel in lower_files):
-        features.add("pdf")
-    if any(_declares_pdf_dependency(rel, content) for rel, content in contents.items()):
-        features.add("pdf")
-    if "react" in deps or any(rel in {"frontend/app.tsx", "frontend/app.jsx"} for rel in lower_files):
-        features.add("react")
-    if deps & {"fastapi", "flask", "django"} or any(Path(rel).name.lower() in {"server.py", "app.py"} for rel in files):
-        features.add("web server")
-    if deps & {"sqlalchemy", "prisma"} or any("/migrations/" in f"/{rel}/" or Path(rel).name.lower() in {"schema.prisma", "schema.sql"} for rel in files):
-        features.add("database")
-    if any(part == "auth" or part.startswith("auth_") for rel in lower_files for part in Path(rel).parts):
-        features.add("authentication")
-
-    for rel, content in contents.items():
-        suffix = Path(rel).suffix.lower()
-        if suffix == ".py":
-            if _has_import(content, "pypdf", "pdfplumber", "fitz"):
-                features.add("pdf")
-            if _has_import(content, "fastapi", "flask", "django") or re.search(r"(?m)^\s*@\w+\.(?:route|get|post|put|patch|delete)\(", content):
-                features.add("web server")
-            if _has_import(content, "sqlalchemy", "prisma") or re.search(r"(?i)\b(sqlite|postgres(?:ql)?|mysql)://", content):
-                features.add("database")
-            if _has_import(content, "jwt", "oauthlib", "authlib") or re.search(r"(?i)@\w+\.(?:route|get|post)\([^)]*login", content):
-                features.add("authentication")
-            if _has_import(content, "pytesseract", "easyocr"):
-                features.add("ocr")
-        elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
-            if re.search(r"""(?:from\s+["']react["']|require\s*\(\s*["']react["']|import\s+React\b)""", content):
-                features.add("react")
-            if re.search(r"(?i)\b(jwt|oauth|session|login)\b", content):
-                features.add("authentication")
-        elif Path(rel).name.lower() == "package.json":
-            if re.search(r'"react"\s*:', content):
-                features.add("react")
-    return features
-
-
-PROTECTED_PACKET_ARTIFACTS = {"manifest.json", "receipt.json", "reality_map.json", "ai_instructions.md"}
-
-
-def _normalize_inventory_path(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    rel, unsafe = _normalize_diff_path(value)
-    if unsafe or not rel:
-        return None
-    return rel
-
-
-def _baseline_inventory_from_packet(packet: str | Path, manifest: dict | None = None) -> tuple[set[str], bool]:
-    """Return authoritative enforcement baseline paths when a packet has them.
-
-    Prompt context manifests may be selective, so diff enforcement must prefer the
-    baseline file inventory artifact when it exists. The boolean is True only
-    when a full inventory artifact was loaded successfully.
-    """
-    packet = Path(packet)
-    for name in ("file_inventory.json", "inventory.json", "baseline_inventory.json"):
-        path = packet / name
-        if not path.exists():
-            continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        raw_files = data.get("files") if isinstance(data, dict) else data
-        if not isinstance(raw_files, list):
-            continue
-        files: set[str] = set()
-        for item in raw_files:
-            raw_path = item.get("relative_path") if isinstance(item, dict) else item
-            rel = _normalize_inventory_path(raw_path)
-            if rel:
-                files.add(rel)
-        return files, True
-    return _included_paths(manifest or load_manifest(packet)), False
-
-
-def known_files(manifest: dict, packet_path: str | Path | None = None) -> set[str]:
-    if packet_path is not None:
-        files, _ = _baseline_inventory_from_packet(packet_path, manifest)
-        return files
-    return _included_paths(manifest)
-
-
-def supported_commands_inventory(reality_map: dict) -> set[str]:
-    return set(reality_map.get("supported_commands", []))
-
-
-def docker_evidence(files: set[str]) -> dict[str, bool]:
-    names = {Path(f).name.lower() for f in files}
-    return {
-        "dockerfile": "dockerfile" in names,
-        "compose": bool(names & {"docker-compose.yml", "compose.yaml", "compose.yml"}),
-    }
-
-
-def python_project_evidence(files: set[str], deps: set[str]) -> dict[str, bool]:
-    lower = {f.lower() for f in files}
-    return {
-        "python_project": "pyproject.toml" in lower or any(Path(f).name.lower().startswith("requirements") and f.endswith(".txt") for f in lower),
-        "tests": any(f == "tests" or f.startswith("tests/") for f in lower),
-        "pytest": "pytest" in deps,
-    }
-
-
-def node_project_evidence(files: set[str], scripts: dict[str, str]) -> dict[str, bool]:
-    return {"package_json": "package.json" in {f.lower() for f in files}, "scripts": bool(scripts)}
-
-
-def extract_js_import_specifiers_from_text(text: str) -> set[str]:
-    specifiers: set[str] = set()
-    patterns = [
-        r"""\bimport\s+(?:[^"'()]+?\s+from\s+)?["']([^"']+)["']""",
-        r"""\bexport\s+[^"']*?\s+from\s+["']([^"']+)["']""",
-        r"""\bimport\s*\(\s*["']([^"']+)["']\s*\)""",
-        r"""\brequire\s*\(\s*["']([^"']+)["']\s*\)""",
-    ]
-    for pattern in patterns:
-        specifiers.update(m.strip() for m in re.findall(pattern, text) if m.strip())
-    return {s.lower() for s in specifiers}
-
-
-def extract_imports_from_text(text: str, suffix: str = ".py") -> set[str]:
-    imports: set[str] = set()
-    if suffix == ".py":
-        imports |= set(re.findall(r"(?m)^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", text))
-    elif suffix in JS_EXTS:
-        imports |= extract_js_import_specifiers_from_text(text)
-    return {i.lower() for i in imports}
-
-
-
-
-
-
+from .repository_evidence import (
+    DEFAULT_IGNORED_DIRS,
+    DEFAULT_IGNORED_PATTERNS,
+    DEFAULT_TEXT_EXTENSIONS,
+    SECRET_PATTERNS,
+    COMMON_DEPENDENCIES,
+    FEATURE_NAMES,
+    GIT_TIMEOUT_SECONDS,
+    NATURAL_LANGUAGE_COMMAND_TARGETS,
+    PACKET_ARTIFACT_LIMIT_BYTES,
+    POLICY_LEDGER_LIMIT_BYTES,
+    POLICY_LEDGER_LINE_LIMIT_BYTES,
+    POLICY_LEDGER_RECORD_LIMIT,
+    INVENTORY_RECORD_LIMIT,
+    _command_claims,
+    utc_now,
+    sha256_file,
+    sha256_text,
+    estimate_tokens,
+    is_probably_binary,
+    matches_any,
+    redact_secrets,
+    IncludedFile,
+    IgnoredFile,
+    _tracked_file_inventory,
+    _included_paths,
+    _package_json_scripts,
+    _is_poetry_project,
+    _uses_unittest,
+    generate_reality_map,
+    render_ai_instructions,
+    _load_packet_bytes,
+    _load_packet_json,
+    load_manifest,
+    PATHLIKE_EXTENSIONS,
+    PROJECT_PATH_PREFIXES,
+    _normalize_ai_ref,
+    _looks_like_ai_file_ref,
+    extract_refs,
+    _packet_file_contents,
+    _normalize_dependency_name,
+    _dependency_name_for_import,
+    _is_js_local_specifier,
+    _js_package_root,
+    _python_dependency_names_from_requirement_lines,
+    _python_dependency_names_from_pyproject,
+    _add_common_dependency,
+    dependency_inventory,
+    _has_import,
+    PDF_DEPENDENCIES,
+    _declares_pdf_dependency,
+    feature_inventory,
+    PROTECTED_PACKET_ARTIFACTS,
+    _normalize_inventory_path,
+    InventoryAuthority,
+    _baseline_inventory_from_packet,
+    known_files,
+    supported_commands_inventory,
+    docker_evidence,
+    python_project_evidence,
+    node_project_evidence,
+    extract_js_import_specifiers_from_text,
+    extract_imports_from_text
+)
 
 def _materialize_packet_worktree(packet: Path, overlay: dict[str, str] | None = None) -> tempfile.TemporaryDirectory[str]:
     tmp = tempfile.TemporaryDirectory(prefix="sourcepack-resolver-")
@@ -741,14 +119,18 @@ def _materialize_packet_worktree(packet: Path, overlay: dict[str, str] | None = 
 
 
 def _dependency_additions_from_patch(changes: list[PatchFileChange]) -> set[str]:
-    return set()
+    return _declared_dependency_names_from_patch(changes)
 
 
-def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchFileChange] | None = None) -> dict:
+def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchFileChange] | None = None, trusted_files: set[str] | None = None) -> dict:
     packet = Path(packet_path)
     manifest = load_manifest(packet)
-    reality = json.loads((packet / "reality_map.json").read_text(encoding="utf-8")) if (packet / "reality_map.json").exists() else generate_reality_map(manifest, packet)
-    files, baseline_inventory_loaded = _baseline_inventory_from_packet(packet, manifest)
+    reality_data = _load_packet_json(packet, "reality_map.json") if (packet / "reality_map.json").exists() else generate_reality_map(manifest, packet)
+    reality = reality_data if isinstance(reality_data, dict) else {}
+    inventory = _baseline_inventory_from_packet(packet, manifest)
+    files, baseline_inventory_loaded = inventory
+    if trusted_files is not None:
+        files = set(trusted_files)
     deps = dependency_inventory(manifest, packet)
     scripts = _package_json_scripts(packet)
     if changes is None:
@@ -760,6 +142,11 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
         "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [],
         "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "git_path_modifications": [], "warnings": [],
     }
+    report["baseline_inventory_authority"] = {"status": inventory.status, "complete": inventory.complete, "reason": inventory.reason}
+    if inventory.status == "failed":
+        report["verdict"] = "FAIL"
+        report["baseline_inventory_failed"] = True
+        report["warnings"].append("Trusted baseline inventory could not be acquired safely.")
     if any(ch.unsafe_path for ch in changes):
         report["path_escape"] = True
     all_added = []
@@ -857,7 +244,7 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
             report.setdefault("uncertainties", []).append({"id": "baseline_inventory_missing", "message": "Baseline packet lacks full file inventory; modified files outside prompt context could not be checked against tracked repo inventory.", "evidence": ", ".join(outside_context)})
     if report["new_files"]:
         report["warnings"].append("Patch creates new files that were not part of the original packet reality.")
-    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "git_path_modifications", "path_escape"]
+    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "git_path_modifications", "path_escape", "baseline_inventory_failed"]
     if any(report.get(k) for k in fail_keys):
         report["verdict"] = "FAIL"
     elif report["new_files"] or report["warnings"] or report.get("uncertainties"):
@@ -868,57 +255,23 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
 
 
 
-def _has_negation_before(text: str, start: int) -> bool:
-    window = text[max(0, start - 48):start].lower()
-    return bool(re.search(r"\b(do not|don't|avoid|not|no|without|unless|until|does not|is no|will not)\b", window))
+from .ai_analysis import (
+    _has_negation_before,
+    _ai_dependency_actions,
+    _ai_js_dependency_actions,
+    _ai_command_instructions,
+    analyze_ai_answer
+)
+
+# Compatibility wrapper preserves the facade's injectable Git adapter while
+# repository_evidence owns inventory construction.
+from . import repository_evidence as _repository_evidence
 
 
-def _ai_dependency_actions(text: str, dep: str) -> bool:
-    dep_pat = re.escape(dep)
-    aliases = [dep_pat]
-    for imported, package in PY_IMPORT_ALIASES.items():
-        if package == _normalize_dependency_name(dep):
-            aliases.append(re.escape(imported))
-    alias_pat = "(?:" + "|".join(sorted(set(aliases), key=len, reverse=True)) + ")"
-    patterns = [
-        rf"\bimport\s+{alias_pat}\b",
-        rf"\bfrom\s+{alias_pat}\s+import\b",
-        rf"\b(?:pip install|python\s+-m\s+pip\s+install|poetry add|uv add|pdm add|add|use|install|import)\s+{dep_pat}\b",
-    ]
-    for pattern in patterns:
-        for m in re.finditer(pattern, text, re.I):
-            if not _has_negation_before(text, m.start()):
-                return True
-    return False
-
-
-def _ai_js_dependency_actions(text: str, dep: str) -> bool:
-    dep_pat = re.escape(dep)
-    patterns = [
-        rf"\bimport\s+[^\n;]*?from\s+[`'\"]{dep_pat}(?:/[^`'\"]*)?[`'\"]",
-        rf"\brequire\s*\(\s*[`'\"]{dep_pat}(?:/[^`'\"]*)?[`'\"]\s*\)",
-        rf"\b(?:npm install|npm i|pnpm add|yarn add|add|use|install|import)\s+{dep_pat}\b",
-    ]
-    for pattern in patterns:
-        for m in re.finditer(pattern, text, re.I):
-            if not _has_negation_before(text, m.start()):
-                return True
-    return False
-
-
-def _ai_command_instructions(text: str, command_pattern: str) -> list[str]:
-    found = []
-    for m in re.finditer(command_pattern, text, re.I):
-        before = text[max(0, m.start() - 32):m.start()].lower()
-        line_start = text.rfind("\n", 0, m.start()) + 1
-        line_prefix = text[line_start:m.start()].strip().lower()
-        backticked = m.start() > 0 and m.end() < len(text) and text[m.start() - 1] == "`" and text[m.end()] == "`"
-        instruction = bool(re.search(r"\b(run|then|execute|use|uses|start with)\s+$", before)) or line_prefix in {"-", "*", "1.", "2.", "3."} or backticked
-        if instruction and not _has_negation_before(text, m.start()):
-            found.append(re.sub(r"\s+", " ", m.group(0).strip()).lower())
-    return found
-
-
+def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
+    return _repository_evidence._tracked_file_inventory(
+        root, included_records, run_git_bytes=run_git_bytes
+    )
 
 
 LIGHT_BY_VERDICT = {"PASS": "GREEN LIGHT", "WARN": "YELLOW LIGHT", "FAIL": "RED LIGHT"}
@@ -942,8 +295,9 @@ def finalize_diff_report(repo: str | Path | None, report: dict, args, stem: str 
     if repo is not None:
         try:
             write_user_report(repo, full, stem)
-        except Exception:
-            full.setdefault("warnings", []).append("report_artifact_write_failed")
+            full["persistence"] = {"status": "written"}
+        except Exception as exc:
+            full["persistence"] = {"status": "failed", "reason": str(exc)}
     return full
 
 
@@ -1036,8 +390,6 @@ def _apply_patch_change_to_text(original: str, change: PatchFileChange) -> str |
     if change.deleted_file:
         return ""
     result = original.splitlines()
-    if result and result[0] == "":
-        result = result[1:]
     out: list[str] = []
     idx = 0
     saw_hunk = False
@@ -1133,10 +485,14 @@ def _python_dependency_names_by_scope_from_pyproject(content: str) -> dict[str, 
     return scopes
 
 
-def _declared_dependency_scopes_by_ecosystem(manifest: dict, packet: Path) -> dict[str, dict[str, set[str]]]:
+def _declared_dependency_scopes_by_ecosystem(manifest: dict, packet: Path, source_path: str | None = None) -> dict[str, dict[str, set[str]]]:
     contents = _packet_file_contents(packet)
     scopes = {"python": {"runtime": set(), "dev": set(), "optional": set()}, "js": {"runtime": set(), "dev": set(), "optional": set()}}
     for rel, content in contents.items():
+        manifest_parent = PurePosixPath(rel).parent
+        source_parent = PurePosixPath(source_path).parent if source_path else None
+        if source_parent is not None and manifest_parent != PurePosixPath(".") and manifest_parent not in (source_parent, *source_parent.parents):
+            continue
         name = Path(rel).name.lower()
         if name == "pyproject.toml":
             parsed = _python_dependency_names_by_scope_from_pyproject(content)
@@ -1252,6 +608,29 @@ def _declared_dependency_names_by_ecosystem(manifest: dict, packet: Path) -> dic
 def _declared_dependency_names(manifest: dict, packet: Path) -> set[str]:
     scoped = _declared_dependency_names_by_ecosystem(manifest, packet)
     return scoped["python"] | scoped["js"]
+
+
+def _ambiguous_root_requirement_dependencies(packet: Path) -> set[str]:
+    """Return dependencies with conflicting exact pins in peer runtime manifests."""
+    pins_by_dependency: dict[str, set[str]] = {}
+    specialized = re.compile(r"^requirements[-_.](?:dev|development|test|testing|docs?|documentation)(?:[-_.]|\.txt$)")
+    for rel, content in _packet_file_contents(packet).items():
+        name = Path(rel).name.lower()
+        if "/" in rel or not name.startswith("requirements") or not name.endswith(".txt"):
+            continue
+        if specialized.match(name):
+            continue
+        for line in content.splitlines():
+            match = re.match(r"^\s*([A-Za-z0-9_.-]+)\s*==\s*([^\s;#]+)", line)
+            if not match:
+                continue
+            dependency = _normalize_dependency_name(match.group(1))
+            pins_by_dependency.setdefault(dependency, set()).add(match.group(2))
+    return {
+        dependency
+        for dependency, pins in pins_by_dependency.items()
+        if len(pins) > 1
+    }
 
 
 def _workspace_package_names(packet: Path) -> set[str]:
@@ -1393,7 +772,7 @@ def _unsupported_ecosystem_uncertainties(files: set[str], changes: list[PatchFil
             uncertainties.append({"id": "unsupported_ecosystem", "message": f"{evidence} detected, but {message}", "evidence": evidence})
     return uncertainties
 
-def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
+def judge_patch_text(packet_path: str | Path, patch_text: str, *, trusted_files: set[str] | None = None, worktree_root: str | Path | None = None) -> dict:
     if re.search(r"(?m)^@@", patch_text) and "diff --git " not in patch_text:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
     if re.search(r"(?m)^@@(?! -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)", patch_text):
@@ -1406,52 +785,68 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "path_escape": True, "path_escape_paths": unsafe_paths}
     if patch_text.strip() and not changes and "Binary files " not in patch_text and "GIT binary patch" not in patch_text:
         return {"verdict": "FAIL", "modified_files": [], "missing_modified_files": [], "new_files": [], "deleted_files": [], "unsupported_dependencies": [], "unsupported_commands": [], "protected_artifact_modifications": [], "warnings": [], "malformed_diff": True}
-    report = analyze_patch(packet_path, patch_text, changes)
+    report = analyze_patch(packet_path, patch_text, changes, trusted_files)
     packet = Path(packet_path); manifest = load_manifest(packet); files = known_files(manifest, packet); contents = _packet_file_contents(packet)
+    if worktree_root is not None:
+        baseline_files, baseline_inventory_loaded = _baseline_inventory_from_packet(packet, manifest)
+        if trusted_files is not None:
+            tracked_paths = set(trusted_files)
+            tracked_authority = {"source": "base_tree", "status": "complete", "complete": True, "reason": None}
+        elif baseline_inventory_loaded:
+            tracked_paths = set(baseline_files)
+            tracked_authority = {"source": "trusted_baseline_inventory", "status": "complete", "complete": True, "reason": None}
+        else:
+            tracked_paths = None
+            tracked_authority = {"source": "trusted_baseline_inventory", "status": "unavailable", "complete": False, "reason": "baseline_inventory_missing"}
+        report["symlink_worktree_inspection"] = inspect_symlink_transitions(Path(worktree_root), changes, tracked_paths=tracked_paths, tracked_authority=tracked_authority)
     existing_declared = _declared_dependency_names_by_ecosystem(manifest, packet)
-    scopes = _declared_dependency_scopes_by_ecosystem(manifest, packet)
+    ambiguous_requirements = _ambiguous_root_requirement_dependencies(packet)
     patch_declared, manifest_uncertainties = _declared_dependency_names_from_patch_by_ecosystem_structural(changes, contents)
     if manifest_uncertainties:
         report.setdefault("uncertainties", []).extend(manifest_uncertainties)
     workspace_names = _workspace_package_names(packet)
     unsupported = set(report.get("unsupported_dependencies", []))
-    resolver_tmp = _materialize_packet_worktree(packet)
-    resolver_root = Path(resolver_tmp.name)
-    try:
-        for ch in changes:
-            suffix = Path(ch.path).suffix.lower(); added = "\n".join(ch.added_lines or [])
-            if suffix == ".py":
-                for imported in extract_imports_from_text(added, suffix):
-                    dep_resolution = resolve_python_import(resolver_root, imported, added_dependencies=patch_declared["python"])
-                    dep_name = _dependency_name_for_import(imported)
-                    if dep_resolution.verdict == "PASS":
-                        unsupported.discard(imported); unsupported.discard(dep_name)
-                    elif dep_resolution.reason_code == "declared_dependency":
-                        unsupported.discard(imported); unsupported.discard(dep_name)
-                        report.setdefault("uncertainties", []).append({"id": "declared_dependency", "message": f"{dep_name} is declared in the same patch and requires review", "path": ch.path, "evidence": dep_name})
-                    elif dep_resolution.reason_code == "dependency_scope_review":
-                        report.setdefault("uncertainties", []).append({"id": "dependency_scope_review", "message": f"{dep_name} is declared outside the runtime dependency scope", "path": ch.path, "evidence": dep_name})
-                    elif dep_resolution.reason_code == "unsupported_dependency":
-                        unsupported.add(imported)
-            elif suffix in JS_EXTS:
-                for imported in extract_imports_from_text(added, suffix):
-                    if _is_js_local_specifier(imported):
-                        continue
-                    pkg = _js_package_root(imported)
-                    local_alias = _js_alias_local(imported, files, contents)
-                    if pkg in workspace_names or local_alias is True:
-                        continue
-                    dep_resolution = resolve_js_import(resolver_root, imported)
-                    if dep_resolution.verdict == "PASS":
-                        unsupported.discard(pkg)
-                    elif dep_resolution.reason_code == "js_alias_uncertain":
-                        report.setdefault("uncertainties", []).append({"id": "js_alias_uncertain", "message": f"{imported} could not be resolved safely", "path": ch.path, "evidence": imported})
-                    elif dep_resolution.reason_code == "dependency_scope_review":
-                        report.setdefault("uncertainties", []).append({"id": "dependency_scope_review", "message": f"{pkg} is declared outside the runtime dependency scope", "path": ch.path, "evidence": pkg})
-                    elif dep_resolution.reason_code == "unsupported_dependency" and pkg not in patch_declared["js"]:
-                        unsupported.add(pkg)
-    finally:
-        resolver_tmp.cleanup()
+    for ch in changes:
+        suffix = Path(ch.path).suffix.lower(); added = "\n".join(ch.added_lines or [])
+        scopes = _declared_dependency_scopes_by_ecosystem(manifest, packet, ch.path)
+        if suffix == ".py":
+            for imported in extract_imports_from_text(added, suffix):
+                if imported in PY_STDLIB or imported.startswith(".") or _is_local_python_import(imported, ch.path, files):
+                    continue
+                dep_name = _dependency_name_for_import(imported)
+                if dep_name in ambiguous_requirements:
+                    unsupported.discard(imported); unsupported.discard(dep_name)
+                    report.setdefault("uncertainties", []).append({"id": "dependency_manifest_uncertain", "message": f"{dep_name} has contradictory root requirements evidence", "path": ch.path, "evidence": dep_name})
+                    continue
+                scope_status = _dependency_scope_status(dep_name, scopes["python"], ch.path)
+                if scope_status == "scope_review":
+                    unsupported.discard(imported); unsupported.discard(dep_name)
+                    report.setdefault("uncertainties", []).append({"id": "dependency_scope_review", "message": f"{dep_name} is declared outside the runtime dependency scope", "path": ch.path, "evidence": dep_name})
+                elif scope_status == "missing" and dep_name not in patch_declared["python"]:
+                    unsupported.add(imported)
+                elif dep_name in patch_declared["python"]:
+                    unsupported.discard(imported); unsupported.discard(dep_name)
+                    report.setdefault("uncertainties", []).append({"id": "declared_dependency", "message": f"{dep_name} is declared in the same patch and requires review", "path": ch.path, "evidence": dep_name})
+        elif suffix in JS_EXTS:
+            for imported in extract_imports_from_text(added, suffix):
+                if _is_js_local_specifier(imported):
+                    continue
+                pkg = _js_package_root(imported)
+                local_alias = _js_alias_local(imported, files, contents)
+                if pkg in workspace_names or local_alias is True:
+                    continue
+                if local_alias is None or (local_alias is False and _is_js_alias_specifier(imported)):
+                    report.setdefault("uncertainties", []).append({"id": "js_alias_uncertain", "message": f"{imported} could not be resolved safely", "path": ch.path, "evidence": imported})
+                    continue
+                scope_status = _dependency_scope_status(pkg, scopes["js"], ch.path)
+                if scope_status == "scope_review":
+                    unsupported.discard(pkg)
+                    report.setdefault("uncertainties", []).append({"id": "dependency_scope_review", "message": f"{pkg} is declared outside the runtime dependency scope", "path": ch.path, "evidence": pkg})
+                elif scope_status == "missing" and pkg not in patch_declared["js"]:
+                    unsupported.add(pkg)
+                elif pkg in patch_declared["js"]:
+                    unsupported.discard(pkg)
+                    report.setdefault("uncertainties", []).append({"id": "declared_dependency", "message": f"{pkg} is declared in the same patch and requires review", "path": ch.path, "evidence": pkg})
 
     # Re-run command claims through the command resolver so report output is
     # based on the same manifest-aware command semantics as unit-level checks.
@@ -1509,13 +904,17 @@ def judge_patch_text(packet_path: str | Path, patch_text: str) -> dict:
                 seen_uncertainties.add(key)
                 merged_uncertainties.append(uncertainty)
         report["uncertainties"] = merged_uncertainties
-    unsupported -= patch_declared["python"]
-    unsupported -= patch_declared["js"]
     report["unsupported_dependencies"] = sorted(unsupported)
     if declared_only:
         report.setdefault("warnings", []).append("Patch declares new dependencies that require review.")
         report["declared_dependencies"] = sorted(declared_only)
-    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "git_path_modifications", "binary_diff_blockers", "path_escape"]
+    inspection_envelope = report.get("symlink_worktree_inspection", {})
+    inspections = inspection_envelope.get("inspections", [])
+    report["symlink_directory_collisions"] = [item for item in inspections if item.get("worktree_object_type") == "real_directory" and item.get("directory_nonempty") is True and item.get("unrepresented_content_observed")]
+    report["symlink_worktree_inspection_incomplete"] = [item for item in inspections if not item.get("source_exhausted")]
+    if inspection_envelope and not inspection_envelope.get("source_exhausted") and not report["symlink_worktree_inspection_incomplete"]:
+        report["symlink_worktree_inspection_incomplete"].append({"proposed_path": None, "acquisition_status": "transition_limit_reached", "source_exhausted": False, "inspection_envelope": inspection_envelope})
+    fail_keys = ["missing_modified_files", "unsupported_dependencies", "unsupported_commands", "protected_artifact_modifications", "git_path_modifications", "binary_diff_blockers", "path_escape", "symlink_directory_collisions", "symlink_worktree_inspection_incomplete"]
     report["verdict"] = "FAIL" if any(report.get(k) for k in fail_keys) else "WARN" if (report.get("new_files") or report.get("deleted_files") or report.get("warnings") or declared_only or report.get("uncertainties") or report.get("binary_diffs")) else "PASS"
     return report
 
@@ -1540,10 +939,24 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
     for p in report.get("binary_diffs", []):
         if p not in set(report.get("binary_diff_blockers", [])):
             findings.append(normalized_finding("binary_diff", "warn", "uncertainty", f"Binary content was detected at {p} and was not semantically evaluated.", p, evidence=p))
+    for collision in report.get("symlink_directory_collisions", []):
+        path = collision.get("proposed_path")
+        complete = collision.get("source_exhausted") and collision.get("acquisition_status") == "complete"
+        message = f"{path} currently exists as a nonempty real directory, but the proposed Git state replaces that path with a symlink. The directory contains entries absent from the selected trusted tracked-path evidence and from this proposed transition; applying it may overwrite, displace, hide, or delete data outside Git's recovery boundary."
+        if not complete:
+            message = f"Inspection of the real directory at {path} was incomplete or failed; SourcePack cannot establish that the proposed symlink transition is safe."
+        finding = normalized_finding("symlink_replaces_nonempty_directory", "error", "filesystem", message, path, evidence=path, suggestion="Inspect and preserve the directory contents, back up untracked or ignored data, remove the collision explicitly only after review, correct unsafe or cyclic targets, and rerun SourcePack.", evidence_class="current_worktree", checked_status="checked" if complete else "unavailable", required_evidence_class="current_worktree")
+        finding["symlink_transition"] = collision
+        findings.append(finding)
+    for incomplete in report.get("symlink_worktree_inspection_incomplete", []):
+        path = incomplete.get("proposed_path")
+        finding = normalized_finding("symlink_worktree_inspection_incomplete", "error", "filesystem", f"SourcePack could not completely acquire the worktree or prior-state evidence required to judge the proposed symlink transition{f' at {path}' if path else ''}; safety was not established.", path, evidence=path or "symlink transition inspection", suggestion="Restore or provide trustworthy pre-transition evidence, reduce the change to producer limits, resolve filesystem or Git acquisition failures, and rerun SourcePack.", evidence_class="current_worktree", checked_status="unavailable", required_evidence_class="current_worktree")
+        finding["symlink_transition"] = incomplete
+        findings.append(finding)
     for p in report.get("new_files", []): findings.append(normalized_finding("new_file", "warn", "review", f"{p} was created by the patch.", p))
     for p in report.get("deleted_files", []): findings.append(normalized_finding("deleted_file", "warn", "review", f"{p} was deleted by the patch.", p))
-    for d in report.get("declared_dependencies", []): findings.append(normalized_finding("declared_dependency", "warn", "review", f"{d} was added to dependency files.", evidence=d))
-    for c in report.get("declared_commands", []): findings.append(normalized_finding("declared_command", "warn", "review", f"{c} was added in the same patch.", evidence=c))
+    for d in report.get("declared_dependencies", []): findings.append(normalized_finding("declared_dependency", "warn", "uncertainty", f"{d} was added to dependency files.", evidence=d))
+    for c in report.get("declared_commands", []): findings.append(normalized_finding("declared_command", "warn", "uncertainty", f"{c} was added in the same patch.", evidence=c))
     for w in report.get("uncertainties", []):
         if isinstance(w, dict):
             fid = str(w.get("id") or "uncertainty")
@@ -1554,7 +967,18 @@ def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/report
             fid = fid.strip() or "uncertainty"
             message = detail.strip() or str(w)
             findings.append(normalized_finding(fid, "warn", "uncertainty", message))
-    return traffic_report(report.get("verdict", "PASS"), findings=findings, checked_categories=["file references", "Python imports", "JS/TS imports", "known project commands", "protected SourcePack artifacts"], report_path=report_path)
+    traffic = traffic_report(report.get("verdict", "PASS"), findings=findings, checked_categories=["file references", "Python imports", "JS/TS imports", "known project commands", "protected SourcePack artifacts", "bounded worktree symlink collisions"], report_path=report_path)
+    incomplete = report.get("symlink_worktree_inspection_incomplete", [])
+    if incomplete:
+        traffic["authority"] = {"status": "incomplete", "complete": False, "reason": "symlink_worktree_inspection_incomplete"}
+        traffic["construction_bounds"]["symlink_worktree_inspection"] = {
+            "acquisition_state": "incomplete", "count_state": "lower_bound", "source_exhausted": False,
+            "limit_reached": any(str(item.get("acquisition_status", "")).endswith("limit_reached") for item in incomplete),
+            "paths": [item.get("proposed_path") for item in incomplete],
+            "producer": report.get("symlink_worktree_inspection", {}),
+        }
+        traffic["replay_bundle"] = build_replay_bundle(traffic)
+    return traffic
 
 
 def run_git(repo: Path, args: list[str]):
@@ -1565,42 +989,18 @@ def run_git_bytes(repo: Path, args: list[str]):
     return canonical_run_git_bytes(repo, args)
 
 
+def run_git_bounded(repo: Path, args: list[str]):
+    if getattr(run_git, "__module__", __name__) != __name__:
+        return run_git(repo, args)
+    return canonical_run_git_bounded(repo, args)
+
+
 def git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
-    repo = Path(repo)
-    cp = run_git(repo, ["rev-parse", "--show-toplevel"])
-    if cp.returncode != 0:
-        if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
-            return False, "git_unavailable"
-        if cp.returncode == GIT_RETURNCODE_TIMEOUT:
-            return False, "git_timeout"
-        if cp.returncode == GIT_RETURNCODE_OS_ERROR:
-            return False, "git_error"
-        return False, "not_git"
-    root = Path(cp.stdout.strip())
-    for args in (["diff", "--quiet"], ["diff", "--staged", "--quiet"]):
-        diff_cp = run_git(root, list(args))
-        if diff_cp.returncode == 1:
-            return True, None
-        if diff_cp.returncode == GIT_RETURNCODE_NOT_FOUND:
-            return False, "git_unavailable"
-        if diff_cp.returncode == GIT_RETURNCODE_TIMEOUT:
-            return False, "git_timeout"
-        if diff_cp.returncode == GIT_RETURNCODE_OS_ERROR:
-            return False, "git_error"
-        if diff_cp.returncode != 0:
-            return False, "git_error"
-    untracked = run_git(root, ["ls-files", "--others", "--exclude-standard"])
-    if untracked.returncode == 0 and untracked.stdout.strip():
-        return True, None
-    if untracked.returncode == GIT_RETURNCODE_NOT_FOUND:
-        return False, "git_unavailable"
-    if untracked.returncode == GIT_RETURNCODE_TIMEOUT:
-        return False, "git_timeout"
-    if untracked.returncode == GIT_RETURNCODE_OS_ERROR:
-        return False, "git_error"
-    if untracked.returncode != 0:
-        return False, "git_error"
-    return False, None
+    # Keep this facade wrapper so compatibility monkeypatches continue to
+    # control acquisition while the focused module owns the implementation.
+    from .git_acquisition import worktree_dirty
+
+    return worktree_dirty(repo, run_git)
 
 
 
@@ -1622,17 +1022,69 @@ def _only_sourcepack_gitignore_change(repo: Path) -> bool:
     return bool(added) and set(added) <= {".sourcepack", ".sourcepack/"}
 
 
-def untracked_files_as_diff(repo: str | Path) -> str:
+def untracked_files_as_diff(repo: str | Path, *, with_authority: bool = False):
     repo = Path(repo)
-    cp = run_git(repo, ["ls-files", "--others", "--exclude-standard"])
+    cp = canonical_run_git_bounded(repo, ["ls-files", "--others", "--exclude-standard", "-z", "--", "."], text=False)
     if cp.returncode != 0:
-        return ""
+        reason = "git_output_limit" if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "git_diff_failed"
+        state = "bounded" if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "failed"
+        result = ("", {"status": "incomplete", "complete": False, "reason": reason, "acquisition_state": state})
+        return result if with_authority else ""
+    internal_cp = canonical_run_git_bounded(
+        repo,
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ".sourcepack"],
+        text=False,
+    )
+    if internal_cp.returncode != 0:
+        reason = "git_output_limit" if internal_cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "git_diff_failed"
+        state = "bounded" if internal_cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "failed"
+        result = ("", {"status": "incomplete", "complete": False, "reason": reason, "acquisition_state": state})
+        return result if with_authority else ""
+    raw_paths = list(dict.fromkeys(
+        item for output in (cp.stdout, internal_cp.stdout)
+        for item in output.split(b"\0") if item
+    ))
+    decoded_paths = [item.decode("utf-8", "surrogateescape") for item in raw_paths]
+    generated_paths = {
+        path for path in decoded_paths if operational_sourcepack_artifact_path(path)
+    } | generated_untracked_baseline_artifacts(repo, decoded_paths)
+    allow_path = repo / ".sourcepack" / "policy" / "allow.jsonl"
+    if ".sourcepack/policy/allow.jsonl" in decoded_paths and readable_allow_file_matches_active(repo, allow_path):
+        generated_paths.add(".sourcepack/policy/allow.jsonl")
     chunks = []
-    for rel in [line.strip() for line in cp.stdout.splitlines() if line.strip()]:
+    retained_bytes = 0
+    for raw_rel in raw_paths:
+        rel = raw_rel.decode("utf-8", "surrogateescape")
         safe_rel, unsafe = _normalize_diff_path(rel)
         if unsafe or not safe_rel:
+            result = ("\n".join(chunks) + ("\n" if chunks else ""), {"status": "incomplete", "complete": False, "reason": "unsafe_git_path", "acquisition_state": "failed"})
+            return result if with_authority else result[0]
+        if safe_rel in generated_paths:
             continue
         path = repo / safe_rel
+        try:
+            stat_result = path.lstat()
+        except OSError:
+            continue
+        is_symlink = stat.S_ISLNK(stat_result.st_mode)
+        if is_symlink:
+            try:
+                link_target = os.readlink(path)
+            except OSError:
+                continue
+            target_bytes = os.fsencode(link_target)
+            if len(target_bytes) > 64 * 1024:
+                result = ("\n".join(chunks) + ("\n" if chunks else ""), {"status": "incomplete", "complete": False, "reason": "git_output_limit", "acquisition_state": "bounded"})
+                return result if with_authority else result[0]
+            size = len(target_bytes)
+        elif not stat.S_ISREG(stat_result.st_mode):
+            continue
+        else:
+            size = stat_result.st_size
+        if retained_bytes + size > 8 * 1024 * 1024:
+            result = ("\n".join(chunks) + ("\n" if chunks else ""), {"status": "incomplete", "complete": False, "reason": "git_output_limit", "acquisition_state": "bounded"})
+            return result if with_authority else result[0]
+        retained_bytes += size
         if safe_rel == ".gitignore":
             try:
                 ignore_lines = {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
@@ -1640,7 +1092,14 @@ def untracked_files_as_diff(repo: str | Path) -> str:
                 ignore_lines = set()
             if ignore_lines <= {".sourcepack", ".sourcepack/"}:
                 continue
-        chunks.extend([f"diff --git a/{safe_rel} b/{safe_rel}", "new file mode 100644", "--- /dev/null", f"+++ b/{safe_rel}"])
+        old_header = quote_git_path(f"a/{safe_rel}")
+        new_header = quote_git_path(f"b/{safe_rel}")
+        chunks.extend([f"diff --git {old_header} {new_header}", f"new file mode {'120000' if is_symlink else '100644'}", "--- /dev/null", f"+++ {new_header}"])
+        if is_symlink:
+            target_lines = link_target.split("\n")
+            chunks.append(f"@@ -0,0 +1,{len(target_lines)} @@")
+            chunks.extend(f"+{line}" for line in target_lines)
+            continue
         if is_probably_binary(path):
             chunks.append(f"Binary files /dev/null and b/{safe_rel} differ")
             continue
@@ -1654,7 +1113,8 @@ def untracked_files_as_diff(repo: str | Path) -> str:
         lines = text.splitlines()
         chunks.append(f"@@ -0,0 +1,{len(lines)} @@")
         chunks.extend(f"+{line}" for line in lines)
-    return "\n".join(chunks) + ("\n" if chunks else "")
+    result = ("\n".join(chunks) + ("\n" if chunks else ""), {"status": "complete", "complete": True, "reason": None, "acquisition_state": "complete"})
+    return result if with_authority else result[0]
 
 def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, patch_text: str | None = None, ci: bool = False, base_ref: str | None = None, head_ref: str | None = None, org_policy: str | Path | None = None, org_policy_mode: str = "optional", allow_missing_baseline_init: bool = True) -> dict:
     if (base_ref is None) != (head_ref is None):
@@ -1675,14 +1135,19 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             message = "No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use."
         return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding(finding_id, "error", "git", message)])
     git_root = Path(cp.stdout.strip()).resolve()
-    repo = repo_arg if validate_baseline(repo_arg).get("state") in {"present", "stale", "corrupt"} else git_root
+    try:
+        repo_arg.relative_to(git_root)
+    except ValueError:
+        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", "Selected repository path is outside the discovered Git top-level.")])
+    # The Git top-level is validation evidence only.  The user-selected path is
+    # the SourcePack analysis root even when it has no existing baseline yet.
+    repo = repo_arg
     policy_result = resolve_effective_policy(repo, org_policy=org_policy, org_policy_mode=org_policy_mode)
-    paths = ensure_sourcepack_dirs(repo); added, err = ensure_gitignore_entry(repo)
-    if added:
-        paths.setdefault("gitignore_added", True)
-    if err:
-        rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("gitignore_unwritable", "error", "git", f"Cannot write .gitignore: {err}")])
-        return _finalize_early_core_failure(repo, rep, policy_result)
+    # Explicit patch evidence may not exist in the checked-out worktree.  The
+    # judgment pipeline therefore supplies it directly to the authority owner.
+    if patch_text is not None:
+        policy_result = guard_effective_policy_result(repo, policy_result, patch_text=patch_text)
+    added = False
     if patch_text is None:
         if base_ref is not None and head_ref is not None:
             diff_args = ["diff", "--binary", f"{base_ref}...{head_ref}"]
@@ -1690,7 +1155,11 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             diff_args = ["diff", "--staged"] if staged else ["diff"]
         if repo != git_root:
             diff_args.append("--relative")
-        cp = run_git(repo, diff_args); diff_text = cp.stdout
+        diff_args.extend(["--", "."])
+        cp = run_git_bounded(repo, diff_args); diff_text = cp.stdout
+        if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT:
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", cp.stderr.strip() or "Git diff acquisition was incomplete.")])
+            return _finalize_git_incomplete(repo, rep, policy_result, producer="git_diff", reason="git_output_limit", acquisition_state="bounded")
         if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
             rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_unavailable", "error", "git", "Git executable not found.")])
             return _finalize_early_core_failure(repo, rep, policy_result)
@@ -1702,11 +1171,15 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", message)])
             return _finalize_early_core_failure(repo, rep, policy_result)
         if base_ref is None and head_ref is None and not staged:
-            extra = untracked_files_as_diff(repo)
+            extra, extra_authority = untracked_files_as_diff(repo, with_authority=True)
+            if not extra_authority["complete"]:
+                rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", "Untracked-file diff acquisition exceeded its producer limit.")])
+                return _finalize_git_incomplete(repo, rep, policy_result, producer="git_untracked", reason=extra_authority["reason"], acquisition_state=extra_authority["acquisition_state"])
             if extra and not (added and _only_sourcepack_gitignore_change(repo)):
                 diff_text = (diff_text + "\n" + extra).strip() + "\n"
     else:
         diff_text = patch_text
+    policy_result = guard_effective_policy_result(repo, policy_result, patch_text=diff_text)
     baseline_status = validate_baseline(repo)
     if baseline_status["state"] == "corrupt":
         rep = traffic_report("FAIL", "trusted baseline is corrupt.", [normalized_finding("baseline_corrupt", "error", "baseline", baseline_status["message"])], ["baseline", "diff"], "Recreate the baseline only after verifying the current repo state should be trusted.")
@@ -1741,6 +1214,24 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             return rep
     else:
         rep_note = None
+    trusted_base_files: set[str] | None = None
+    if base_ref is not None:
+        selected_prefix = repo.relative_to(git_root).as_posix()
+        tree_pathspec = selected_prefix if selected_prefix != "." else "."
+        base_tree = run_git_bounded(git_root, ["ls-tree", "-r", "--name-only", base_ref, "--", tree_pathspec])
+        if base_tree.returncode == GIT_RETURNCODE_OUTPUT_LIMIT:
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", base_tree.stderr.strip() or "Git base-tree acquisition was incomplete.")])
+            return _finalize_git_incomplete(repo, rep, policy_result, producer="git_base_tree", reason="git_output_limit", acquisition_state="bounded")
+        if base_tree.returncode != 0:
+            message = base_tree.stderr.strip() or "Git could not inspect the base revision."
+            rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", message)])
+            return _finalize_early_core_failure(repo, rep, policy_result)
+        trusted_base_files = {
+            normalized.removeprefix(selected_prefix.rstrip("/") + "/") if selected_prefix != "." else normalized
+            for path in base_tree.stdout.splitlines()
+            for normalized, unsafe in [_normalize_diff_path(path)]
+            if normalized and not unsafe
+        }
     stale_findings = []
     if baseline_status["state"] == "stale":
         stale_findings.append(normalized_finding("baseline_stale", "warn", "uncertainty", "Trusted SourcePack baseline may not match current repo state."))
@@ -1749,7 +1240,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         rep = traffic_report(verdict, "SourcePack could not fully evaluate this change." if stale_findings else "good to continue.", [normalized_finding("no_diff", "info", "diff", "No uncommitted changes detected."), *stale_findings], ["diff", "baseline freshness"])
     else:
         packet_path = repo / baseline_status["packet_path"]
-        raw = judge_patch_text(packet_path, diff_text); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
+        raw = judge_patch_text(packet_path, diff_text, trusted_files=trusted_base_files, worktree_root=repo); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
         rep = _integrate_execution_findings(repo, diff_text, rep)
         rep = _apply_policy_finishers(repo, packet_path, diff_text, rep, policy_result)
         if stale_findings:
@@ -1781,6 +1272,12 @@ def _rebuild_from_findings(rep: dict, findings: list[dict]) -> dict:
     for key in ("raw_patch_judgment", "policy", "policy_overrides", "policy_config", "policy_config_ignores", "policy_config_warnings", "policy_rule_findings"):
         if key in rep:
             rebuilt[key] = rep[key]
+    if isinstance(rep.get("authority"), dict) and rep["authority"].get("complete") is False:
+        rebuilt["authority"] = rep["authority"]
+        for producer, bounds in (rep.get("construction_bounds") or {}).items():
+            if producer != "findings":
+                rebuilt["construction_bounds"][producer] = bounds
+        rebuilt["replay_bundle"] = build_replay_bundle(rebuilt)
     return rebuilt
 
 
@@ -2139,6 +1636,8 @@ def _apply_policy_rules(repo: Path, packet_path: Path | None, diff_text: str, re
 def _apply_policy_finishers(repo: Path, packet_path: Path | None, diff_text: str, rep: dict, policy_result: dict) -> dict:
     rep = _apply_policy_rules(repo, packet_path, diff_text, rep, policy_result)
     rep = _apply_local_policy(repo, rep)
+    if POLICY_AUTHORITY_ERROR in policy_result.get("errors", []):
+        return rep
     return _apply_policy_config(repo, rep)
 
 def _finalize_early_core_failure(repo: Path, rep: dict, policy_result: dict) -> dict:
@@ -2146,29 +1645,96 @@ def _finalize_early_core_failure(repo: Path, rep: dict, policy_result: dict) -> 
     finalized["repo_path"] = str(repo)
     return finalized
 
-def _policy_entries_for_judgment(repo: Path) -> list[dict]:
-    path = repo / ".sourcepack" / "policy" / "allow.jsonl"
-    if not path.exists():
-        return []
-    entries = []
-    now = utc_now()
-    for line in path.read_text(encoding="utf-8").splitlines():
+
+def _finalize_git_incomplete(repo: Path, rep: dict, policy_result: dict, *, producer: str, reason: str, acquisition_state: str) -> dict:
+    finalized = _finalize_early_core_failure(repo, rep, policy_result)
+    finalized["authority"] = {"status": "incomplete", "complete": False, "reason": reason}
+    finalized["construction_bounds"][producer] = {
+        "count_state": "lower_bound",
+        "source_exhausted": False,
+        "limit_reached": acquisition_state == "bounded",
+        "acquisition_state": acquisition_state,
+    }
+    finalized["replay_bundle"] = build_replay_bundle(finalized)
+    return finalized
+
+@dataclass(frozen=True)
+class PolicyLedgerResult:
+    entries: tuple[dict, ...]
+    status: str
+    reason: str | None = None
+
+
+def _parse_policy_expiry(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("expires_at must be a timestamp string")
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("expires_at must be timezone-aware")
+    return parsed.astimezone(timezone.utc)
+
+
+def _parse_policy_ledger_data(data: bytes) -> PolicyLedgerResult:
+    lines = data.splitlines()
+    if len(lines) > POLICY_LEDGER_RECORD_LIMIT:
+        return PolicyLedgerResult((), "incomplete", "policy ledger record limit exceeded")
+    entries: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    now = datetime.now(timezone.utc)
+    for raw_line in lines:
+        if len(raw_line) > POLICY_LEDGER_LINE_LIMIT_BYTES:
+            return PolicyLedgerResult((), "malformed", "policy ledger line limit exceeded")
         try:
-            entry = json.loads(line)
-        except Exception:
-            continue
-        expires = entry.get("expires_at")
-        if expires and str(expires) < now:
+            entry = json.loads(raw_line.decode("utf-8"))
+            if not isinstance(entry, dict):
+                raise ValueError("record must be an object")
+            if not isinstance(entry.get("id"), str) or entry.get("scope") not in {"path", "dependency", "command"} or not isinstance(entry.get("value"), str) or not isinstance(entry.get("reason"), str):
+                raise ValueError("record does not match the allow policy schema")
+            expiry = _parse_policy_expiry(entry.get("expires_at"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            return PolicyLedgerResult((), "malformed", str(exc))
+        key = (entry["scope"], entry["value"])
+        if key in seen:
+            return PolicyLedgerResult((), "malformed", "duplicate or contradictory policy entry")
+        seen.add(key)
+        if expiry is not None and expiry < now:
             continue
         entries.append(entry)
-    return entries
+    return PolicyLedgerResult(tuple(entries), "complete")
+
+
+def _policy_entries_for_judgment(repo: Path) -> PolicyLedgerResult:
+    readable_path = repo / ".sourcepack" / "policy" / "allow.jsonl"
+    if readable_path.exists():
+        try:
+            readable_data = _read_stable_verification_file(readable_path, POLICY_LEDGER_LIMIT_BYTES)
+        except (OSError, ValueError) as exc:
+            return PolicyLedgerResult((), "incomplete", str(exc))
+        readable_result = _parse_policy_ledger_data(readable_data)
+        if readable_result.status != "complete":
+            return readable_result
+    try:
+        authority_entries = active_allow_records(repo)
+        authority_data = b"".join(json.dumps(entry, sort_keys=True).encode("utf-8") + b"\n" for entry in authority_entries)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        return PolicyLedgerResult((), "incomplete", str(exc))
+    return _parse_policy_ledger_data(authority_data)
 
 
 def _policy_matches(entry: dict, finding: dict) -> bool:
     scope = entry.get("scope")
     value = str(entry.get("value") or "")
     fid = finding.get("id")
-    if fid == "git_path_modification" or str(finding.get("path") or "").startswith(".git/"):
+    override_eligible = {
+        "unsupported_dependency", "policy_dependency_addition", "unsupported_command",
+        "missing_file", "new_file", "deleted_file", "binary_diff",
+        "policy_protected_path", "policy_test_required", "policy_change_limit",
+        "policy_secret_pattern", "policy_package_manager",
+    }
+    if fid not in override_eligible or str(finding.get("path") or "").startswith(".git/"):
         return False
     if fid == "policy_resolution_failed":
         return False
@@ -2183,7 +1749,11 @@ def _policy_matches(entry: dict, finding: dict) -> bool:
             return False
         if str(value).startswith(".sourcepack/baseline/") and not entry.get("high_risk"):
             return False
-        return fid not in {"git_path_modification"}
+        return fid in {
+            "missing_file", "new_file", "deleted_file", "binary_diff",
+            "policy_protected_path", "policy_test_required", "policy_change_limit",
+            "policy_secret_pattern", "policy_package_manager",
+        }
     return False
 
 
@@ -2201,7 +1771,13 @@ def _sync_existing_policy_rule_metadata(rep: dict) -> dict:
     return synced
 
 def _apply_local_policy(repo: Path, rep: dict) -> dict:
-    entries = _policy_entries_for_judgment(repo)
+    ledger = _policy_entries_for_judgment(repo)
+    if ledger.status != "complete":
+        finding = normalized_finding("policy_resolution_failed", "error", "policy", f"Local allow policy could not be acquired safely: {ledger.reason or ledger.status}.")
+        failed = dict(rep)
+        failed["authority"] = {"status": "incomplete", "complete": False, "reason": "local_policy_acquisition_failed"}
+        return _rebuild_from_findings(failed, list(rep.get("findings", [])) + [finding])
+    entries = ledger.entries
     if not entries:
         return rep
     kept = []

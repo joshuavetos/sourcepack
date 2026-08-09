@@ -27,8 +27,11 @@ def ensure_git_repo(repo: Path):
 
 
 def write_repo_policy(repo: Path, rules: dict):
+    ensure_git_repo(repo)
     (repo / ".sourcepack").mkdir(exist_ok=True)
     (repo / ".sourcepack" / "policy.json").write_text(json.dumps({"schema_version": "sourcepack.policy.v1", "rules": rules}), encoding="utf-8")
+    subprocess.run(["git", "add", ".sourcepack/policy.json"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "trust repository policy"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
 def write_org(path: Path, rules: dict, *, policy_id="engineering-default", schema="sourcepack.org_policy.v1"):
@@ -143,7 +146,12 @@ def test_boolean_semantics_for_both_boolean_fields(tmp_path):
         assert data["rules"][rule]["compatibility_status"] == "strengthening"
         write_org(org, {rule: True}); write_repo_policy(tmp_path, {rule: False})
         cp, data = resolve_json(tmp_path, "--org-policy", str(org))
-        assert cp.returncode != 0 and data["rejected_weakening_attempts"][0]["rule"] == rule
+        assert cp.returncode != 0
+        assert data["resolution_status"] == "FAIL"
+        assert data["effective_policy"][rule] is True
+        assert data["rules"][rule]["compatibility_status"] == "rejected_weakening"
+        assert data["rejected_weakening_attempts"][0]["rule"] == rule
+        assert "repository_policy_weakening_attempt" in data["errors"]
         write_repo_policy(tmp_path, {})
         cp, data = resolve_json(tmp_path, "--org-policy", str(org))
         assert cp.returncode == 0 and data["effective_policy"][rule] is True

@@ -109,12 +109,17 @@ See [`docs/reason-codes.md`](docs/reason-codes.md) for exact behavior and remedi
 
 SourcePack keeps reviewed repository evidence separate from AI guidance.
 
-- **Baseline:** reviewed local enforcement state
+- **Accepted baseline:** local enforcement state accepted through a maintainer-controlled workflow
+- **Baseline integrity:** stored artifact bytes checked against the receipt's cryptographic SHA-256 hashes
 - **Prompt context:** advisory material for an AI assistant
 - **Diff:** the actual proposed repository change
 - **Judgment:** the result of checking that change against trusted evidence and policy
 
 Prompt context never becomes trust.
+
+Hash agreement detects stored-artifact changes relative to the accepted receipt; it does not authenticate the baseline's creator, prove that the state was reviewed, or independently establish trust. SourcePack therefore relies on both maintainer acceptance and subsequent integrity checking, and refers to a usable baseline as an **integrity-checked accepted baseline**.
+
+Diff paths are normalized before judgment. Separator variants and `.` components are canonicalized, and internal parent components such as `directory/../file.py` become `file.py`. A parent component that would move above the repository-relative root, as in `../file.py`, is unsafe and fails closed. SourcePack does not reject every occurrence of `..`.
 
 SourcePack refuses to create a trusted baseline from a dirty Git working tree unless `--force` is explicitly supplied. In CI, committed `.sourcepack/baseline/` state must be consumed as-is. CI must never create, refresh, repair, or silently bless trusted baseline state.
 

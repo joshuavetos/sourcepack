@@ -136,6 +136,34 @@ def test_malformed_diff_returns_malformed_unsafe_sentinel():
     ]
 
 
+def test_added_content_outside_a_hunk_is_not_treated_as_patch_evidence():
+    changes = parse_unified_diff(
+        """diff --git a/requirements.txt b/requirements.txt
+--- a/requirements.txt
++++ b/requirements.txt
++malicious-package
+"""
+    )
+
+    assert changes[0].added_lines == []
+    assert changes[-1].operation == "malformed"
+
+
+def test_header_like_added_content_remains_hunk_payload():
+    change = _only_change(
+        """diff --git a/example.diff b/example.diff
+--- a/example.diff
++++ b/example.diff
+@@ -0,0 +1,3 @@
+++++ b/not-a-header
++--- not-an-old-header
++diff --git payload only
+"""
+    )
+
+    assert change.added_lines == ["+++ b/not-a-header", "--- not-an-old-header", "diff --git payload only"]
+
+
 def test_unsafe_absolute_path_is_marked_unsafe_and_adds_malformed_sentinel():
     changes = parse_unified_diff(
         """diff --git a//tmp/outside.txt b//tmp/outside.txt
@@ -210,6 +238,15 @@ def test_tab_suffixed_diff_path_keeps_only_real_path():
 
 def test_normalize_diff_path_marks_windows_style_traversal_unsafe():
     assert normalize_diff_path(r"..\outside.txt") == ("outside.txt", True)
+
+
+def test_normalize_diff_path_canonicalizes_internal_parent_without_marking_escape():
+    assert normalize_diff_path("directory/../file.py") == ("file.py", False)
+    assert normalize_diff_path("directory/nested/../../file.py") == ("file.py", False)
+
+
+def test_normalize_diff_path_marks_only_parent_segments_that_escape_root_unsafe():
+    assert normalize_diff_path("directory/../../file.py") == ("file.py", True)
 
 
 def test_cli_diff_parser_symbols_are_canonical():

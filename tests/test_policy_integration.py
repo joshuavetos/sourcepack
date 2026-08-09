@@ -96,6 +96,9 @@ def test_policy_config_ignored_paths_require_reason_and_do_not_suppress_protecte
         "prompt_context_authoritative": True,
         "baseline_required_in_ci": False,
     }), encoding="utf-8")
+    subprocess.run(["git", "add", "-f", ".sourcepack/policy.json"], cwd=tmp_path, check=True)
+    if subprocess.run(["git", "diff", "--cached", "--quiet", "--", ".sourcepack/policy.json"], cwd=tmp_path).returncode == 1:
+        subprocess.run(["git", "commit", "-m", "trust repository policy", "--", ".sourcepack/policy.json"], cwd=tmp_path, check=True, stdout=subprocess.PIPE)
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "note.md").write_text("new docs\n", encoding="utf-8")
     code, data = report(tmp_path)
@@ -197,6 +200,9 @@ def write_rules(tmp_path, rules):
         "schema_version": "sourcepack.policy.v1",
         "rules": rules,
     }), encoding="utf-8")
+    subprocess.run(["git", "add", "-f", ".sourcepack/policy.json"], cwd=tmp_path, check=True)
+    if subprocess.run(["git", "diff", "--cached", "--quiet", "--", ".sourcepack/policy.json"], cwd=tmp_path).returncode == 1:
+        subprocess.run(["git", "commit", "-m", "trust repository policy", "--", ".sourcepack/policy.json"], cwd=tmp_path, check=True, stdout=subprocess.PIPE)
 
 
 def finding_ids(data):

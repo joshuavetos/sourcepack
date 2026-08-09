@@ -101,6 +101,8 @@ def test_docs_only_repo_allowed_docs_new_file_policy(tmp_path):
         json.dumps({"schema_version": "sourcepack.policy.v1", "ignored_paths": [{"pattern": "docs/**", "reason": "docs reviewed separately"}]}),
         encoding="utf-8",
     )
+    subprocess.run(["git", "add", "-f", ".sourcepack/policy.json"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "trust repository policy", "--", ".sourcepack/policy.json"], cwd=repo, check=True, stdout=subprocess.PIPE)
     (repo / "docs").mkdir()
     (repo / "docs" / "guide.md").write_text("# Guide\n", encoding="utf-8")
 

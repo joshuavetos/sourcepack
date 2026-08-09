@@ -568,3 +568,48 @@ def test_workbench_server_close_shuts_down_executor(tmp_path):
     server.server_close()
     with pytest.raises(RuntimeError):
         server.review_executor.submit(lambda: None)
+
+
+def test_command_center_route_is_owned_by_normal_workbench_handler(tmp_path, monkeypatch):
+    expected = {"ok": True, "status": "success", "snapshot": {"schema_version": "sourcepack.command_center.v1"}}
+    monkeypatch.setattr(workbench, "command_center_payload", lambda repo: expected)
+    server, thread = start_server(tmp_path)
+    try:
+        status, body, headers = request(
+            server,
+            "GET",
+            "/api/command-center/v1/snapshot",
+            {"X-SourcePack-Token": "test-token"},
+        )
+        assert status == 200
+        assert json.loads(body) == expected
+        assert headers["Content-Type"] == "application/json; charset=utf-8"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_command_center_route_preserves_api_authentication(tmp_path):
+    server, thread = start_server(tmp_path)
+    try:
+        for headers in ({}, {"X-SourcePack-Token": "wrong"}, {"X-SourcePack-Token": "bad token"}):
+            status, body, _ = request(server, "GET", "/api/command-center/v1/snapshot", headers)
+            assert status == 403
+            assert json.loads(body) == {"ok": False, "error": "forbidden"}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_repeated_server_construction_uses_same_canonical_handler(tmp_path):
+    first = WorkbenchServer(("127.0.0.1", 0), WorkbenchHandler, tmp_path, "first")
+    second = WorkbenchServer(("127.0.0.1", 0), WorkbenchHandler, tmp_path, "second")
+    try:
+        assert first.RequestHandlerClass is WorkbenchHandler
+        assert second.RequestHandlerClass is WorkbenchHandler
+        assert workbench.WorkbenchHandler is WorkbenchHandler
+    finally:
+        first.server_close()
+        second.server_close()

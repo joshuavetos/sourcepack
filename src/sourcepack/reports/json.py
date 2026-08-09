@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+from itertools import islice
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +18,8 @@ from sourcepack.finding_identity import attach_finding_id
 from sourcepack.remediation import attach_remediation, report_remediation
 
 SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
+REPORT_FINDING_LIMIT = 1000
+CANONICAL_REPORT_SNAPSHOT_LIMIT_BYTES = 2 * 1024 * 1024
 PROVENANCE_FIELDS = (
     "analysis_status",
     "evidence_class",
@@ -77,6 +81,8 @@ def _finding_evidence_item(finding: dict) -> dict:
         "severity": finding.get("severity"),
         "category": category,
     }
+    if "symlink_transition" in finding:
+        metadata["symlink_transition"] = finding["symlink_transition"]
     for field in PROVENANCE_FIELDS:
         if field in finding:
             metadata[field] = finding.get(field)
@@ -95,12 +101,57 @@ def _finding_evidence_item(finding: dict) -> dict:
 
 
 def _dedupe_evidence_items(items: list[dict]) -> list[dict]:
-    by_id = {item["evidence_id"]: item for item in items}
+    by_id: dict[str, dict] = {}
+    for item in items:
+        evidence_id = item["evidence_id"]
+        previous = by_id.get(evidence_id)
+        if previous is not None and previous != item:
+            raise ValueError(f"contradictory evidence items share evidence_id {evidence_id}")
+        by_id[evidence_id] = item
     return [by_id[k] for k in sorted(by_id)]
 
 
+def _bounded_json_text(value, *, limit: int, description: str, **encoder_options) -> str:
+    """Encode JSON incrementally, retaining no more than the accepted byte limit."""
+    retained = bytearray()
+    encoder = json.JSONEncoder(**encoder_options)
+    for chunk in encoder.iterencode(value):
+        encoded = chunk.encode("utf-8")
+        if len(retained) + len(encoded) > limit:
+            raise ValueError(f"{description} exceeds the {limit} byte canonical artifact limit")
+        retained.extend(encoded)
+    return retained.decode("utf-8")
+
+
+def _bounded_json_snapshot(value):
+    """Copy one complete canonical JSON value within the aggregate artifact limit."""
+    encoded = _bounded_json_text(
+        value,
+        limit=CANONICAL_REPORT_SNAPSHOT_LIMIT_BYTES,
+        description="canonical replay bundle",
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return json.loads(encoded)
+
+
 def build_replay_bundle(report: dict, *, generated_at: str | None = None, exit_code: int | None = None, command_mode: str | None = None, policy_mode: str | None = None) -> dict:
-    findings = list(report.get("findings", []))
+    source = _bounded_json_snapshot({
+        "findings": report.get("findings", []),
+        "checked_categories": report.get("checked_categories", []),
+        "not_checked": report.get("not_checked", []),
+        "warnings": report.get("warnings", []),
+        "blockers": report.get("blockers", []),
+        "uncertainties": report.get("uncertainties", []),
+        "baseline_metadata": report.get("baseline_metadata", {}),
+        "prompt_context_metadata": report.get("prompt_context_metadata", {}),
+        "patch_metadata": report.get("patch_metadata", {}),
+        "environment_metadata": report.get("environment_metadata", {}),
+        "authority": report.get("authority", {"status": "complete", "complete": True, "reason": None}),
+        "construction_bounds": report.get("construction_bounds", {}),
+    })
+    findings = source["findings"]
     evidence_items = _dedupe_evidence_items([_finding_evidence_item(f) for f in findings])
     reason_to_evidence: dict[str, list[str]] = {}
     for item in evidence_items:
@@ -109,7 +160,7 @@ def build_replay_bundle(report: dict, *, generated_at: str | None = None, exit_c
             reason_to_evidence.setdefault(code, []).append(item["evidence_id"])
     for code in list(reason_to_evidence):
         reason_to_evidence[code] = sorted(set(reason_to_evidence[code]))
-    return {
+    bundle = {
         "schema_version": REPLAY_BUNDLE_SCHEMA_VERSION,
         "sourcepack_version": report.get("sourcepack_version", __version__),
         "generated_at": generated_at or report.get("generated_at"),
@@ -118,19 +169,127 @@ def build_replay_bundle(report: dict, *, generated_at: str | None = None, exit_c
         "verdict": report.get("verdict"),
         "exit_code": exit_code if exit_code is not None else report.get("exit_code"),
         "normalized_reason_codes": sorted(reason_to_evidence),
-        "checked_categories": report.get("checked_categories", []),
-        "not_checked": report.get("not_checked", []),
+        "checked_categories": source["checked_categories"],
+        "not_checked": source["not_checked"],
         "findings": findings,
-        "warnings": report.get("warnings", []),
-        "blockers": report.get("blockers", []),
-        "uncertainties": report.get("uncertainties", []),
+        "warnings": source["warnings"],
+        "blockers": source["blockers"],
+        "uncertainties": source["uncertainties"],
         "evidence_items": evidence_items,
         "reason_code_evidence": reason_to_evidence,
-        "baseline_metadata": report.get("baseline_metadata", {}),
-        "prompt_context_metadata": report.get("prompt_context_metadata", {}),
-        "patch_metadata": report.get("patch_metadata", {}),
-        "environment_metadata": report.get("environment_metadata", {}),
+        "baseline_metadata": source["baseline_metadata"],
+        "prompt_context_metadata": source["prompt_context_metadata"],
+        "patch_metadata": source["patch_metadata"],
+        "environment_metadata": source["environment_metadata"],
+        "authority": source["authority"],
+        "construction_bounds": source["construction_bounds"],
     }
+    return _bounded_json_snapshot(bundle)
+
+
+def validate_report_construction_metadata(report: dict) -> None:
+    """Validate additive construction authority/count relationships."""
+    authority = report.get("authority")
+    bounds = report.get("construction_bounds")
+    if authority is None and bounds is None:
+        return
+    if not isinstance(authority, dict) or not isinstance(bounds, dict) or not isinstance(bounds.get("findings"), dict):
+        raise ValueError("canonical report construction metadata is missing")
+    finding_bounds = bounds["findings"]
+    required = {
+        "count_state", "source_consumed_count", "source_retained_count",
+        "canonical_emitted_count", "source_exhausted", "total_count",
+        "limit_reached", "source_retention_limit",
+    }
+    if not required <= finding_bounds.keys():
+        raise ValueError("canonical report finding count metadata is incomplete")
+    consumed = finding_bounds["source_consumed_count"]
+    retained = finding_bounds["source_retained_count"]
+    emitted = finding_bounds["canonical_emitted_count"]
+    limit = finding_bounds["source_retention_limit"]
+    values = (consumed, retained, emitted, limit)
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in values):
+        raise ValueError("canonical report finding counts must be non-negative integers")
+    reached = finding_bounds["limit_reached"]
+    exhausted = finding_bounds["source_exhausted"]
+    if not isinstance(reached, bool) or not isinstance(exhausted, bool):
+        raise ValueError("canonical report finding limit flags must be booleans")
+    if emitted != len(report.get("findings", [])):
+        raise ValueError("canonical emitted finding count does not match findings")
+    if reached:
+        if finding_bounds["count_state"] != "lower_bound" or finding_bounds["total_count"] is not None:
+            raise ValueError("limited canonical report requires an unknown lower-bound total")
+        if exhausted or consumed != limit + 1 or retained != limit or emitted != retained + 1:
+            raise ValueError("limited canonical report finding counts are inconsistent")
+        if authority != {"status": "incomplete", "complete": False, "reason": "finding_construction_limit"}:
+            raise ValueError("limited canonical report requires incomplete authority")
+        synthetic = [item for item in report.get("findings", []) if item.get("id") == "report_construction_limit"]
+        if len(synthetic) != 1:
+            raise ValueError("limited canonical report requires one synthetic limit finding")
+        if report.get("blockers") and report.get("verdict") != "FAIL":
+            raise ValueError("limited canonical report verdict does not match retained blocker authority")
+        if not report.get("blockers") and report.get("verdict") not in {"WARN", "FAIL"}:
+            raise ValueError("limited canonical report cannot claim PASS authority")
+    else:
+        if finding_bounds["count_state"] != "exact" or finding_bounds["total_count"] != consumed:
+            raise ValueError("complete canonical report requires an exact source total")
+        if not exhausted or retained != consumed or emitted != retained:
+            raise ValueError("complete canonical report finding counts are inconsistent")
+        complete_authority = {"status": "complete", "complete": True, "reason": None}
+        producer_keys = set(bounds) - {"findings"}
+        if authority == complete_authority and producer_keys:
+            raise ValueError("complete authority cannot retain producer-incomplete metadata")
+        if authority != complete_authority:
+            symlink_bounds = bounds.get("symlink_worktree_inspection")
+            if producer_keys == {"symlink_worktree_inspection"} and isinstance(symlink_bounds, dict):
+                symlink_producer = symlink_bounds.get("producer")
+                producer_valid = (
+                    authority == {"status": "incomplete", "complete": False, "reason": "symlink_worktree_inspection_incomplete"}
+                    and symlink_bounds.get("acquisition_state") == "incomplete"
+                    and symlink_bounds.get("count_state") == "lower_bound"
+                    and symlink_bounds.get("source_exhausted") is False
+                    and isinstance(symlink_bounds.get("limit_reached"), bool)
+                    and isinstance(symlink_bounds.get("paths"), list)
+                    and bool(symlink_bounds["paths"])
+                    and isinstance(symlink_producer, dict)
+                    and symlink_producer.get("source_exhausted") is False
+                    and symlink_producer.get("transition_count_state") in {"exact", "lower_bound"}
+                    and isinstance(symlink_producer.get("transitions_consumed"), int)
+                    and isinstance(symlink_producer.get("transitions_retained"), int)
+                    and symlink_producer.get("transitions_consumed") >= symlink_producer.get("transitions_retained") >= 0
+                    and isinstance(symlink_producer.get("transition_limit_reached"), bool)
+                    and isinstance(symlink_producer.get("inspections"), list)
+                    and len(symlink_producer["inspections"]) == symlink_producer.get("transitions_retained")
+                    and isinstance(symlink_producer.get("ignore_authority"), dict)
+                    and isinstance(symlink_producer.get("tracked_path_authority"), dict)
+                    and isinstance(symlink_producer.get("limits"), dict)
+                )
+                if producer_valid and symlink_producer["transition_limit_reached"]:
+                    producer_valid = symlink_producer["transition_count_state"] == "lower_bound" and symlink_producer.get("total_transitions") is None and symlink_producer["transitions_consumed"] == symlink_producer["transitions_retained"] + 1
+                elif producer_valid:
+                    producer_valid = symlink_producer["transition_count_state"] == "exact" and symlink_producer.get("total_transitions") == symlink_producer["transitions_retained"] == symlink_producer["transitions_consumed"]
+            else:
+                producer_valid = False
+            git_bounds = [value for key, value in bounds.items() if key.startswith("git_") and isinstance(value, dict)]
+            valid_states = {"bounded": ("git_output_limit", True), "failed": ("git_diff_failed", False)}
+            git_producer_valid = len(producer_keys) == 1 and len(git_bounds) == 1
+            if git_producer_valid:
+                producer = git_bounds[0]
+                expected = valid_states.get(producer.get("acquisition_state"))
+                git_producer_valid = (
+                    expected is not None
+                    and authority == {"status": "incomplete", "complete": False, "reason": expected[0]}
+                    and producer.get("count_state") == "lower_bound"
+                    and producer.get("source_exhausted") is False
+                    and producer.get("limit_reached") is expected[1]
+                )
+            producer_valid = producer_valid or git_producer_valid
+            if not producer_valid:
+                raise ValueError("exhausted findings require complete or explicit producer-incomplete authority")
+    replay = report.get("replay_bundle")
+    if replay is not None:
+        if not isinstance(replay, dict) or replay.get("verdict") != report.get("verdict") or replay.get("authority") != authority or replay.get("construction_bounds") != bounds:
+            raise ValueError("replay bundle disagrees with canonical report authority")
 
 
 def normalize_finding_evidence(finding: dict) -> dict:
@@ -139,10 +298,20 @@ def normalize_finding_evidence(finding: dict) -> dict:
     fid = str(finding.get("id") or "")
     category = str(finding.get("category") or "")
     source = str(finding.get("evidence") or finding.get("path") or category or fid)
-    if category == "dependency" or fid in {"unsupported_dependency", "declared_dependency", "dependency_scope_review"}:
+    canonical_proposed_state = fid in {"declared_dependency", "declared_command"} and category == "uncertainty"
+    if canonical_proposed_state or fid in {"unsupported_dependency", "unsupported_command"}:
+        # These reason codes carry semantic provenance which is more precise
+        # than their broad dependency/command display category.  Leave them
+        # untouched so attach_finding_id can restore the canonical record.
+        return finding
+    if fid == "declared_dependency":
+        return attach_evidence_to_finding(finding, "dependency_manifest", source, "partially_checked", required_evidence_class="dependency_manifest")
+    if fid == "declared_command":
+        return attach_evidence_to_finding(finding, "command_manifest", source, "partially_checked", required_evidence_class="command_manifest")
+    if category == "dependency" or fid in {"dependency_scope_review"}:
         status = "missing" if fid == "unsupported_dependency" else "partially_checked" if fid in {"declared_dependency", "dependency_scope_review"} else "checked"
         return attach_evidence_to_finding(finding, "dependency_manifest", source, status, missing_evidence=source if status == "missing" else None, required_evidence_class="dependency_manifest")
-    if category == "command" or fid in {"unsupported_command", "declared_command", "command_manifest_missing", "command_check_inconclusive", "command_manifest_uncertain", "manifest_parse_failure"}:
+    if category == "command" or fid in {"command_manifest_missing", "command_check_inconclusive", "command_manifest_uncertain", "manifest_parse_failure"}:
         status = "missing" if fid in {"unsupported_command", "command_manifest_missing"} else "partially_checked" if fid in {"declared_command", "command_check_inconclusive", "command_manifest_uncertain"} else "unavailable" if fid == "manifest_parse_failure" else "checked"
         return attach_evidence_to_finding(finding, "command_manifest", source, status, missing_evidence=source if status in {"missing", "unavailable"} else None, required_evidence_class="command_manifest")
     if category == "execution" or fid.startswith("execution_"):
@@ -160,7 +329,16 @@ def normalize_finding_evidence(finding: dict) -> dict:
 
 
 def traffic_report(verdict: str, headline: str | None = None, findings: list[dict] | None = None, checked_categories: list[str] | None = None, next_action: str | None = None, report_path: str = ".sourcepack/reports/latest.json", reason_type: str | None = None, not_checked: list[str] | None = None) -> dict:
-    findings = [attach_finding_id(normalize_finding_evidence(f)) for f in (findings or [])]
+    inspected = list(islice(iter(findings or ()), REPORT_FINDING_LIMIT + 1))
+    finding_limit_reached = len(inspected) > REPORT_FINDING_LIMIT
+    findings = [attach_finding_id(normalize_finding_evidence(f)) for f in inspected[:REPORT_FINDING_LIMIT]]
+    if finding_limit_reached:
+        findings.append(attach_finding_id(normalize_finding_evidence(normalized_finding(
+            "report_construction_limit", "warn", "tooling",
+            f"Canonical report finding construction stopped at {REPORT_FINDING_LIMIT} records; additional findings may exist.",
+        ))))
+        if verdict == "PASS":
+            verdict = "WARN"
     findings = sorted(findings, key=lambda f: (SEVERITY_ORDER.get(f.get("severity", "info"), 9), f.get("id", ""), f.get("path") or ""))
     findings = attach_remediation(findings)
     blockers = [f for f in findings if f.get("severity") == "error"]
@@ -199,6 +377,24 @@ def traffic_report(verdict: str, headline: str | None = None, findings: list[dic
     checked_names = sorted(set(checked_categories) | {f["category"] for f in findings if f.get("checked_status") == "checked"})
     confidence_summary = {"basis": "local evidence coverage, not AI confidence", "checked": checked_names, "partially_checked": partial, "not_checked": not_checked, "limitations": ["SourcePack does not prove code correctness", "SourcePack does not prove security", "SourcePack does not verify external API behavior unless local evidence exists"]}
     base_report = {"schema_version": "traffic_report.v1", "sourcepack_version": __version__, "verdict": verdict, "light": light, "headline": headline, "reason_type": reason_type, "commit_policy": commit_policy, "blockers": blockers, "warnings": warnings, "uncertainties": [f for f in warnings if f.get("category") == "uncertainty"], "checked_categories": checked_names, "checked": checked_names, "partially_checked": partial, "unavailable_evidence": evidence["missing_evidence"], "unsupported_evidence": [f for f in findings if f.get("id") == "unsupported_ecosystem"], "not_checked": not_checked, "confidence_summary": confidence_summary, "evidence": evidence, "next_action": next_action, "report_path": report_path, "findings": findings, "remediation": report_remediation(findings)}
+    base_report["authority"] = {
+        "status": "incomplete" if finding_limit_reached else "complete",
+        "complete": not finding_limit_reached,
+        "reason": "finding_construction_limit" if finding_limit_reached else None,
+    }
+    base_report["construction_bounds"] = {
+        "findings": {
+            "count_state": "lower_bound" if finding_limit_reached else "exact",
+            "source_consumed_count": len(inspected),
+            "source_retained_count": min(len(inspected), REPORT_FINDING_LIMIT),
+            "canonical_emitted_count": len(findings),
+            "source_exhausted": not finding_limit_reached,
+            "total_count": None if finding_limit_reached else len(inspected),
+            "limit_reached": finding_limit_reached,
+            "source_retention_limit": REPORT_FINDING_LIMIT,
+        }
+    }
+    validate_report_construction_metadata(base_report)
     evidence_items = _dedupe_evidence_items([_finding_evidence_item(f) for f in findings])
     reason_code_evidence = {}
     for item in evidence_items:
@@ -217,6 +413,21 @@ def _write_optional_report_file(path: Path, content: str) -> None:
         print(f"WARNING: could not write SourcePack report artifact {path}: {exc}", file=sys.stderr)
 
 
+def _write_text_atomic(path: Path, content: str) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def write_user_report(repo: str | Path, report: dict, stem: str = "report") -> None:
     paths = ensure_sourcepack_dirs(repo)
     full = dict(report)
@@ -225,9 +436,15 @@ def write_user_report(repo: str | Path, report: dict, stem: str = "report") -> N
     full["generated_at"] = utc_now()
     if "replay_bundle" in full:
         full["replay_bundle"] = build_replay_bundle(full, generated_at=full["generated_at"], exit_code=full.get("exit_code"), command_mode=full.get("command_mode"), policy_mode=full.get("policy_mode"))
-    json_text = json.dumps(full, indent=2)
+    validate_report_construction_metadata(full)
+    json_text = _bounded_json_text(
+        full,
+        limit=CANONICAL_REPORT_SNAPSHOT_LIMIT_BYTES,
+        description="canonical latest.json report",
+        indent=2,
+    )
     md_text = render_traffic(full, verbose=True)
-    paths["latest_json"].write_text(json_text, encoding="utf-8")
+    _write_text_atomic(paths["latest_json"], json_text)
     sarif_text = json.dumps(render_sarif(full), indent=2)
     _write_optional_report_file(paths["latest_sarif"], sarif_text)
     _write_optional_report_file(paths["latest_md"], md_text)
@@ -240,6 +457,6 @@ def write_user_report(repo: str | Path, report: dict, stem: str = "report") -> N
     typed = paths.get(f"latest_{stem}_json")
     if typed is not None:
         _write_optional_report_file(typed, json_text)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     _write_optional_report_file(paths["archive"] / f"{ts}_{stem}.json", json_text)
     _write_optional_report_file(paths["archive"] / f"{ts}_{stem}.md", md_text)

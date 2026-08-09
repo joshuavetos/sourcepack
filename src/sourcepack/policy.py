@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
+import stat
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 
 from .git import run_git
+
+POLICY_FILE_LIMIT_BYTES = 256 * 1024
+POLICY_COLLECTION_LIMIT = 256
+POLICY_STRING_LIMIT_CHARS = 1024
+POLICY_NESTING_LIMIT = 12
 
 
 class PolicyMode(StrEnum):
@@ -73,6 +80,8 @@ class PolicyValidationResult:
     warnings: tuple[str, ...] = field(default_factory=tuple)
     errors: tuple[str, ...] = field(default_factory=tuple)
     effective_config: PolicyConfig = field(default_factory=PolicyConfig)
+    repository_rules: dict = field(default_factory=dict, repr=False)
+    repository_policy_hash: str | None = field(default=None, repr=False)
 
     def to_json_dict(self) -> dict:
         return {
@@ -138,7 +147,9 @@ def normalize_policy_mode(value: PolicyMode | str | None) -> PolicyMode:
         return PolicyMode.CI
     if text in {"strict", "--strict"}:
         return PolicyMode.STRICT
-    return PolicyMode.LOCAL
+    if text in {"local", "--local"}:
+        return PolicyMode.LOCAL
+    raise ValueError(f"unknown policy mode: {value}")
 
 
 def commit_policy(verdict: str) -> str | None:
@@ -177,8 +188,21 @@ def exit_code(verdict: str, mode: PolicyMode | str | None = None, exit_policy: D
 
 
 def _normalize_policy_path(value: object) -> str | None:
-    text = str(value or "").replace("\\", "/").strip()
-    if not text or text.startswith("/") or "\x00" in text:
+    if not isinstance(value, str):
+        return None
+    text = value.replace("\\", "/")
+    if (
+        not text
+        or text != text.strip()
+        or text.startswith("/")
+        or "\x00" in text
+        or "\r" in text
+        or "\n" in text
+        or (len(text) >= 2 and text[1] == ":" and text[0].isalpha())
+        or value.startswith(("\\\\", "//", "\\\\?\\", "\\\\.\\"))
+    ):
+        return None
+    if "//" in text or any(part in {"", ".", ".."} for part in text.split("/")):
         return None
     pure = PurePosixPath(text)
     if any(part in {"", ".", ".."} for part in pure.parts):
@@ -187,88 +211,14 @@ def _normalize_policy_path(value: object) -> str | None:
 
 
 def policy_path_matches(path: str, pattern: str) -> bool:
-    return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, pattern.rstrip("/") + "/**")
-
-
-def _parse_policy_rules(raw_rules: object, warnings: list[str]) -> PolicyRules:
-    if raw_rules is None:
-        return PolicyRules()
-    if not isinstance(raw_rules, dict):
-        warnings.append("policy_rules_invalid:rules_must_be_object")
-        return PolicyRules()
-    if not raw_rules:
-        return PolicyRules()
-
-    block_dependency_additions = False
-    if "block_dependency_additions" in raw_rules:
-        if raw_rules["block_dependency_additions"] is True:
-            block_dependency_additions = True
-        elif raw_rules["block_dependency_additions"] is not False:
-            warnings.append("policy_rule_invalid:block_dependency_additions_must_be_boolean")
-
-    protected_paths: list[str] = []
-    if "protected_paths" in raw_rules:
-        raw_protected = raw_rules["protected_paths"]
-        if not isinstance(raw_protected, list):
-            warnings.append("policy_rule_invalid:protected_paths_must_be_list")
-        else:
-            for value in raw_protected:
-                norm = _normalize_policy_path(value)
-                if norm:
-                    protected_paths.append(norm)
-                else:
-                    warnings.append(f"policy_rule_invalid:protected_path:{value}")
-
-    package_manager = None
-    if "package_manager" in raw_rules:
-        value = raw_rules["package_manager"]
-        if isinstance(value, str) and value.strip().lower() == "pnpm":
-            package_manager = "pnpm"
-        elif value not in (None, ""):
-            warnings.append(f"policy_rule_invalid:unsupported_package_manager:{value}")
-
-    require_tests_for: list[str] = []
-    if "require_tests_for" in raw_rules:
-        raw_required = raw_rules["require_tests_for"]
-        if not isinstance(raw_required, list):
-            warnings.append("policy_rule_invalid:require_tests_for_must_be_list")
-        else:
-            for value in raw_required:
-                norm = _normalize_policy_path(value)
-                if norm:
-                    require_tests_for.append(norm)
-                else:
-                    warnings.append(f"policy_rule_invalid:require_tests_for:{value}")
-
-    max_changed_lines = None
-    if "max_changed_lines" in raw_rules:
-        value = raw_rules["max_changed_lines"]
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-            max_changed_lines = value
-        else:
-            warnings.append("policy_rule_invalid:max_changed_lines_must_be_positive_integer")
-
-    block_secret_patterns = False
-    if "block_secret_patterns" in raw_rules:
-        if raw_rules["block_secret_patterns"] is True:
-            block_secret_patterns = True
-        elif raw_rules["block_secret_patterns"] is not False:
-            warnings.append("policy_rule_invalid:block_secret_patterns_must_be_boolean")
-
-    return PolicyRules(
-        block_dependency_additions=block_dependency_additions,
-        protected_paths=tuple(protected_paths),
-        package_manager=package_manager,
-        require_tests_for=tuple(require_tests_for),
-        max_changed_lines=max_changed_lines,
-        block_secret_patterns=block_secret_patterns,
-    )
+    return fnmatch.fnmatchcase(path, pattern) or fnmatch.fnmatchcase(path, pattern.rstrip("/") + "/**")
 
 
 def validate_policy_config(repo: str | Path) -> PolicyValidationResult:
     repo_path = Path(repo).resolve()
     path = repo_path / ".sourcepack" / "policy.json"
-    if not path.exists():
+    raw, byte_hash, read_error, policy_present = _read_repository_policy_file(repo_path, path)
+    if not policy_present and read_error is None:
         return PolicyValidationResult(
             schema_version="sourcepack.policy.validation.v1",
             repo=str(repo_path),
@@ -277,27 +227,31 @@ def validate_policy_config(repo: str | Path) -> PolicyValidationResult:
             valid=True,
         )
     warnings: list[str] = []
-    errors: list[str] = []
     invalid_entries: list[PolicyIgnoredEntryIssue] = []
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        return PolicyValidationResult(
-            schema_version="sourcepack.policy.validation.v1",
-            repo=str(repo_path),
-            policy_path=str(path),
-            policy_present=True,
-            valid=False,
-            errors=(f"policy_config_invalid_json:{exc.msg}:line={exc.lineno}:column={exc.colno}",),
+    if read_error:
+        validation_error = (
+            "policy_config_invalid_json:" + read_error.removeprefix("malformed_json:")
+            if read_error.startswith("malformed_json:")
+            else f"policy_config_{read_error}"
         )
-    except OSError as exc:
         return PolicyValidationResult(
             schema_version="sourcepack.policy.validation.v1",
             repo=str(repo_path),
             policy_path=str(path),
             policy_present=True,
             valid=False,
-            errors=(f"policy_config_unreadable:{exc}",),
+            errors=(validation_error,),
+            repository_policy_hash="sha256:" + byte_hash if byte_hash else None,
+        )
+    shape_error = _policy_shape_error(raw)
+    if shape_error:
+        return PolicyValidationResult(
+            schema_version="sourcepack.policy.validation.v1",
+            repo=str(repo_path),
+            policy_path=str(path),
+            policy_present=True,
+            valid=False,
+            errors=(f"policy_config_{shape_error}",),
         )
     if not isinstance(raw, dict):
         return PolicyValidationResult(
@@ -344,7 +298,26 @@ def validate_policy_config(repo: str | Path) -> PolicyValidationResult:
             fmt = str(value).lower().strip()
             if fmt not in {"json", "markdown", "html", "sarif"}:
                 warnings.append(f"policy_report_format_ignored:{fmt}")
-    rules = _parse_policy_rules(raw.get("rules"), warnings)
+    parsed_rules, rule_errors = _rules_from_policy(raw.get("rules"), "repository_policy", fail_unknown=True)
+    if rule_errors:
+        partial_config = PolicyConfig(
+            ignored_paths=tuple(ignored), warnings=tuple(warnings), rules=_policy_rules_from_mapping(parsed_rules)
+        )
+        return PolicyValidationResult(
+            schema_version="sourcepack.policy.validation.v1",
+            repo=str(repo_path),
+            policy_path=str(path),
+            policy_present=True,
+            valid=False,
+            effective_ignored_paths=tuple(ignored),
+            ignored_invalid_entries=tuple(invalid_entries),
+            warnings=tuple(warnings),
+            errors=tuple(rule_errors),
+            effective_config=partial_config,
+            repository_rules=parsed_rules,
+            repository_policy_hash=_content_identity(raw),
+        )
+    rules = _policy_rules_from_mapping(parsed_rules)
     config = PolicyConfig(ignored_paths=tuple(ignored), warnings=tuple(warnings), rules=rules)
     return PolicyValidationResult(
         schema_version="sourcepack.policy.validation.v1",
@@ -356,63 +329,18 @@ def validate_policy_config(repo: str | Path) -> PolicyValidationResult:
         ignored_invalid_entries=tuple(invalid_entries),
         warnings=tuple(warnings),
         effective_config=config,
+        repository_rules=parsed_rules,
+        repository_policy_hash=_content_identity(raw),
     )
 
 
 def load_policy_config(repo: str | Path) -> PolicyConfig:
-    path = Path(repo) / ".sourcepack" / "policy.json"
-    if not path.exists():
+    validation = validate_policy_config(repo)
+    if not validation.policy_present:
         return PolicyConfig()
-    warnings: list[str] = []
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return PolicyConfig(warnings=(f"policy_config_unreadable:{exc}",))
-    if not isinstance(raw, dict):
-        return PolicyConfig(warnings=("policy_config_invalid:root_must_be_object",))
-    if raw.get("prompt_context_authoritative") is True:
-        warnings.append("policy_config_ignored:prompt_context_authoritative")
-    if raw.get("baseline_required_in_ci") is False:
-        warnings.append("policy_config_ignored:baseline_required_in_ci_false")
-    for field, warning in _RESERVED_POLICY_FIELDS.items():
-        if field in raw:
-            warnings.append(warning)
-    ignored: list[dict] = []
-    for item in raw.get("ignored_paths", []) if isinstance(raw.get("ignored_paths", []), list) else []:
-        if not isinstance(item, dict):
-            warnings.append("policy_ignore_invalid:not_object")
-            continue
-        pattern = _normalize_policy_path(item.get("pattern"))
-        reason = str(item.get("reason") or "").strip()
-        if not pattern or not reason:
-            warnings.append("policy_ignore_invalid:pattern_and_reason_required")
-            continue
-        if _is_unsafe_policy_ignore_pattern(pattern):
-            warnings.append(f"policy_ignore_unsafe:{pattern}")
-            continue
-        ignored.append({"pattern": pattern, "reason": reason})
-    protected = []
-    for value in raw.get("protected_paths", []) if isinstance(raw.get("protected_paths", []), list) else []:
-        norm = _normalize_policy_path(value)
-        if norm:
-            protected.append(norm)
-    formats = []
-    for value in raw.get("report_formats", []) if isinstance(raw.get("report_formats", []), list) else []:
-        fmt = str(value).lower().strip()
-        if fmt in {"json", "markdown", "html", "sarif"}:
-            formats.append(fmt)
-        else:
-            warnings.append(f"policy_report_format_ignored:{fmt}")
-    rules = _parse_policy_rules(raw.get("rules"), warnings)
-    return PolicyConfig(
-        strict_default=PolicyConfig.strict_default,
-        fail_on_warn_in_ci=PolicyConfig.fail_on_warn_in_ci,
-        ignored_paths=tuple(ignored),
-        protected_paths=PolicyConfig.protected_paths,
-        report_formats=PolicyConfig.report_formats,
-        warnings=tuple(warnings),
-        rules=rules,
-    )
+    if validation.valid:
+        return validation.effective_config
+    return PolicyConfig(warnings=tuple(validation.warnings) + tuple(validation.errors))
 
 
 def finding_ignored_by_policy(finding: dict, config: PolicyConfig) -> dict | None:
@@ -477,15 +405,132 @@ def _is_relative_to_path(child: Path, parent: Path) -> bool:
 
 def _read_json_file(path: Path) -> tuple[object | None, str | None, str | None]:
     try:
-        b = path.read_bytes()
+        with path.open("rb") as handle:
+            b = handle.read(POLICY_FILE_LIMIT_BYTES + 1)
     except OSError as exc:
         return None, None, f"unreadable:{exc}"
+    if len(b) > POLICY_FILE_LIMIT_BYTES:
+        return None, _sha256_bytes(b[:POLICY_FILE_LIMIT_BYTES]), f"limit_exceeded:file_bytes:{POLICY_FILE_LIMIT_BYTES}"
     try:
         return json.loads(b.decode("utf-8")), _sha256_bytes(b), None
     except UnicodeDecodeError as exc:
         return None, _sha256_bytes(b), f"malformed_json:utf8:{exc}"
     except json.JSONDecodeError as exc:
         return None, _sha256_bytes(b), f"malformed_json:{exc.msg}:line={exc.lineno}:column={exc.colno}"
+    except (RecursionError, MemoryError) as exc:
+        return None, _sha256_bytes(b), f"malformed_json:parser_limit:{type(exc).__name__}"
+
+
+def _read_repository_policy_file(repo: Path, path: Path) -> tuple[object | None, str | None, str | None, bool]:
+    """Acquire repository policy once without following repository-controlled symlinks.
+
+    Descriptor-relative ``O_NOFOLLOW`` is used where available.  The before/after
+    descriptor metadata check detects replacement or mutation during the bounded read.
+    """
+    policy_dir = repo / ".sourcepack"
+    try:
+        directory_stat = policy_dir.lstat()
+    except FileNotFoundError:
+        return None, None, None, False
+    except OSError as exc:
+        return None, None, f"unreadable:{exc}", True
+    if stat.S_ISLNK(directory_stat.st_mode):
+        return None, None, "unsafe:policy_directory_symlink", True
+    if not stat.S_ISDIR(directory_stat.st_mode):
+        return None, None, "unsafe:policy_directory_not_directory", True
+    if (
+        os.open not in getattr(os, "supports_dir_fd", ())
+        or not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_DIRECTORY")
+    ):
+        # This fallback only classifies the pathname at one instant; it does not
+        # provide descriptor-relative confinement or POSIX-equivalent race checks.
+        try:
+            unsupported_stat = path.lstat()
+        except FileNotFoundError:
+            return None, None, None, False
+        except OSError as exc:
+            return None, None, f"unsafe_or_unreadable:{exc}", True
+        if stat.S_ISLNK(unsupported_stat.st_mode):
+            return None, None, "unsafe:policy_symlink", True
+        if not stat.S_ISREG(unsupported_stat.st_mode):
+            return None, None, "unsafe:not_regular_file", True
+        return None, None, "unsupported:descriptor_relative_no_follow", True
+    try:
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        directory_fd = os.open(policy_dir, flags)
+    except (OSError, NotImplementedError) as exc:
+        return None, None, f"unsafe_or_unreadable:{exc}", True
+    try:
+        opened_directory_stat = os.fstat(directory_fd)
+        if (directory_stat.st_dev, directory_stat.st_ino) != (opened_directory_stat.st_dev, opened_directory_stat.st_ino):
+            return None, None, "unstable:policy_directory_replaced", True
+        file_flags = os.O_RDONLY | os.O_NOFOLLOW
+        try:
+            file_fd = os.open(path.name, file_flags, dir_fd=directory_fd)
+        except FileNotFoundError:
+            try:
+                current_directory_stat = policy_dir.lstat()
+            except OSError as exc:
+                return None, None, f"unstable:policy_directory_recheck:{exc}", True
+            if (current_directory_stat.st_dev, current_directory_stat.st_ino) != (opened_directory_stat.st_dev, opened_directory_stat.st_ino):
+                return None, None, "unstable:policy_directory_replaced", True
+            return None, None, None, False
+        except (OSError, NotImplementedError) as exc:
+            return None, None, f"unsafe_or_unreadable:{exc}", True
+        try:
+            before = os.fstat(file_fd)
+            if not stat.S_ISREG(before.st_mode):
+                return None, None, "unsafe:not_regular_file", True
+            chunks: list[bytes] = []
+            remaining = POLICY_FILE_LIMIT_BYTES + 1
+            while remaining:
+                chunk = os.read(file_fd, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(file_fd)
+            data = b"".join(chunks)
+            identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            if identity_before != identity_after or len(data) != before.st_size:
+                return None, _sha256_bytes(data[:POLICY_FILE_LIMIT_BYTES]), "unstable:mutation_detected", True
+            try:
+                current = path.lstat()
+            except OSError as exc:
+                return None, _sha256_bytes(data[:POLICY_FILE_LIMIT_BYTES]), f"unstable:path_recheck:{exc}", True
+            if stat.S_ISLNK(current.st_mode) or (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino):
+                return None, _sha256_bytes(data[:POLICY_FILE_LIMIT_BYTES]), "unstable:path_replaced", True
+        finally:
+            os.close(file_fd)
+    finally:
+        os.close(directory_fd)
+    if len(data) > POLICY_FILE_LIMIT_BYTES:
+        return None, _sha256_bytes(data[:POLICY_FILE_LIMIT_BYTES]), f"limit_exceeded:file_bytes:{POLICY_FILE_LIMIT_BYTES}", True
+    try:
+        return json.loads(data.decode("utf-8")), _sha256_bytes(data), None, True
+    except UnicodeDecodeError as exc:
+        return None, _sha256_bytes(data), f"malformed_json:utf8:{exc}", True
+    except json.JSONDecodeError as exc:
+        return None, _sha256_bytes(data), f"malformed_json:{exc.msg}:line={exc.lineno}:column={exc.colno}", True
+    except (RecursionError, MemoryError) as exc:
+        return None, _sha256_bytes(data), f"malformed_json:parser_limit:{type(exc).__name__}", True
+
+
+def _policy_shape_error(value: object, depth: int = 0) -> str | None:
+    if depth > POLICY_NESTING_LIMIT:
+        return f"limit_exceeded:nesting_depth:{POLICY_NESTING_LIMIT}"
+    if isinstance(value, str) and len(value) > POLICY_STRING_LIMIT_CHARS:
+        return f"limit_exceeded:string_chars:{POLICY_STRING_LIMIT_CHARS}"
+    if isinstance(value, (list, dict)) and len(value) > POLICY_COLLECTION_LIMIT:
+        return f"limit_exceeded:collection_items:{POLICY_COLLECTION_LIMIT}"
+    children = value.values() if isinstance(value, dict) else value if isinstance(value, list) else ()
+    for child in children:
+        error = _policy_shape_error(child, depth + 1)
+        if error:
+            return error
+    return None
 
 
 def _validate_rule_value(rule: str, value: object, source: str) -> tuple[object | None, str | None]:
@@ -537,33 +582,23 @@ def _rules_from_policy(raw_rules: object, source: str, *, fail_unknown: bool) ->
     return out, errors
 
 
+def _policy_rules_from_mapping(rules: dict) -> PolicyRules:
+    """Create the public value object without discarding explicit presence in ``rules``."""
+    return PolicyRules(
+        block_dependency_additions=rules.get("block_dependency_additions", False),
+        protected_paths=tuple(rules.get("protected_paths", ())),
+        package_manager=rules.get("package_manager"),
+        require_tests_for=tuple(rules.get("require_tests_for", ())),
+        max_changed_lines=rules.get("max_changed_lines"),
+        block_secret_patterns=rules.get("block_secret_patterns", False),
+    )
+
+
 def _repo_rules_from_validation(validation: PolicyValidationResult) -> dict:
-    rules = validation.effective_config.rules
-    out = {}
-    if rules.block_dependency_additions:
-        out["block_dependency_additions"] = True
-    if rules.protected_paths:
-        out["protected_paths"] = tuple(sorted(set(rules.protected_paths)))
-    if rules.package_manager is not None:
-        out["package_manager"] = rules.package_manager
-    if rules.require_tests_for:
-        out["require_tests_for"] = tuple(sorted(set(rules.require_tests_for)))
-    if rules.max_changed_lines is not None:
-        out["max_changed_lines"] = rules.max_changed_lines
-    if rules.block_secret_patterns:
-        out["block_secret_patterns"] = True
-    return out
+    return dict(validation.repository_rules)
 
 
-def _repo_rules_from_file(path: Path) -> tuple[dict, list[str], object | None, str | None]:
-    raw, byte_hash, err = _read_json_file(path)
-    if err or not isinstance(raw, dict):
-        return {}, [], raw, byte_hash
-    rules, errors = _rules_from_policy(raw.get("rules", {}), "repository_policy", fail_unknown=False)
-    return rules, errors, raw, byte_hash
-
-
-def resolve_effective_policy(repo: str | Path, org_policy: str | Path | None = None, org_policy_mode: str = "optional") -> dict:
+def _resolve_effective_policy(repo: str | Path, org_policy: str | Path | None = None, org_policy_mode: str = "optional") -> dict:
     requested_path = Path(repo).resolve()
     repo_root, repo_root_error = _canonical_repository_root(requested_path)
     errors: list[str] = []
@@ -619,6 +654,11 @@ def resolve_effective_policy(repo: str | Path, org_policy: str | Path | None = N
                     errors.append("org_policy_unsupported_schema")
                 else:
                     org_id = raw_org.get("policy_id")
+                    shape_error = _policy_shape_error(raw_org)
+                    if shape_error:
+                        org_status = "invalid"
+                        errors.append(f"org_policy_{shape_error}")
+                        org_id = None
                     if not isinstance(org_id, str) or not org_id.strip():
                         org_status = "invalid"; errors.append("org_policy_invalid:policy_id_required")
                     else:
@@ -637,17 +677,10 @@ def resolve_effective_policy(repo: str | Path, org_policy: str | Path | None = N
         errors=(repo_root_error or "repository_root_unresolved",),
     )
     repo_rules = _repo_rules_from_validation(repo_validation) if repo_validation.valid else {}
-    repo_hash = None
-    repo_path = Path(repo_validation.policy_path)
-    if repo_validation.policy_present and repo_path.exists() and repo_path.is_file():
-        parsed_repo_rules, repo_rule_errors, raw_repo_policy, repo_byte_hash = _repo_rules_from_file(repo_path)
-        repo_hash = _content_identity(raw_repo_policy) if raw_repo_policy is not None else ("sha256:" + repo_byte_hash if repo_byte_hash else None)
-        if repo_validation.valid:
-            repo_rules = parsed_repo_rules
-        errors.extend(repo_rule_errors)
+    repo_hash = repo_validation.repository_policy_hash
     if not repo_validation.valid:
         for e in repo_validation.errors:
-            prefixed = f"repository_{e}"
+            prefixed = e if e.startswith("repository_") else f"repository_{e}"
             if prefixed not in errors:
                 errors.append(prefixed)
     effective = {}
@@ -696,6 +729,14 @@ def resolve_effective_policy(repo: str | Path, org_policy: str | Path | None = N
     identity_material = {"schema_version": EFFECTIVE_POLICY_SCHEMA_VERSION, "org_policy_mode": org_policy_mode, "org_policy_status": org_status, "org_policy_hash": org_hash, "repository_policy_hash": repo_hash, "organization_policy_id": org_id, "effective_policy": effective, "rules": rule_results, "rejected_weakening_attempts": rejected, "conflicts": conflicts, "errors": errors}
     eid = "epol_" + _sha256_bytes(_canonical_json(identity_material).encode("utf-8"))[:32]
     return {"schema_version": EFFECTIVE_POLICY_SCHEMA_VERSION, "resolution_status": verdict, "organization_policy_mode": org_policy_mode, "organization_policy_status": org_status, "organization_policy_source": org_source, "organization_policy_id": org_id, "organization_policy_hash": org_hash, "repository_policy_source": {"path": ".sourcepack/policy.json", "status": "loaded" if repo_validation.policy_present and repo_validation.valid else "absent" if not repo_validation.policy_present else "invalid"}, "repository_policy_hash": repo_hash, "effective_policy": effective, "rules": rule_results, "strengthening_contributions": sorted(set(strengthen)), "rejected_weakening_attempts": rejected, "conflicts": conflicts, "errors": errors, "effective_policy_id": eid}
+
+
+def resolve_effective_policy(repo: str | Path, org_policy: str | Path | None = None, org_policy_mode: str = "optional") -> dict:
+    """Resolve trusted policy and explicitly enforce proposed-state authority."""
+    from .policy_authority import guard_effective_policy_result
+
+    result = _resolve_effective_policy(repo, org_policy=org_policy, org_policy_mode=org_policy_mode)
+    return guard_effective_policy_result(repo, result)
 
 
 def _rule_provenance(rule: str, o_present: bool, r_present: bool, o: object, r: object, eff: object) -> dict:

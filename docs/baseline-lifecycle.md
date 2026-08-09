@@ -6,6 +6,8 @@ SourcePack separates trusted repository evidence from AI-facing prompt context. 
 
 `.sourcepack/baseline/` is SourcePack's authoritative record of a repository state that a maintainer has accepted as trusted. `sourcepack diff .` compares current changes against that trusted state and reports unsupported assumptions such as missing files, protected trust-artifact edits, undeclared dependencies, and unsupported commands.
 
+Acceptance and integrity are separate. A maintainer-controlled workflow accepts the repository state as the enforcement baseline. SourcePack later uses cryptographic SHA-256 hashes from the receipt to integrity-check stored artifact bytes against that accepted record. Matching hashes detect changes relative to the receipt; they do not authenticate who created it, prove that review occurred, or independently make the baseline trustworthy. In this document, reliance on a baseline means reliance on an integrity-checked accepted baseline.
+
 ## Why the baseline is authoritative
 
 The baseline is authoritative because it is produced from local repository evidence at a reviewed point in time. It is not a claim from an AI assistant, a README paragraph, or a prompt. Treat baseline changes like other trust-sensitive repository changes: review them before relying on them.

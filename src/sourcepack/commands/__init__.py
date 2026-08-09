@@ -146,11 +146,13 @@ def resolve_command(root: str | Path, command: str, *, added_manifests: dict[str
         for name in ("Taskfile.yml", "Taskfile.yaml"):
             p = _safe(root, name)
             if p and p.exists():
-                try:
-                    import yaml  # type: ignore
-                    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-                except Exception:
-                    data = _simple_taskfile_parse(p.read_text(encoding="utf-8", errors="ignore"))
+                data, error = _simple_taskfile_parse(p.read_text(encoding="utf-8", errors="ignore"))
+                if error is not None:
+                    return CommandResolution(
+                        "FAIL", "manifest_parse_failure", command, name,
+                        f"Taskfile is outside the supported deterministic subset: {error}",
+                        AnalysisStatus.UNREVIEWABLE.value, "analysis_state", "invalid", False,
+                    )
                 targets = _taskfile_targets(data)
                 return CommandResolution("PASS", None, command, name, "task present") if parts[1] in targets else CommandResolution("FAIL", "unsupported_command", command, name, "task missing")
         return CommandResolution("WARN", "command_manifest_missing", command, "Taskfile.yml", "Taskfile missing")
@@ -191,13 +193,37 @@ def resolve_command(root: str | Path, command: str, *, added_manifests: dict[str
     )
 
 
-def _simple_taskfile_parse(text: str) -> dict:
+def _simple_taskfile_parse(text: str) -> tuple[dict, str | None]:
+    """Parse the Taskfile task-name subset without optional YAML behavior."""
     tasks: dict[str, dict] = {}
     in_tasks = False
-    for line in text.splitlines():
-        if re.match(r"^tasks:\s*$", line):
-            in_tasks = True; continue
+    saw_tasks = False
+    for number, line in enumerate(text.splitlines(), 1):
+        if "\t" in line:
+            return {}, f"tabs are unsupported (line {number})"
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped == "---":
+            continue
+        if re.search(r"(?:^|\s)[&*!]|<<\s*:", line) or stripped.startswith(("{", "[")):
+            return {}, f"YAML anchors, tags, aliases, and flow mappings are unsupported (line {number})"
+        if re.match(r"^tasks:\s*(?:#.*)?$", line):
+            if saw_tasks:
+                return {}, f"duplicate tasks mapping (line {number})"
+            in_tasks = True
+            saw_tasks = True
+            continue
         if in_tasks:
-            m = re.match(r"^\s{2}([A-Za-z0-9_.-]+):", line)
-            if m: tasks[m.group(1)] = {}
-    return {"tasks": tasks}
+            if re.match(r"^[^\s#]", line):
+                in_tasks = False
+                continue
+            m = re.match(r"^  ([A-Za-z0-9_.-]+):(?:\s*(?:#.*)?)?$", line)
+            if m:
+                name = m.group(1)
+                if name in tasks:
+                    return {}, f"duplicate task {name!r} (line {number})"
+                tasks[name] = {}
+            elif re.match(r"^\s{2}\S", line):
+                return {}, f"unsupported task key syntax (line {number})"
+    if not saw_tasks:
+        return {}, "top-level tasks mapping is missing"
+    return {"tasks": tasks}, None

@@ -58,6 +58,9 @@ class ReasonCode(StrEnum):
     POLICY_TEST_REQUIRED = "policy_test_required"
     POLICY_CHANGE_LIMIT = "policy_change_limit"
     POLICY_SECRET_PATTERN = "policy_secret_pattern"
+    REPORT_CONSTRUCTION_LIMIT = "report_construction_limit"
+    SYMLINK_REPLACES_NONEMPTY_DIRECTORY = "symlink_replaces_nonempty_directory"
+    SYMLINK_WORKTREE_INSPECTION_INCOMPLETE = "symlink_worktree_inspection_incomplete"
 
 
 _CANONICAL = {code.value for code in ReasonCode}

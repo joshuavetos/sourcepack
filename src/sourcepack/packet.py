@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import fnmatch
+import base64
 import hashlib
 import json
 import os
 import re
-import shutil
+import stat
 import tomllib
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Iterable
-from xml.sax.saxutils import escape as xml_escape
 
 from .diff_parser import normalize_diff_path
-from .git import tracked_paths as git_tracked_paths
+from .git import GitProducerIncompleteError, tracked_paths as git_tracked_paths
 from .ecosystems.python import PY_IMPORT_ALIASES
 
 try:
@@ -37,6 +37,15 @@ DEFAULT_TEXT_EXTENSIONS = {
     ".html", ".css", ".csv", ".toml", ".ini", ".sql", ".sh", ".bat", ".ps1", ".rs",
     ".go", ".java", ".c", ".cpp", ".h", ".hpp", ".rb", ".php", ".xml"
 }
+REPOSITORY_ENTRY_LIMIT = 10_000
+REPOSITORY_DEPTH_LIMIT = 64
+REPOSITORY_READ_LIMIT_BYTES = 64 * 1024 * 1024
+PACKET_CLEANUP_ENTRY_LIMIT = 10_000
+PACKET_CLEANUP_DEPTH_LIMIT = 64
+PACKET_VERIFY_METADATA_LIMIT_BYTES = 8 * 1024 * 1024
+PACKET_VERIFY_RECORD_LIMIT = 10_000
+PACKET_VERIFY_FILE_LIMIT_BYTES = 64 * 1024 * 1024
+PACKET_VERIFY_AGGREGATE_LIMIT_BYTES = 128 * 1024 * 1024
 SECRET_PATTERNS = [
     ("openai_key", re.compile(r"sk-proj-[A-Za-z0-9_\-]{12,}|sk-[A-Za-z0-9]{24,}")),
     ("aws_access_key", re.compile(r"AKIA[0-9A-Z]{16}")),
@@ -130,16 +139,25 @@ class SourceScanner:
         include_hidden: bool = False,
         redact: bool = True,
         trust_git_tracked: bool = True,
+        max_entries: int = REPOSITORY_ENTRY_LIMIT,
+        max_depth: int = REPOSITORY_DEPTH_LIMIT,
+        max_total_read_bytes: int = REPOSITORY_READ_LIMIT_BYTES,
     ):
         self.input_path = Path(input_path).resolve()
         self.max_file_size = max_file_size
         self.include_hidden = include_hidden
         self.redact = redact
         self.trust_git_tracked = trust_git_tracked
+        self.max_entries = max_entries
+        self.max_depth = max_depth
+        self.max_total_read_bytes = max_total_read_bytes
+        self.total_read_bytes = 0
+        self.authority = {"status": "complete", "complete": True, "reason": None}
         self.included_files: list[IncludedFile] = []
         self.ignored_files: list[IgnoredFile] = []
         self.redactions: list[dict] = []
         self.total_seen = 0
+        self.producer_entries_seen = 0
 
     def ignore(self, path: Path, reason: str):
         rel = str(path.relative_to(self.input_path)) if path.is_absolute() or self.input_path in path.parents else str(path)
@@ -154,6 +172,9 @@ class SourceScanner:
 
         if size > self.max_file_size:
             self.ignored_files.append(IgnoredFile(rel_str, "max_file_size_exceeded"))
+            return
+        if self.total_read_bytes + size > self.max_total_read_bytes:
+            self.authority = {"status": "incomplete", "complete": False, "reason": "repository_read_limit"}
             return
 
         if fp.suffix and fp.suffix.lower() not in DEFAULT_TEXT_EXTENSIONS:
@@ -172,6 +193,7 @@ class SourceScanner:
         except OSError:
             self.ignored_files.append(IgnoredFile(rel_str, "read_error"))
             return
+        self.total_read_bytes += size
 
         source_sha256 = sha256_text(content)
         if self.redact:
@@ -200,16 +222,36 @@ class SourceScanner:
         if not self.input_path.is_dir():
             raise NotADirectoryError(f"Input path is not a directory: {self.input_path}")
 
-        tracked_paths = _git_tracked_paths(self.input_path) if self.trust_git_tracked else None
+        try:
+            tracked_paths = _git_tracked_paths(self.input_path) if self.trust_git_tracked else None
+        except GitProducerIncompleteError:
+            self.authority = {"status": "incomplete", "complete": False, "reason": "git_output_limit"}
+            return self
 
-        for root, dirs, files in os.walk(self.input_path, followlinks=False):
-            root_path = Path(root)
-            dirs[:] = sorted(dirs)
-            files = sorted(files)
-            kept_dirs = []
+        pending = [(self.input_path, 0)]
+        while pending and self.authority["complete"]:
+            root_path, depth = pending.pop()
+            try:
+                entries = []
+                with os.scandir(root_path) as iterator:
+                    for entry in iterator:
+                        self.producer_entries_seen += 1
+                        if self.producer_entries_seen > self.max_entries:
+                            self.authority = {"status": "incomplete", "complete": False, "reason": "repository_entry_limit"}
+                            break
+                        entries.append(entry)
+            except OSError:
+                self.ignore(root_path, "directory_read_error")
+                continue
+            if not self.authority["complete"]:
+                break
+            dirs = sorted((entry for entry in entries if entry.is_dir(follow_symlinks=False)), key=lambda item: item.name)
+            files = sorted((entry for entry in entries if not entry.is_dir(follow_symlinks=False)), key=lambda item: item.name)
+            kept_dirs: list[Path] = []
 
-            for d in dirs:
-                dpath = root_path / d
+            for entry in dirs:
+                d = entry.name
+                dpath = Path(entry.path)
                 rel = dpath.relative_to(self.input_path)
                 rel_str = str(rel).replace("\\", "/")
                 if d in DEFAULT_IGNORED_DIRS:
@@ -219,15 +261,20 @@ class SourceScanner:
                 elif dpath.is_symlink():
                     self.ignored_files.append(IgnoredFile(rel_str + "/", "symlink_skipped"))
                 else:
-                    kept_dirs.append(d)
-            dirs[:] = kept_dirs
+                    if depth >= self.max_depth:
+                        self.authority = {"status": "incomplete", "complete": False, "reason": "repository_depth_limit"}
+                        break
+                    kept_dirs.append(dpath)
+            if not self.authority["complete"]:
+                break
+            pending.extend((path, depth + 1) for path in reversed(kept_dirs))
 
-            for filename in files:
-                fp = root_path / filename
+            for entry in files:
+                filename = entry.name
+                fp = Path(entry.path)
+                self.total_seen += 1
                 rel = fp.relative_to(self.input_path)
                 rel_str = str(rel).replace("\\", "/")
-                self.total_seen += 1
-
                 if fp.is_symlink():
                     self.ignored_files.append(IgnoredFile(rel_str, "symlink_skipped"))
                     continue
@@ -245,6 +292,8 @@ class SourceScanner:
                     continue
 
                 self._include_file(fp, rel_str)
+                if not self.authority["complete"]:
+                    break
 
         self.included_files.sort(key=lambda x: x.relative_path)
         self.ignored_files.sort(key=lambda x: x.relative_path)
@@ -281,24 +330,101 @@ def _tracked_file_inventory(root: Path, included_records: list[dict]) -> dict:
     return {"schema_version": "sourcepack.file_inventory.v1", "generated_at": utc_now(), "source": source, "files": files}
 
 
+class PacketCleanupError(RuntimeError):
+    def __init__(self, result: dict[str, object]):
+        self.result = result
+        super().__init__(f"packet output cleanup {result['status']}: {result.get('error') or result.get('limit_reached')}")
+
+
+def _cleanup_result(status: str, consumed: int, source_exhausted: bool, limit: int, limit_reached: str | None, error: str | None) -> dict[str, object]:
+    return {"status": status, "complete": status == "complete", "consumed": consumed, "retained": 0, "source_exhausted": source_exhausted, "total": consumed, "total_is_lower_bound": not source_exhausted, "configured_limit": limit, "limit_reached": limit_reached, "error": error}
+
+
+def _cleanup_packet_output(root: Path, *, max_entries: int, max_depth: int) -> dict[str, object]:
+    canonical_root = root.resolve(strict=True)
+    pending: list[tuple[Path, int, bool]] = [(root, 0, False)]
+    consumed = 0
+    while pending:
+        path, depth, visited = pending.pop()
+        if path != root and not visited:
+            if consumed == max_entries:
+                return _cleanup_result("incomplete", consumed, False, max_entries, "cleanup_entries", None)
+            consumed += 1
+        if path != root:
+            try:
+                path.parent.resolve(strict=True).relative_to(canonical_root)
+            except (OSError, ValueError) as exc:
+                return _cleanup_result("failed", consumed, False, max_entries, None, f"path escape or metadata failure: {exc}")
+        try:
+            if path.is_symlink():
+                path.unlink()
+                continue
+            if not path.is_dir():
+                path.unlink()
+                continue
+            try:
+                path.resolve(strict=True).relative_to(canonical_root)
+            except (OSError, ValueError) as exc:
+                return _cleanup_result("failed", consumed, False, max_entries, None, f"path escape or metadata failure: {exc}")
+            if visited:
+                if path != root:
+                    path.rmdir()
+                continue
+            if depth > max_depth:
+                return _cleanup_result("incomplete", consumed, False, max_entries, "cleanup_depth", None)
+            entries = []
+            with os.scandir(path) as iterator:
+                for entry in iterator:
+                    if len(entries) >= max_entries - consumed:
+                        return _cleanup_result("incomplete", consumed, False, max_entries, "cleanup_entries", None)
+                    entries.append(Path(entry.path))
+            pending.append((path, depth, True))
+            for child in reversed(sorted(entries, key=lambda item: item.name)):
+                pending.append((child, depth + 1, False))
+            # Entries are counted only after successful deletion, so failures never
+            # imply that an observed prefix was cleaned.
+            if not entries and path != root:
+                pending.pop()
+                path.rmdir()
+        except OSError as exc:
+            return _cleanup_result("failed", consumed, False, max_entries, None, f"cleanup failed: {exc}")
+    return _cleanup_result("complete", consumed, True, max_entries, None, None)
+
+
 class PacketWriter:
     OUTPUT_FILES = ["manifest.json", "context.md", "context.xml", "file_tree.txt", "ignored_files.txt", "token_report.json", "redactions.json", "reality_map.json", "ai_instructions.md", "file_inventory.json"]
 
-    def __init__(self, out: str | Path, scanner: SourceScanner, force: bool = False):
+    def __init__(self, out: str | Path, scanner: SourceScanner, force: bool = False, *, cleanup_entry_limit: int = PACKET_CLEANUP_ENTRY_LIMIT, cleanup_depth_limit: int = PACKET_CLEANUP_DEPTH_LIMIT):
         self.out = Path(out)
         self.scanner = scanner
         self.force = force
+        self.cleanup_entry_limit = cleanup_entry_limit
+        self.cleanup_depth_limit = cleanup_depth_limit
+        self.cleanup_result: dict[str, object] | None = None
 
     def prepare_out(self):
-        if self.out.exists() and any(self.out.iterdir()):
+        if self.out.is_symlink():
+            self.cleanup_result = _cleanup_result("failed", 0, False, self.cleanup_entry_limit, "output_root_symlink", "output root must not be a symlink")
+            raise PacketCleanupError(self.cleanup_result)
+        if self.out.exists():
+            if not self.out.is_dir():
+                self.cleanup_result = _cleanup_result("failed", 0, False, self.cleanup_entry_limit, None, "output root is not a directory")
+                raise PacketCleanupError(self.cleanup_result)
             if not self.force:
-                raise FileExistsError(f"Output directory is non-empty: {self.out}")
-            for child in self.out.iterdir():
-                if child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
+                try:
+                    nonempty = next(os.scandir(self.out), None) is not None
+                except OSError as exc:
+                    raise FileExistsError(f"Cannot inspect output directory: {self.out}: {exc}") from exc
+                if nonempty:
+                    raise FileExistsError(f"Output directory is non-empty: {self.out}")
+            else:
+                self.cleanup_result = _cleanup_packet_output(self.out, max_entries=self.cleanup_entry_limit, max_depth=self.cleanup_depth_limit)
+                if self.cleanup_result["status"] != "complete":
+                    raise PacketCleanupError(self.cleanup_result)
         self.out.mkdir(parents=True, exist_ok=True)
+        if self.cleanup_result is None:
+            self.cleanup_result = _cleanup_result("complete", 0, True, self.cleanup_entry_limit, None, None)
+        return self.cleanup_result
 
     def write_all(self):
         self.prepare_out()
@@ -319,6 +445,7 @@ class PacketWriter:
             "total_files_ignored": len(ignored_records),
             "total_bytes_included": total_bytes,
             "total_estimated_tokens": total_tokens,
+            "authority": dict(self.scanner.authority),
             "included_files": included_records,
             "ignored_files": ignored_records,
         }
@@ -332,10 +459,10 @@ class PacketWriter:
         (self.out / "context.md").write_text("\n".join(md_parts), encoding="utf-8")
         xml_parts = ["<sourcepack>", "  <files>"]
         for f in self.scanner.included_files:
-            xml_parts.append(f'    <file path="{xml_escape(f.relative_path)}" sha256="{f.sha256}" bytes="{f.size_bytes}" estimated_tokens="{f.estimated_tokens}">')
-            xml_parts.append("      <content>")
-            xml_parts.append(xml_escape(f.content))
-            xml_parts.append("      </content>")
+            encoded_path = base64.b64encode(f.relative_path.encode("utf-8", "surrogateescape")).decode("ascii")
+            encoded_content = base64.b64encode(f.content.encode("utf-8")).decode("ascii")
+            xml_parts.append(f'    <file path_b64="{encoded_path}" sha256="{f.sha256}" bytes="{f.size_bytes}" estimated_tokens="{f.estimated_tokens}">')
+            xml_parts.append(f'      <content encoding="base64">{encoded_content}</content>')
             xml_parts.append("    </file>")
         xml_parts.extend(["  </files>", "</sourcepack>"])
         (self.out / "context.xml").write_text("\n".join(xml_parts), encoding="utf-8")
@@ -539,68 +666,210 @@ def load_manifest(packet: Path) -> dict:
     return json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
 
 
-def verify_packet(packet_path: str | Path, against: str | Path | None = None) -> bool:
+def _load_verification_json(path: Path, byte_limit: int) -> dict:
+    raw = _read_stable_verification_file(path, byte_limit)
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError(f"{path.name} must contain a JSON object")
+    return value
+
+
+def _read_stable_verification_file(path: Path, byte_limit: int) -> bytes:
+    """Read a regular file through one descriptor and reject boundary-changing races."""
+    before = path.stat(follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode) or before.st_size > byte_limit:
+        raise ValueError("not a regular file or byte limit exceeded")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("file changed before verification read")
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            raw = handle.read(byte_limit + 1)
+        after = os.fstat(fd)
+    finally:
+        os.close(fd)
+    if len(raw) > byte_limit:
+        raise ValueError("byte limit exceeded during verification read")
+    if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (
+        opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns
+    ) or len(raw) != opened.st_size:
+        raise ValueError("file changed during verification read")
+    return raw
+
+
+def _confined_verification_file(root: Path, raw_path: object) -> tuple[Path | None, str | None]:
+    if not isinstance(raw_path, str) or not raw_path:
+        return None, "path must be a nonempty string"
+    portable = raw_path.replace("\\", "/")
+    windows_path = PureWindowsPath(raw_path)
+    if PurePosixPath(portable).is_absolute() or windows_path.is_absolute() or windows_path.drive:
+        return None, "absolute or drive-qualified path"
+    if ".." in PurePosixPath(portable).parts:
+        return None, "parent traversal"
+    normalized, unsafe = normalize_diff_path(portable)
+    if unsafe or not normalized:
+        return None, "unsafe path"
+
+    candidate = root.joinpath(*PurePosixPath(normalized).parts)
+    current = root
+    try:
+        for component in PurePosixPath(normalized).parts:
+            current = current / component
+            if current.is_symlink():
+                return None, "symlink traversal"
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+        if not resolved.is_file():
+            return None, "not a regular file"
+    except (OSError, ValueError):
+        return None, "missing, unreadable, or outside declared root"
+    return resolved, None
+
+
+def verify_packet(
+    packet_path: str | Path,
+    against: str | Path | None = None,
+    *,
+    metadata_byte_limit: int = PACKET_VERIFY_METADATA_LIMIT_BYTES,
+    record_limit: int = PACKET_VERIFY_RECORD_LIMIT,
+    file_byte_limit: int = PACKET_VERIFY_FILE_LIMIT_BYTES,
+    aggregate_byte_limit: int = PACKET_VERIFY_AGGREGATE_LIMIT_BYTES,
+) -> bool:
     packet = Path(packet_path)
-    ok = True
-    receipt_path = packet / "receipt.json"
-    if not receipt_path.exists():
-        print("FAIL receipt.json missing")
+    if packet.is_symlink():
+        print("FAIL packet root must not be a symlink")
         return False
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    for name, expected in receipt.get("hashes", {}).items():
-        path = packet / name
-        if not path.exists():
-            print(f"FAIL {name} missing")
-            ok = False
-            continue
-        actual = sha256_file(path)
+    try:
+        packet = packet.resolve(strict=True)
+    except OSError:
+        print("FAIL packet root missing or unreadable")
+        return False
+    if not packet.is_dir():
+        print("FAIL packet root is not a directory")
+        return False
+    ok = True
+    receipt_path, receipt_path_error = _confined_verification_file(packet, "receipt.json")
+    if receipt_path_error or receipt_path is None:
+        print(f"FAIL unsafe receipt.json: {receipt_path_error}")
+        return False
+    try:
+        receipt = _load_verification_json(receipt_path, metadata_byte_limit)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        print(f"FAIL receipt.json unavailable or malformed: {exc}")
+        return False
+    hashes = receipt.get("hashes", {})
+    if not isinstance(hashes, dict):
+        print("FAIL receipt.json hashes must be an object")
+        return False
+    if len(hashes) > record_limit:
+        print(f"FAIL packet verification record limit exceeded: {record_limit}")
+        return False
+    if "receipt.json" in hashes or "manifest.json" not in hashes:
+        print("FAIL receipt.json has incoherent artifact coverage")
+        return False
+    digest_pattern = re.compile(r"^[0-9a-f]{64}$")
+    bytes_read = 0
+    for name, expected in hashes.items():
+        if not isinstance(expected, str) or digest_pattern.fullmatch(expected) is None:
+            print(f"FAIL invalid receipt hash for {name!r}")
+            return False
+        path, path_error = _confined_verification_file(packet, name)
+        if path_error or path is None:
+            print(f"FAIL unsafe packet artifact {name!r}: {path_error}")
+            return False
+        remaining = min(file_byte_limit, aggregate_byte_limit - bytes_read)
+        if remaining < 0:
+            print(f"FAIL packet verification byte limit exceeded at {name}")
+            return False
+        try:
+            raw = _read_stable_verification_file(path, remaining)
+        except (OSError, ValueError):
+            print(f"FAIL packet verification byte limit or stable-read check failed at {name}")
+            return False
+        bytes_read += len(raw)
+        actual = hashlib.sha256(raw).hexdigest()
         if actual == expected:
             print(f"PASS {name}")
         else:
             print(f"FAIL {name} hash mismatch")
             ok = False
     if against:
-        manifest = load_manifest(packet)
-        source = Path(against).resolve()
-        included = {rec["relative_path"]: rec for rec in manifest.get("included_files", [])}
+        manifest_path, manifest_path_error = _confined_verification_file(packet, "manifest.json")
+        if manifest_path_error or manifest_path is None:
+            print(f"FAIL unsafe manifest.json: {manifest_path_error}")
+            return False
+        try:
+            manifest = _load_verification_json(manifest_path, metadata_byte_limit)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            print(f"FAIL manifest.json unavailable or malformed: {exc}")
+            return False
+        source = Path(against)
+        if source.is_symlink():
+            print("FAIL against-source root must not be a symlink")
+            return False
+        try:
+            source = source.resolve(strict=True)
+        except OSError:
+            print("FAIL against-source root missing or unreadable")
+            return False
+        if not source.is_dir():
+            print("FAIL against-source root is not a directory")
+            return False
+        included_records = manifest.get("included_files", [])
+        if not isinstance(included_records, list) or len(included_records) > record_limit:
+            print(f"FAIL manifest included-file verification record limit exceeded: {record_limit}")
+            return False
+        if any(not isinstance(rec, dict) or not isinstance(rec.get("relative_path"), str) for rec in included_records):
+            print("FAIL manifest included-file records are malformed")
+            return False
+        relative_paths = [rec["relative_path"] for rec in included_records]
+        if len(set(relative_paths)) != len(relative_paths):
+            print("FAIL manifest contains duplicate relative_path values")
+            return False
+        included = dict(zip(relative_paths, included_records))
         for rel, rec in included.items():
-            source_file = source / rel
-            if not source_file.exists():
-                print(f"FAIL source missing {rel}")
-                ok = False
-            elif is_probably_binary(source_file):
+            source_file, path_error = _confined_verification_file(source, rel)
+            if path_error or source_file is None:
+                print(f"FAIL unsafe source file {rel!r}: {path_error}")
+                return False
+            has_source_hash = rec.get("source_sha256") is not None
+            expected_source_hash = rec.get("source_sha256") if has_source_hash else rec.get("sha256")
+            if not isinstance(expected_source_hash, str) or digest_pattern.fullmatch(expected_source_hash) is None:
+                print(f"FAIL invalid source hash for {rel!r}")
+                return False
+            remaining = min(file_byte_limit, aggregate_byte_limit - bytes_read)
+            try:
+                raw = _read_stable_verification_file(source_file, remaining)
+            except (OSError, ValueError):
+                print(f"FAIL source verification byte limit or stable-read check failed at {rel}")
+                return False
+            bytes_read += len(raw)
+            if b"\x00" in raw[:1024]:
                 print(f"WARN source now binary {rel}")
+                content_hash = hashlib.sha256(raw).hexdigest()
             else:
                 try:
-                    content = source_file.read_text(encoding="utf-8")
-                except Exception:
+                    content = raw.decode("utf-8")
+                except UnicodeDecodeError:
                     print(f"FAIL source unreadable {rel}")
                     ok = False
                     continue
-                expected_source_hash = rec.get("source_sha256")
-                if expected_source_hash is None:
-                    expected_source_hash = rec.get("sha256")
+                if not has_source_hash:
                     redacted, _ = redact_secrets(content)
                     content_hash = sha256_text(redacted)
                 else:
                     content_hash = sha256_text(content)
-                if content_hash != expected_source_hash:
-                    print(f"FAIL source changed {rel}")
-                    ok = False
+            if content_hash != expected_source_hash:
+                print(f"FAIL source changed {rel}")
+                ok = False
 
-        tracked_paths = _git_tracked_paths(source)
-        current_files = []
-        for root, dirs, files in os.walk(source, followlinks=False):
-            dirs[:] = [d for d in sorted(dirs) if d not in DEFAULT_IGNORED_DIRS and not d.startswith(".")]
-            for filename in sorted(files):
-                fp = Path(root) / filename
-                if filename.startswith(".") or fp.suffix.lower() not in DEFAULT_TEXT_EXTENSIONS:
-                    continue
-                rel = str(fp.relative_to(source)).replace("\\", "/")
-                if tracked_paths is not None and rel not in tracked_paths:
-                    continue
-                if rel not in included:
-                    current_files.append(rel)
+        scanner = SourceScanner(source).scan()
+        if not scanner.authority["complete"]:
+            print(f"FAIL repository traversal incomplete: {scanner.authority['reason']}")
+            ok = False
+        current_files = [item.relative_path for item in scanner.included_files if item.relative_path not in included]
         for rel in current_files:
             print(f"WARN new source file not in packet {rel}")
     print("OVERALL", "PASS" if ok else "FAIL")

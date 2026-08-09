@@ -32,3 +32,54 @@ Executor shutdown is nonblocking. Closing Workbench cancels queued reviews where
 9. Let Codex or another external coding agent repair the repository outside Workbench.
 10. Return to the same browser session and click **Run Review Again**.
 11. Confirm the current verdict becomes **PASS** and the current-session transition message reports the previous FAIL and current PASS without claiming code correctness.
+## Workbench browser validation
+
+The canonical rendered-page gate is:
+
+```bash
+python -m pip install -e '.[browser-test]'
+python -m playwright install --with-deps chromium
+python -m pytest -q tests/test_workbench_browser.py
+```
+
+Playwright is an optional, development-only dependency because the repository had no
+browser-capable test dependency or harness. It does not change SourcePack's runtime
+dependencies and never downloads a browser during ordinary installation or Workbench
+use. Browser installation is an explicit setup step. CI runs this suite as the distinct
+**Workbench browser gate**, rather than making browser availability part of the offline
+release-smoke command.
+
+The suite starts the actual `WorkbenchServer` with `WorkbenchHandler`, a session token,
+checked-in HTML and JavaScript, an ephemeral loopback port, and an isolated temporary
+repository. It observes the authenticated
+`GET /api/command-center/v1/snapshot` request and exercises the bounded review endpoint.
+Narrow producer-boundary injection supplies deterministic, canonical Command Center
+snapshots for states that cannot safely be manufactured as trusted repository state.
+It does not replace the application with a fixture or reconstruct snapshot state in the
+browser.
+
+Covered states include PASS, WARN, FAIL, no report, missing baseline, stale baseline,
+corrupt/unverifiable baseline, malformed report, unsupported report, snapshot-builder
+failure, unavailable remediation, and an available correction prompt. Interaction
+coverage includes token cleanup and session reload, bounded review, prompt copy,
+technical-report expansion, explicit-surface navigation, structured-action handling,
+and HTML-like untrusted report text.
+
+The automated accessibility checks cover a single page-level heading, heading order,
+document title and language, viewport metadata, unique IDs, accessible names for
+actions, native disabled controls, keyboard reachability, visible focus, live status and
+alert semantics, and keyboard operation of the technical report. These focused checks
+help prevent obvious regressions; **they do not establish complete WCAG compliance or
+replace assistive-technology and manual accessibility testing**.
+
+Responsive DOM measurements run at 1440×1000 (desktop), 900×900 (tablet/narrow
+laptop), 620×900 (the existing mobile breakpoint), and 360×800 (extra-small mobile).
+They assert no page-level horizontal overflow or clipped panels, reachable navigation
+and primary actions, wrapping prompt text, bounded technical-report overflow, and visible
+degraded-state messaging. Screenshots are not used as the correctness oracle.
+
+If Playwright reports that Chromium is missing, rerun
+`python -m playwright install --with-deps chromium`. In a locked-down environment the
+browser CDN and operating-system package repositories must be allow-listed; do not add
+a runtime download fallback. Use `PLAYWRIGHT_BROWSERS_PATH` consistently during both
+installation and test execution when CI stores browser binaries in a custom cache.

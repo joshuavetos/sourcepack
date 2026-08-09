@@ -1,0 +1,14 @@
+{
+  "schema_version": "sourcepack.external-repository-case.v1",
+  "case_id": "python-project",
+  "expected_verdict": "PASS",
+  "required_findings": [],
+  "forbidden_findings": [
+    "baseline_corrupt",
+    "baseline_failed",
+    "malformed_diff",
+    "prompt_context_failed"
+  ],
+  "allowed_additional_findings": [],
+  "deterministic": true
+}

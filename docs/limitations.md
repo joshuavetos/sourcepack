@@ -11,6 +11,12 @@ SourcePack intentionally has a narrow local-first scope.
 - SourcePack does not prove code correctness.
 - SourcePack does not detect vulnerabilities or replace dependency, secret, or supply-chain scanning tools.
 - Docker build semantics beyond obvious command and file evidence are limited.
+- Taskfile command evidence supports only a deterministic YAML subset: a
+  top-level `tasks` mapping with unquoted alphanumeric, dot, underscore, or
+  hyphen task names. Anchors, aliases, tags, merge keys, flow mappings, tabs,
+  duplicate task keys, and quoted or otherwise complex task keys fail visibly
+  as `manifest_parse_failure`; SourcePack does not select a parser based on
+  whether PyYAML happens to be installed.
 
 ## Public-alpha unsupported ecosystem handling
 

@@ -132,3 +132,42 @@ def test_reason_code_strict_canonical_spelling() -> None:
     assert is_canonical_reason_code("baseline_missing")
     assert normalize_reason_code("baseline-missing") == "baseline_missing"
     assert "baseline-missing" not in set(canonical_reason_codes())
+
+
+def test_judgment_facade_reexports_internal_engines() -> None:
+    import sourcepack.ai_analysis as ai_analysis
+    import sourcepack.judgment as judgment
+    import sourcepack.repository_evidence as repository_evidence
+
+    assert judgment.analyze_ai_answer is ai_analysis.analyze_ai_answer
+    assert judgment.generate_reality_map is repository_evidence.generate_reality_map
+    assert judgment.dependency_inventory is repository_evidence.dependency_inventory
+    assert judgment.IncludedFile is repository_evidence.IncludedFile
+
+
+def test_cli_has_no_copied_canonical_models_or_classifications() -> None:
+    source = (ROOT / "src/sourcepack/cli.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    copied = {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name in {"IncludedFile", "IgnoredFile"}
+    }
+    assigned_literals = {
+        target.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+        and target.id in {"COMMON_DEPENDENCIES", "FEATURE_NAMES", "SECRET_PATTERNS", "PROTECTED_PACKET_ARTIFACTS"}
+        and isinstance(node.value, (ast.List, ast.Tuple, ast.Set, ast.Dict))
+    }
+    assert copied == set()
+    assert assigned_literals == set()
+
+
+def test_git_acquisition_is_owned_outside_facade() -> None:
+    facade = (ROOT / "src/sourcepack/judgment.py").read_text(encoding="utf-8")
+    acquisition = (ROOT / "src/sourcepack/git_acquisition.py").read_text(encoding="utf-8")
+    assert "def worktree_dirty" in acquisition
+    assert "return worktree_dirty(repo, run_git)" in facade

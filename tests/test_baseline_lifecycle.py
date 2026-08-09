@@ -128,7 +128,7 @@ def test_missing_required_packet_file_fails_verification_and_diff_closed(tmp_pat
     assert data["baseline_state"] == "corrupt"
 
 
-def test_extra_inactive_build_does_not_affect_active_baseline_or_diff(tmp_path: Path) -> None:
+def test_malformed_inactive_build_does_not_corrupt_active_baseline_but_fails_diff_closed(tmp_path: Path) -> None:
     repo = init_repo(tmp_path)
     create_baseline(repo)
     inactive = repo / ".sourcepack" / "baseline" / "builds" / "inactive-build" / "packet"
@@ -138,10 +138,13 @@ def test_extra_inactive_build_does_not_affect_active_baseline_or_diff(tmp_path: 
     assert cp.returncode == 0
     assert status["state"] == "present"
     cp, data = json_cli(repo, "diff", ".", "--ci", "--json")
-    assert cp.returncode == 0
-    assert data["verdict"] == "PASS"
+    assert cp.returncode == 1
+    assert data["verdict"] == "FAIL"
     assert data["baseline_state"] == "present"
-    assert "no_diff" in finding_ids(data)
+    protected = [finding for finding in data["findings"] if finding["id"] == "protected_artifact"]
+    assert [finding["path"] for finding in protected] == [
+        ".sourcepack/baseline/builds/inactive-build/packet/manifest.json"
+    ]
 
 
 def test_prompt_only_state_with_no_baseline_fails_ci_closed(tmp_path: Path) -> None:
@@ -274,7 +277,10 @@ def assert_corrupt_reason_contains_one_of(repo: Path, reasons: set[str]) -> dict
     cp, status = json_cli(repo, "baseline", "verify", "--json")
     assert cp.returncode != 0
     assert status["state"] == "corrupt"
-    assert any(reason in status["details"]["reason"] for reason in reasons)
+    assert any(
+        reason in status["details"]["reason"]
+        for reason in reasons | {"canonical packet verification failed"}
+    )
     data = assert_ci_diff_fails_closed(repo, "baseline_corrupt")
     assert data["baseline_state"] == "corrupt"
     return status
@@ -377,6 +383,23 @@ def test_committed_range_mode_catches_committed_changes_in_clean_worktree(tmp_pa
     ids = finding_ids(data)
     assert "no_diff" not in ids
     assert "app.py" in data.get("raw_patch_judgment", {}).get("modified_files", [])
+
+
+def test_committed_range_trusts_files_already_present_at_base_ref(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    create_baseline(repo)
+    git_commit(repo, "commit trusted baseline")
+    (repo / "later.py").write_text("VALUE = 1\n", encoding="utf-8")
+    base = git_commit(repo, "add file before reviewed range")
+    (repo / "later.py").write_text("VALUE = 2\n", encoding="utf-8")
+    head = git_commit(repo, "change file in reviewed range")
+
+    cp, data = json_cli(repo, "diff", ".", "--ci", "--json", "--base-ref", base, "--head-ref", head)
+
+    assert cp.returncode == 0, cp.stderr + cp.stdout
+    assert data["verdict"] == "PASS"
+    assert "missing_file" not in finding_ids(data)
+    assert "later.py" in data.get("raw_patch_judgment", {}).get("modified_files", [])
 
 
 def test_committed_range_preserves_missing_file_behavior_for_clean_worktree(tmp_path: Path) -> None:

@@ -17,7 +17,7 @@ def test_run_git_missing_executable_returns_normalized_completed_process(monkeyp
     def fake_run(*args, **kwargs):
         raise FileNotFoundError()
 
-    monkeypatch.setattr(git_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_mod, "_bounded_process", fake_run)
 
     cp = git_mod.run_git(tmp_path, ["status"])
 
@@ -29,14 +29,9 @@ def test_run_git_missing_executable_returns_normalized_completed_process(monkeyp
 
 def test_run_git_timeout_returns_normalized_completed_process_with_partial_output(monkeypatch, tmp_path):
     def fake_run(*args, **kwargs):
-        raise subprocess.TimeoutExpired(
-            cmd=["git", "status"],
-            timeout=git_mod.GIT_TIMEOUT_SECONDS,
-            output=b"partial stdout",
-            stderr=b"partial stderr",
-        )
+        return subprocess.CompletedProcess(["git", "status"], git_mod.GIT_RETURNCODE_TIMEOUT, b"partial stdout", b"partial stderr\ngit command timed out after 10 seconds")
 
-    monkeypatch.setattr(git_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_mod, "_bounded_process", fake_run)
 
     cp = git_mod.run_git(tmp_path, ["status"])
 
@@ -57,6 +52,15 @@ def test_dirty_worktree_maps_missing_git_executable(monkeypatch, tmp_path):
 
     assert dirty is False
     assert state == "git_unavailable"
+
+
+def test_lossy_git_convenience_helpers_keep_failure_distinct_from_policy_checks(monkeypatch, tmp_path):
+    failure = _cp(["query"], git_mod.GIT_RETURNCODE_OS_ERROR, stderr="denied")
+    monkeypatch.setattr(git_mod, "run_git", lambda repo, args: failure)
+
+    assert git_mod.diff(tmp_path) == ""
+    assert git_mod.untracked_files(tmp_path) == []
+    assert git_mod.dirty_worktree(tmp_path) == (False, "git_error")
 
 
 def test_dirty_worktree_maps_git_timeout(monkeypatch, tmp_path):
@@ -191,13 +195,13 @@ def test_packet_tracked_file_discovery_uses_canonical_helper(monkeypatch, tmp_pa
     assert {item.relative_path: item.reason for item in scanner.ignored_files}["untracked.py"] == "untracked_file_skipped"
 
 
-def test_cli_tracked_inventory_uses_canonical_byte_preserving_helper(monkeypatch, tmp_path: Path) -> None:
+def test_judgment_tracked_inventory_uses_canonical_byte_preserving_helper(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / "spaced name.py").write_text("print('space')\n", encoding="utf-8")
     (tmp_path / "unicodé.py").write_text("print('unicode')\n", encoding="utf-8")
 
-    monkeypatch.setattr(cli, "canonical_tracked_paths", lambda root: {"spaced name.py", "unicodé.py"})
+    monkeypatch.setattr(judgment, "run_git_bytes", lambda root, args: _cp(args, 0, stdout="spaced name.py\0unicodé.py\0".encode()))
 
-    inventory = cli._tracked_file_inventory(tmp_path, [])
+    inventory = judgment._tracked_file_inventory(tmp_path, [])
 
     assert [item["relative_path"] for item in inventory["files"]] == ["spaced name.py", "unicodé.py"]
     assert {item["source"] for item in inventory["files"]} == {"git_ls_files"}
@@ -207,14 +211,14 @@ def test_git_run_differentiates_missing_executable_permission_and_missing_cwd(mo
     def missing(*args, **kwargs):
         raise FileNotFoundError()
 
-    monkeypatch.setattr(git_mod.subprocess, "run", missing)
+    monkeypatch.setattr(git_mod, "_bounded_process", missing)
     missing_cp = git_mod.run_git(tmp_path, ["status"])
     assert missing_cp.returncode == git_mod.GIT_RETURNCODE_NOT_FOUND
 
     def denied(*args, **kwargs):
         raise PermissionError("denied")
 
-    monkeypatch.setattr(git_mod.subprocess, "run", denied)
+    monkeypatch.setattr(git_mod, "_bounded_process", denied)
     denied_cp = git_mod.run_git(tmp_path, ["status"])
     assert denied_cp.returncode == git_mod.GIT_RETURNCODE_OS_ERROR
     assert "denied" in denied_cp.stderr
@@ -226,18 +230,18 @@ def test_git_run_differentiates_missing_executable_permission_and_missing_cwd(mo
 
 def test_git_timeout_preserves_string_and_byte_partial_output(monkeypatch, tmp_path: Path) -> None:
     def timeout_text(*args, **kwargs):
-        raise subprocess.TimeoutExpired(["git", "status"], git_mod.GIT_TIMEOUT_SECONDS, output="partial out", stderr="partial err")
+        return subprocess.CompletedProcess(["git", "status"], git_mod.GIT_RETURNCODE_TIMEOUT, b"partial out", b"partial err\ngit command timed out after 10 seconds")
 
-    monkeypatch.setattr(git_mod.subprocess, "run", timeout_text)
+    monkeypatch.setattr(git_mod, "_bounded_process", timeout_text)
     text_cp = git_mod.run_git(tmp_path, ["status"])
     assert text_cp.returncode == git_mod.GIT_RETURNCODE_TIMEOUT
     assert text_cp.stdout == "partial out"
     assert text_cp.stderr == "partial err\ngit command timed out after 10 seconds"
 
     def timeout_bytes(*args, **kwargs):
-        raise subprocess.TimeoutExpired(["git", "ls-files"], git_mod.GIT_TIMEOUT_SECONDS, output=b"raw out", stderr=b"raw err")
+        return subprocess.CompletedProcess(["git", "ls-files", "-z"], git_mod.GIT_RETURNCODE_TIMEOUT, b"raw out", b"raw err\ngit command timed out after 10 seconds")
 
-    monkeypatch.setattr(git_mod.subprocess, "run", timeout_bytes)
+    monkeypatch.setattr(git_mod, "_bounded_process", timeout_bytes)
     bytes_cp = git_mod.run_git_bytes(tmp_path, ["ls-files", "-z"])
     assert bytes_cp.returncode == git_mod.GIT_RETURNCODE_TIMEOUT
     assert bytes_cp.stdout == b"raw out"
@@ -268,19 +272,145 @@ def test_tracked_paths_preserves_non_utf8_git_filename_with_surrogateescape(tmp_
     assert tracked == {os.fsdecode(raw_name)}
 
 
+def test_posix_backslash_path_identity_is_not_conflated_with_separator():
+    if os.name != "posix":
+        return
+    assert git_mod.split_nul_paths(b"dir/file.py\0dir\\file.py\0") == ["dir/file.py", "dir\\file.py"]
+
+
+def test_public_git_runners_enforce_the_canonical_output_limit(tmp_path: Path, monkeypatch) -> None:
+    # Both compatibility wrappers delegate to the canonical bounded producer.
+    monkeypatch.setattr(git_mod, "run_git_bounded", lambda repo, args, text=True: subprocess.CompletedProcess(["git", *args], git_mod.GIT_RETURNCODE_OUTPUT_LIMIT, "abc" if text else b"abc", "bounded" if text else b"bounded"))
+    assert git_mod.run_git(tmp_path, ["status"]).returncode == git_mod.GIT_RETURNCODE_OUTPUT_LIMIT
+    assert git_mod.run_git_bytes(tmp_path, ["status"]).returncode == git_mod.GIT_RETURNCODE_OUTPUT_LIMIT
+
+
+def test_invalid_git_limits_fail_deterministically(tmp_path: Path):
+    import pytest
+    with pytest.raises(ValueError):
+        git_mod.run_git_bounded(tmp_path, ["status"], output_limit_bytes=-1)
+    with pytest.raises(ValueError):
+        git_mod.run_git_bounded_input(tmp_path, ["check-ignore"], b"", input_limit_bytes=-1, output_limit_bytes=1)
+    for invalid in (-1, True):
+        with pytest.raises(ValueError):
+            git_mod.run_git_bounded_input(tmp_path / "missing", ["check-ignore"], b"", input_limit_bytes=1, output_limit_bytes=invalid)
+
+
+def test_bounded_input_returncode_one_requires_explicit_command_contract(tmp_path: Path, monkeypatch):
+    completed = subprocess.CompletedProcess(["git", "command"], 1, b"", b"")
+    monkeypatch.setattr(git_mod, "_bounded_process", lambda *_args, **_kwargs: completed)
+
+    failed = git_mod.run_git_bounded_input(tmp_path, ["command"], b"", input_limit_bytes=1, output_limit_bytes=1)
+    assert failed.returncode == 1
+    assert failed.acquisition_state == "failed"
+
+    accepted = git_mod.run_git_bounded_input(
+        tmp_path, ["check-ignore", "--stdin", "-z"], b"", input_limit_bytes=1,
+        output_limit_bytes=1, accepted_returncodes=frozenset({0, 1}),
+    )
+    assert accepted.returncode == 1
+    assert accepted.acquisition_state == "complete"
+
+    completed.returncode = git_mod.GIT_RETURNCODE_TIMEOUT
+    timeout = git_mod.run_git_bounded_input(
+        tmp_path, ["command"], b"", input_limit_bytes=1, output_limit_bytes=1,
+        accepted_returncodes=frozenset({0, git_mod.GIT_RETURNCODE_TIMEOUT}),
+    )
+    assert timeout.acquisition_state == "failed"
+
+
+def test_bounded_process_reaps_child_when_initial_selector_registration_fails(tmp_path: Path, monkeypatch):
+    import pytest
+
+    created = []
+    real_popen = git_mod.subprocess.Popen
+    real_selector = git_mod.selectors.DefaultSelector
+
+    def recording_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        created.append(process)
+        return process
+
+    class FailingSelector:
+        def __init__(self):
+            self.inner = real_selector()
+
+        def register(self, *args, **kwargs):
+            raise RuntimeError("selector registration failed")
+
+        def close(self):
+            self.inner.close()
+
+    monkeypatch.setattr(git_mod.subprocess, "Popen", recording_popen)
+    monkeypatch.setattr(git_mod.selectors, "DefaultSelector", FailingSelector)
+    with pytest.raises(RuntimeError, match="selector registration failed"):
+        git_mod._bounded_process(tmp_path, ["hash-object", "--stdin"], 1024, input_bytes=b"held open")
+    assert len(created) == 1
+    assert created[0].poll() is not None
+    assert created[0].returncode is not None
+
+
+def test_bounded_process_reaps_child_after_unexpected_write_failure(tmp_path: Path, monkeypatch):
+    import pytest
+
+    created = []
+    real_popen = git_mod.subprocess.Popen
+
+    def recording_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        created.append(process)
+        return process
+
+    monkeypatch.setattr(git_mod.subprocess, "Popen", recording_popen)
+    monkeypatch.setattr(git_mod.os, "write", lambda *_args: (_ for _ in ()).throw(RuntimeError("write failed")))
+    with pytest.raises(RuntimeError, match="write failed"):
+        git_mod._bounded_process(tmp_path, ["hash-object", "--stdin"], 1024, input_bytes=b"input")
+    assert created[0].poll() is not None
+
+
+def test_bounded_process_reaps_child_after_unexpected_read_failure(tmp_path: Path, monkeypatch):
+    import pytest
+
+    created = []
+    real_popen = git_mod.subprocess.Popen
+
+    def recording_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        created.append(process)
+        monkeypatch.setattr(git_mod.os, "read", lambda *_args: (_ for _ in ()).throw(RuntimeError("read failed")))
+        return process
+
+    monkeypatch.setattr(git_mod.subprocess, "Popen", recording_popen)
+    with pytest.raises(RuntimeError, match="read failed"):
+        git_mod._bounded_process(tmp_path, ["rev-parse", "--git-dir"], 1024)
+    assert created[0].poll() is not None
+
+
+def test_bounded_process_exact_output_boundary_and_one_byte_over(tmp_path: Path):
+    exact = git_mod.run_git_bounded(tmp_path, ["-c", "alias.sourcepack-emit=!printf 1234", "sourcepack-emit"], output_limit_bytes=4)
+    assert exact.returncode == 0
+    assert exact.stdout == "1234"
+    assert exact.acquisition_state == "complete"
+
+    bounded = git_mod.run_git_bounded(tmp_path, ["-c", "alias.sourcepack-emit=!printf 1234", "sourcepack-emit"], output_limit_bytes=3)
+    assert bounded.returncode == git_mod.GIT_RETURNCODE_OUTPUT_LIMIT
+    assert bounded.stdout == "123"
+    assert bounded.acquisition_state == "bounded"
+
+
 def test_run_git_bytes_missing_git_and_timeout(monkeypatch, tmp_path: Path) -> None:
     def missing(*args, **kwargs):
         raise FileNotFoundError()
 
-    monkeypatch.setattr(git_mod.subprocess, "run", missing)
+    monkeypatch.setattr(git_mod, "_bounded_process", missing)
     missing_cp = git_mod.run_git_bytes(tmp_path, ["ls-files", "-z"])
     assert missing_cp.returncode == git_mod.GIT_RETURNCODE_NOT_FOUND
     assert missing_cp.stderr == b"git executable not found"
 
     def timeout(*args, **kwargs):
-        raise subprocess.TimeoutExpired(["git", "ls-files"], git_mod.GIT_TIMEOUT_SECONDS, output=b"a.py\0", stderr=b"slow")
+        return subprocess.CompletedProcess(["git", "ls-files", "-z"], git_mod.GIT_RETURNCODE_TIMEOUT, b"a.py\0", b"slow\ngit command timed out after 10 seconds")
 
-    monkeypatch.setattr(git_mod.subprocess, "run", timeout)
+    monkeypatch.setattr(git_mod, "_bounded_process", timeout)
     timeout_cp = git_mod.run_git_bytes(tmp_path, ["ls-files", "-z"])
     assert timeout_cp.returncode == git_mod.GIT_RETURNCODE_TIMEOUT
     assert timeout_cp.stdout == b"a.py\0"
@@ -356,7 +486,7 @@ def test_dirty_worktree_maps_permission_error_to_git_error(monkeypatch, tmp_path
     def denied(*args, **kwargs):
         raise PermissionError("denied")
 
-    monkeypatch.setattr(git_mod.subprocess, "run", denied)
+    monkeypatch.setattr(git_mod, "_bounded_process", denied)
 
     assert git_mod.dirty_worktree(tmp_path) == (False, "git_error")
 
@@ -387,7 +517,13 @@ def test_dirty_worktree_preserves_real_diff_quiet_one_as_dirty(monkeypatch, tmp_
 def test_baseline_refuses_normalized_os_error_126(monkeypatch, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    monkeypatch.setattr(baseline, "_run_git", lambda repo, args: _cp(args, git_mod.GIT_RETURNCODE_OS_ERROR, stderr="permission denied"))
+    monkeypatch.setattr(
+        baseline,
+        "run_git_bytes",
+        lambda repo, args: _cp_bytes(
+            args, git_mod.GIT_RETURNCODE_OS_ERROR, stderr=b"permission denied"
+        ),
+    )
 
     try:
         baseline.build_current_baseline(repo, quiet=True, force=True)
@@ -486,21 +622,22 @@ def test_cli_baseline_passes_user_force_value(monkeypatch, tmp_path: Path) -> No
 
 def test_auto_no_diff_baseline_creation_passes_false_force(monkeypatch, tmp_path: Path) -> None:
     seen: list[bool] = []
-    monkeypatch.setattr(cli, "run_git", lambda repo, args: _cp(args, 0, stdout=str(tmp_path) if args == ["rev-parse", "--show-toplevel"] else ""))
-    monkeypatch.setattr(cli, "validate_baseline", lambda repo: {"state": "missing"})
-    monkeypatch.setattr(cli, "git_worktree_dirty", lambda repo: (False, None))
-    monkeypatch.setattr(cli, "ensure_sourcepack_dirs", lambda repo: {})
-    monkeypatch.setattr(cli, "ensure_gitignore_entry", lambda repo: (False, None))
-    monkeypatch.setattr(cli, "untracked_files_as_diff", lambda repo: "")
-    monkeypatch.setattr(cli, "baseline_report_fields", lambda status: {})
+    policy_result = judgment.resolve_effective_policy(Path.cwd())
+    monkeypatch.setattr(judgment, "run_git", lambda repo, args: _cp(args, 0, stdout=str(tmp_path) if args == ["rev-parse", "--show-toplevel"] else ""))
+    monkeypatch.setattr(judgment, "validate_baseline", lambda repo: {"state": "missing"})
+    monkeypatch.setattr(judgment, "git_worktree_dirty", lambda repo: (False, None))
+    monkeypatch.setattr(judgment, "ensure_sourcepack_dirs", lambda repo: {})
+    monkeypatch.setattr(judgment, "untracked_files_as_diff", lambda repo, **kwargs: ("", {"status": "complete", "complete": True, "reason": None, "acquisition_state": "complete"}) if kwargs.get("with_authority") else "")
+    monkeypatch.setattr(judgment, "baseline_report_fields", lambda status: {})
+    monkeypatch.setattr(judgment, "resolve_effective_policy", lambda *args, **kwargs: policy_result)
 
     def fake_build(repo, quiet=False, fail_stage=None, force=False):
         seen.append(force)
         return {}, True
 
-    monkeypatch.setattr(cli, "build_current_baseline", fake_build)
+    monkeypatch.setattr(judgment, "build_current_baseline", fake_build)
 
-    report = cli.build_repo_change_report(tmp_path)
+    report = judgment.build_repo_change_report(tmp_path)
 
     assert report["verdict"] == "PASS"
     assert seen == [False]

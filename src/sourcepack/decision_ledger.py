@@ -134,9 +134,11 @@ class LedgerReadResult:
     malformed_lines: list[dict[str, Any]]
     unsupported_schema_versions: list[dict[str, Any]]
     invalid_events: list[dict[str, Any]]
+    events_consumed: int = 0
+    events_source_exhausted: bool = True
 
 
-def read_events(path: str | Path) -> LedgerReadResult:
+def read_events(path: str | Path, *, max_events: int | None = None) -> LedgerReadResult:
     events: list[dict[str, Any]] = []
     malformed: list[dict[str, Any]] = []
     unsupported: list[dict[str, Any]] = []
@@ -144,27 +146,33 @@ def read_events(path: str | Path) -> LedgerReadResult:
     ledger_path = Path(path)
     if not ledger_path.exists():
         return LedgerReadResult(events, malformed, unsupported, invalid)
-    for line_no, line in enumerate(ledger_path.read_text(encoding="utf-8").splitlines(), start=1):
-        if not line.strip():
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError as exc:
-            malformed.append({"line": line_no, "error": str(exc), "raw": line})
-            continue
-        if not isinstance(data, dict):
-            malformed.append({"line": line_no, "error": "JSONL event is not an object", "raw": line})
-            continue
-        schema = data.get("schema_version")
-        if schema not in SUPPORTED_SCHEMA_VERSIONS:
-            unsupported.append({"line": line_no, "schema_version": schema, "event": data})
-            continue
-        errors = validate_event(data)
-        if errors:
-            invalid.append({"line": line_no, "errors": errors, "event": data})
-            continue
-        events.append(data)
-    return LedgerReadResult(events, malformed, unsupported, invalid)
+    events_consumed = 0
+    with ledger_path.open(encoding="utf-8") as lines:
+        for line_no, line in enumerate(lines, start=1):
+            line = line.rstrip("\r\n")
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError as exc:
+                malformed.append({"line": line_no, "error": str(exc), "raw": line})
+                continue
+            if not isinstance(data, dict):
+                malformed.append({"line": line_no, "error": "JSONL event is not an object", "raw": line})
+                continue
+            schema = data.get("schema_version")
+            if schema not in SUPPORTED_SCHEMA_VERSIONS:
+                unsupported.append({"line": line_no, "schema_version": schema, "event": data})
+                continue
+            errors = validate_event(data)
+            if errors:
+                invalid.append({"line": line_no, "errors": errors, "event": data})
+                continue
+            events_consumed += 1
+            if max_events is not None and len(events) == max_events:
+                return LedgerReadResult(events, malformed, unsupported, invalid, events_consumed, False)
+            events.append(data)
+    return LedgerReadResult(events, malformed, unsupported, invalid, events_consumed, True)
 
 
 def filter_events(events: Iterable[dict[str, Any]], event_type: str) -> list[dict[str, Any]]:

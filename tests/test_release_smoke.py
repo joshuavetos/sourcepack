@@ -259,6 +259,45 @@ def test_collect_dist_artifacts_returns_sorted_concrete_paths(tmp_path: Path) ->
     assert release_smoke.collect_dist_artifacts(tmp_path) == [tmp_path / "a.whl", tmp_path / "b.tar.gz"]
 
 
+def test_release_smoke_invokes_canonical_adversarial_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], cwd: Path = release_smoke.ROOT, *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        commands.append((cmd, cwd))
+        return subprocess.CompletedProcess(cmd, 0, "")
+
+    monkeypatch.setattr(release_smoke, "run", fake_run)
+
+    release_smoke.run_adversarial_benchmark()
+
+    assert commands == [([sys.executable, "tools/adversarial_runner.py"], release_smoke.ROOT)]
+
+
+def test_release_smoke_propagates_adversarial_runner_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing_run(cmd: list[str], cwd: Path = release_smoke.ROOT, *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        raise release_smoke.ReleaseSmokeError("command failed with exit 1: adversarial runner")
+
+    monkeypatch.setattr(release_smoke, "run", failing_run)
+
+    with pytest.raises(release_smoke.ReleaseSmokeError, match="adversarial runner"):
+        release_smoke.run_adversarial_benchmark()
+
+
+def test_release_smoke_main_fails_when_adversarial_runner_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        release_smoke,
+        "run_adversarial_benchmark",
+        lambda: (_ for _ in ()).throw(release_smoke.ReleaseSmokeError("adversarial failure")),
+    )
+    monkeypatch.setattr(
+        release_smoke,
+        "build_clean_artifacts",
+        lambda: pytest.fail("release build must not continue after adversarial failure"),
+    )
+
+    assert release_smoke.main() == 1
+
+
 def test_collect_dist_artifacts_rejects_no_artifacts(tmp_path: Path) -> None:
     with pytest.raises(release_smoke.ReleaseSmokeError, match="no built artifacts"):
         release_smoke.collect_dist_artifacts(tmp_path)

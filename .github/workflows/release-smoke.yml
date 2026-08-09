@@ -8,6 +8,10 @@ on:
       - src/sourcepack/**
       - examples/**
       - scripts/release_smoke.py
+      - tools/adversarial_runner.py
+      - tools/external_repository_validation.py
+      - benchmarks/external_repositories/**
+      - tests/test_external_repository_validation.py
       - .github/workflows/**
   workflow_dispatch:
 
@@ -22,7 +26,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install build dependencies
-        run: python -m pip install build twine setuptools wheel
+        run: python -m pip install -e ".[dev]"
       - name: Remove previous build outputs
         run: rm -rf dist/ build/ *.egg-info
       - name: Release smoke

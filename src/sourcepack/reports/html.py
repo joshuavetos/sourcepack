@@ -76,6 +76,7 @@ code {{ color:#bfdbfe; }} .muted {{ color:var(--muted); }} .severity.error {{ co
 <div class="card"><div class="label">Verdict</div><div class="value">{_html_escape(verdict)}</div></div>
 <div class="card"><div class="label">Reason type</div><div class="value">{_html_escape(report.get('reason_type') or 'none')}</div></div>
 <div class="card"><div class="label">Commit policy</div><div class="value">{_html_escape(report.get('commit_policy') or 'allowed.')}</div></div>
+<div class="card"><div class="label">Authority</div><div class="value">{_html_escape('INCOMPLETE — additional blockers may exist' if report.get('authority', {}).get('complete') is False else 'Complete')}</div></div>
 <div class="card"><div class="label">Raw JSON</div><div class="value"><code>{_html_escape(raw_json_path)}</code></div></div>
 </section>
 <section><h2>Reason codes</h2><table><thead><tr><th>Code</th><th>Severity</th><th>Path</th><th>Explanation</th><th>Evidence / fix</th></tr></thead><tbody>{finding_rows(findings)}</tbody></table></section>
@@ -84,5 +85,4 @@ code {{ color:#bfdbfe; }} .muted {{ color:var(--muted); }} .severity.error {{ co
 <section class="grid"><div class="card"><h2>Checked</h2><ul>{checked}</ul></div><div class="card"><h2>Not checked</h2><ul>{not_checked}</ul></div></section>
 <section><h2>Execution evidence</h2><p>Execution evidence proves only that a command was run locally and records exit/output hashes; it does not prove correctness, security, or external API behavior.</p></section><section><h2>Safe next actions</h2><p>{_html_escape(report.get('next_action'))}</p></section>
 </main></body></html>"""
-
 

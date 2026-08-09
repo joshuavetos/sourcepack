@@ -97,9 +97,9 @@ def test_bounded_base_tree_is_fail_with_incomplete_authority(monkeypatch, tmp_pa
         import subprocess
         if args == ["rev-parse", "--show-toplevel"]:
             return subprocess.CompletedProcess(["git", *args], 0, str(tmp_path), "")
-        if args == ["diff", "--binary", "base...head"]:
+        if args == ["diff", "--binary", "base...head", "--", "."]:
             return subprocess.CompletedProcess(["git", *args], 0, "", "")
-        if args == ["ls-tree", "-r", "--name-only", "base"]:
+        if args == ["ls-tree", "-r", "--name-only", "base", "--", "."]:
             return subprocess.CompletedProcess(["git", *args], GIT_RETURNCODE_OUTPUT_LIMIT, "partial", "bounded")
         raise AssertionError(args)
 

@@ -791,6 +791,8 @@ def cli_explain(args) -> int:
     return 0
 
 def cli_allow(args) -> int:
+    from .local_allow_trust import add_active_allow
+
     repo = Path(".").resolve(); reason = getattr(args, "reason", None)
     if not reason:
         print("ERROR: --reason is required", file=sys.stderr); return 2
@@ -801,9 +803,27 @@ def cli_allow(args) -> int:
     if value.startswith(".git/") or value == ".git":
         print("ERROR: .git/** cannot be overridden", file=sys.stderr); return 1
     entry = {"schema_version":"sourcepack.policy.allow.v1", "id": sha256_text(f'{scope_type}:{value}:{utc_now()}')[:12], "scope": scope_type, "value": value, "reason": reason, "created_at": utc_now(), "expires_at": getattr(args, "expires", None), "high_risk": bool(getattr(args, "high_risk", False))}
-    with _policy_file(repo).open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, sort_keys=True)+"\n")
+    try:
+        add_active_allow(repo, _policy_file(repo), entry)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"ERROR: could not persist active local allow: {exc}", file=sys.stderr)
+        return 1
     print(json.dumps(entry, indent=2))
+    return 0
+
+def cli_disallow(args) -> int:
+    from .local_allow_trust import remove_active_allows
+
+    repo = Path(".").resolve()
+    try:
+        removed = remove_active_allows(repo, _policy_file(repo), scope=args.allow_type, value=args.value)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"ERROR: could not remove active local allow: {exc}", file=sys.stderr)
+        return 1
+    if not removed:
+        print(f"No active {args.allow_type} permission matched {args.value}")
+        return 0
+    print(f"Removed active {args.allow_type} permission for {args.value}")
     return 0
 
 def _display_repo_relative_path(path: Path, repo: Path) -> str:
@@ -891,9 +911,12 @@ def cli_policy(args) -> int:
     if args.policy_command == "list":
         print(json.dumps({"schema_version":"sourcepack.policy.list.v1", "policies": _policy_entries(repo)}, indent=2)); return 0
     if args.policy_command == "remove":
-        entries = [e for e in _policy_entries(repo) if e.get("id") != args.policy_id]
-        _policy_file(repo).write_text("".join(json.dumps(e, sort_keys=True)+"\n" for e in entries), encoding="utf-8")
-        print(f"Removed policy {args.policy_id}"); return 0
+        from .local_allow_trust import remove_active_allows
+        try:
+            removed = remove_active_allows(repo, _policy_file(repo), allow_id=args.policy_id)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            print(f"ERROR: could not remove active local allow: {exc}", file=sys.stderr); return 1
+        print(f"Removed policy {args.policy_id}" if removed else f"No active policy matched {args.policy_id}"); return 0
     return 1
 
 
@@ -1115,6 +1138,9 @@ def run_cli(args_list=None):
     allow_cmd.add_argument("--reason", required=True)
     allow_cmd.add_argument("--expires")
     allow_cmd.add_argument("--high-risk", action="store_true")
+    disallow_cmd = subs.add_parser("disallow")
+    disallow_cmd.add_argument("allow_type", choices=["dependency", "command", "path"])
+    disallow_cmd.add_argument("value")
     policy_cmd = subs.add_parser("policy")
     policy_subs = policy_cmd.add_subparsers(dest="policy_command")
     policy_subs.add_parser("list")
@@ -1176,6 +1202,8 @@ def run_cli(args_list=None):
             return cli_explain(args)
         if args.command == "allow":
             return cli_allow(args)
+        if args.command == "disallow":
+            return cli_disallow(args)
         if args.command == "policy":
             return cli_policy(args)
         if args.command == "fleet":

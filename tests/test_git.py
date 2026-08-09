@@ -517,7 +517,13 @@ def test_dirty_worktree_preserves_real_diff_quiet_one_as_dirty(monkeypatch, tmp_
 def test_baseline_refuses_normalized_os_error_126(monkeypatch, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    monkeypatch.setattr(baseline, "_run_git", lambda repo, args: _cp(args, git_mod.GIT_RETURNCODE_OS_ERROR, stderr="permission denied"))
+    monkeypatch.setattr(
+        baseline,
+        "run_git_bytes",
+        lambda repo, args: _cp_bytes(
+            args, git_mod.GIT_RETURNCODE_OS_ERROR, stderr=b"permission denied"
+        ),
+    )
 
     try:
         baseline.build_current_baseline(repo, quiet=True, force=True)

@@ -43,6 +43,53 @@ def protected_baseline_path(path: str) -> bool:
     )
 
 
+def generated_untracked_baseline_artifacts(
+    repo: str | Path, relative_paths: list[str]
+) -> set[str]:
+    """Return only baseline artifacts backed by canonical baseline verification."""
+    root = Path(repo).resolve()
+    candidates = {path.replace("\\", "/").removeprefix("./") for path in relative_paths}
+    from .packet import PacketWriter, verify_packet
+
+    packet_names = {*PacketWriter.OUTPUT_FILES, "receipt.json"}
+    generated: set[str] = set()
+    status = validate_baseline(root)
+    if status.get("state") in {"present", "stale"}:
+        for key in ("active_pointer_path", "metadata_path"):
+            if isinstance(status.get(key), str):
+                generated.add(status[key])
+        packet_path = status.get("packet_path")
+        if isinstance(packet_path, str):
+            generated.update(
+                path for path in candidates
+                if path.removeprefix(packet_path.rstrip("/") + "/") in packet_names
+            )
+
+    build_ids = {
+        parts[3]
+        for path in candidates
+        if len(parts := path.split("/")) >= 6
+        and parts[:3] == [".sourcepack", "baseline", "builds"]
+    }
+    for build_id in build_ids:
+        build = root / ".sourcepack" / "baseline" / "builds" / build_id
+        metadata, metadata_error = _read_json_file(build / "metadata.json")
+        try:
+            with redirect_stdout(io.StringIO()):
+                packet_valid = verify_packet(build / "packet")
+        except OSError:
+            packet_valid = False
+        if metadata_error or metadata is None or not packet_valid:
+            continue
+        prefix = f".sourcepack/baseline/builds/{build_id}/"
+        generated.update(
+            path for path in candidates
+            if path == prefix + "metadata.json"
+            or path.removeprefix(prefix + "packet/") in packet_names
+        )
+    return generated
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -465,27 +512,20 @@ def _run_git(repo: Path, args: list[str]):
     return run_git(repo, args)
 
 
+def _git_status(repo: Path, paths: list[str] | None = None):
+    from .git_acquisition import acquire_status
+
+    return acquire_status(repo, run_git_bytes, paths)
+
+
 def _git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
     root = Path(repo)
-    cp = _run_git(root, ["status", "--porcelain=v1", "--untracked-files=all"])
-    if cp.returncode == GIT_RETURNCODE_NOT_FOUND:
-        return False, "git_unavailable"
-    if cp.returncode == GIT_RETURNCODE_TIMEOUT:
-        return False, "git_timeout"
-    if cp.returncode == GIT_RETURNCODE_OS_ERROR:
-        return False, "git_error"
-    if cp.returncode != 0:
-        stderr = str(cp.stderr or "").lower()
-        if "not a git repository" in stderr:
-            return False, "not_git"
-        return False, "git_error"
-    lines = [line for line in cp.stdout.splitlines() if line.strip()]
-    protected = [
-        line
-        for line in lines
-        if protected_baseline_path(line[3:] if len(line) > 3 else line)
-    ]
-    non_baseline = [line for line in lines if line not in protected]
+    normalized_records, state = _git_status(root)
+    if state is not None:
+        return False, state
+    normalized = [path for record in normalized_records for path in (record.path, record.old_path) if path is not None]
+    protected = [rel for rel in normalized if protected_baseline_path(rel)]
+    non_baseline = [rel for rel in normalized if rel not in protected]
     if non_baseline:
         return True, None
     if protected:
@@ -493,19 +533,14 @@ def _git_worktree_dirty(repo: str | Path) -> tuple[bool, str | None]:
     return False, None
 
 
-def _status_path(line: str) -> str:
-    return line[3:] if len(line) > 3 else line
-
-
 def _gitignore_change_is_exact_sourcepack_addition(repo: str | Path) -> bool:
     repo = Path(repo)
-    cp = _run_git(repo, ["status", "--porcelain", "--", ".gitignore"])
-    if cp.returncode != 0:
+    records, state = _git_status(repo, [".gitignore"])
+    if state is not None:
         return False
-    lines = [line for line in cp.stdout.splitlines() if line.strip()]
-    if len(lines) != 1 or _status_path(lines[0]) != ".gitignore":
+    if len(records) != 1 or records[0].path != ".gitignore" or records[0].old_path is not None:
         return False
-    status = lines[0][:2]
+    status = records[0].status
     if status not in {"??", " M", "M "}:
         return False
     try:
@@ -539,13 +574,12 @@ def _gitignore_change_is_exact_sourcepack_addition(repo: str | Path) -> bool:
 
 
 def _bootstrap_file_change_is_exact(repo: Path, rel: str, expected: str) -> bool:
-    cp = _run_git(repo, ["status", "--porcelain", "--", rel])
-    if cp.returncode != 0:
+    records, state = _git_status(repo, [rel])
+    if state is not None:
         return False
-    lines = [line for line in cp.stdout.splitlines() if line.strip()]
-    if not lines:
+    if not records:
         return True
-    if len(lines) != 1 or lines[0][:2] != "??" or _status_path(lines[0]) != rel:
+    if len(records) != 1 or records[0].status != "??" or records[0].path != rel or records[0].old_path is not None:
         return False
     try:
         return (repo / rel).read_text(encoding="utf-8") == expected
@@ -555,21 +589,20 @@ def _bootstrap_file_change_is_exact(repo: Path, rel: str, expected: str) -> bool
 
 def _only_sourcepack_bootstrap_changes(repo: str | Path) -> bool:
     repo = Path(repo)
-    cp = _run_git(repo, ["status", "--porcelain", "-uall"])
-    if cp.returncode != 0:
+    records, state = _git_status(repo)
+    if state is not None:
         return False
-    lines = [line for line in cp.stdout.splitlines() if line.strip()]
-    if not lines:
+    if not records:
         return False
     allowed = {".gitignore", ".sourcepackignore", "sourcepack.config.json"}
-    for line in lines:
-        rel = _status_path(line)
-        if protected_baseline_path(rel):
-            continue
-        if rel not in allowed:
-            return False
+    for record in records:
+        for rel in (record.path, record.old_path):
+            if rel is None or protected_baseline_path(rel):
+                continue
+            if rel not in allowed:
+                return False
     if any(
-        _status_path(line) == ".gitignore" for line in lines
+        record.path == ".gitignore" or record.old_path == ".gitignore" for record in records
     ) and not _gitignore_change_is_exact_sourcepack_addition(repo):
         return False
     if not _bootstrap_file_change_is_exact(

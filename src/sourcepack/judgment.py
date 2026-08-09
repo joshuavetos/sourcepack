@@ -19,14 +19,15 @@ from pathlib import Path, PurePosixPath
 from typing import Final, Iterable
 from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_OUTPUT_LIMIT, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git, run_git_bounded as canonical_run_git_bounded, run_git_bytes as canonical_run_git_bytes
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff, quote_git_path
-from .baseline import BaselineLockError, baseline_report_fields, build_current_baseline, validate_baseline
+from .baseline import BaselineLockError, baseline_report_fields, build_current_baseline, generated_untracked_baseline_artifacts, validate_baseline
 from .ecosystems.python import PY_IMPORT_ALIASES
 from .packet import PacketWriter, SourceScanner, _read_stable_verification_file
-from .paths import ensure_sourcepack_dirs
+from .paths import ensure_sourcepack_dirs, operational_sourcepack_artifact_path
 from .reports.json import build_replay_bundle, normalized_finding, traffic_report, write_user_report
 from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code, load_policy_config, finding_ignored_by_policy, policy_path_matches, resolve_effective_policy
-from .policy_authority import guard_effective_policy_result
+from .policy_authority import POLICY_AUTHORITY_ERROR, guard_effective_policy_result
 from .execution_ledger import execution_findings
+from .local_allow_trust import active_allow_records, readable_allow_file_matches_active
 from .commands import resolve_command
 from .dependencies import resolve_js_import, resolve_python_import
 from .worktree_collision import inspect_symlink_transitions
@@ -1023,20 +1024,43 @@ def _only_sourcepack_gitignore_change(repo: Path) -> bool:
 
 def untracked_files_as_diff(repo: str | Path, *, with_authority: bool = False):
     repo = Path(repo)
-    cp = canonical_run_git_bounded(repo, ["ls-files", "--others", "--exclude-standard", "-z"], text=False)
+    cp = canonical_run_git_bounded(repo, ["ls-files", "--others", "--exclude-standard", "-z", "--", "."], text=False)
     if cp.returncode != 0:
         reason = "git_output_limit" if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "git_diff_failed"
         state = "bounded" if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "failed"
         result = ("", {"status": "incomplete", "complete": False, "reason": reason, "acquisition_state": state})
         return result if with_authority else ""
+    internal_cp = canonical_run_git_bounded(
+        repo,
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ".sourcepack"],
+        text=False,
+    )
+    if internal_cp.returncode != 0:
+        reason = "git_output_limit" if internal_cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "git_diff_failed"
+        state = "bounded" if internal_cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT else "failed"
+        result = ("", {"status": "incomplete", "complete": False, "reason": reason, "acquisition_state": state})
+        return result if with_authority else ""
+    raw_paths = list(dict.fromkeys(
+        item for output in (cp.stdout, internal_cp.stdout)
+        for item in output.split(b"\0") if item
+    ))
+    decoded_paths = [item.decode("utf-8", "surrogateescape") for item in raw_paths]
+    generated_paths = {
+        path for path in decoded_paths if operational_sourcepack_artifact_path(path)
+    } | generated_untracked_baseline_artifacts(repo, decoded_paths)
+    allow_path = repo / ".sourcepack" / "policy" / "allow.jsonl"
+    if ".sourcepack/policy/allow.jsonl" in decoded_paths and readable_allow_file_matches_active(repo, allow_path):
+        generated_paths.add(".sourcepack/policy/allow.jsonl")
     chunks = []
     retained_bytes = 0
-    for raw_rel in (item for item in cp.stdout.split(b"\0") if item):
+    for raw_rel in raw_paths:
         rel = raw_rel.decode("utf-8", "surrogateescape")
         safe_rel, unsafe = _normalize_diff_path(rel)
         if unsafe or not safe_rel:
             result = ("\n".join(chunks) + ("\n" if chunks else ""), {"status": "incomplete", "complete": False, "reason": "unsafe_git_path", "acquisition_state": "failed"})
             return result if with_authority else result[0]
+        if safe_rel in generated_paths:
+            continue
         path = repo / safe_rel
         try:
             stat_result = path.lstat()
@@ -1111,7 +1135,13 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             message = "No git repository found. Run sourcepack prompt or sourcepack baseline for non-git use."
         return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding(finding_id, "error", "git", message)])
     git_root = Path(cp.stdout.strip()).resolve()
-    repo = repo_arg if validate_baseline(repo_arg).get("state") in {"present", "stale", "corrupt"} else git_root
+    try:
+        repo_arg.relative_to(git_root)
+    except ValueError:
+        return traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", "Selected repository path is outside the discovered Git top-level.")])
+    # The Git top-level is validation evidence only.  The user-selected path is
+    # the SourcePack analysis root even when it has no existing baseline yet.
+    repo = repo_arg
     policy_result = resolve_effective_policy(repo, org_policy=org_policy, org_policy_mode=org_policy_mode)
     # Explicit patch evidence may not exist in the checked-out worktree.  The
     # judgment pipeline therefore supplies it directly to the authority owner.
@@ -1125,6 +1155,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             diff_args = ["diff", "--staged"] if staged else ["diff"]
         if repo != git_root:
             diff_args.append("--relative")
+        diff_args.extend(["--", "."])
         cp = run_git_bounded(repo, diff_args); diff_text = cp.stdout
         if cp.returncode == GIT_RETURNCODE_OUTPUT_LIMIT:
             rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", cp.stderr.strip() or "Git diff acquisition was incomplete.")])
@@ -1148,6 +1179,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
                 diff_text = (diff_text + "\n" + extra).strip() + "\n"
     else:
         diff_text = patch_text
+    policy_result = guard_effective_policy_result(repo, policy_result, patch_text=diff_text)
     baseline_status = validate_baseline(repo)
     if baseline_status["state"] == "corrupt":
         rep = traffic_report("FAIL", "trusted baseline is corrupt.", [normalized_finding("baseline_corrupt", "error", "baseline", baseline_status["message"])], ["baseline", "diff"], "Recreate the baseline only after verifying the current repo state should be trusted.")
@@ -1184,7 +1216,9 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
         rep_note = None
     trusted_base_files: set[str] | None = None
     if base_ref is not None:
-        base_tree = run_git_bounded(repo, ["ls-tree", "-r", "--name-only", base_ref])
+        selected_prefix = repo.relative_to(git_root).as_posix()
+        tree_pathspec = selected_prefix if selected_prefix != "." else "."
+        base_tree = run_git_bounded(git_root, ["ls-tree", "-r", "--name-only", base_ref, "--", tree_pathspec])
         if base_tree.returncode == GIT_RETURNCODE_OUTPUT_LIMIT:
             rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", base_tree.stderr.strip() or "Git base-tree acquisition was incomplete.")])
             return _finalize_git_incomplete(repo, rep, policy_result, producer="git_base_tree", reason="git_output_limit", acquisition_state="bounded")
@@ -1193,7 +1227,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
             rep = traffic_report("FAIL", "stop before trusting this output.", [normalized_finding("git_diff_failed", "error", "git", message)])
             return _finalize_early_core_failure(repo, rep, policy_result)
         trusted_base_files = {
-            normalized
+            normalized.removeprefix(selected_prefix.rstrip("/") + "/") if selected_prefix != "." else normalized
             for path in base_tree.stdout.splitlines()
             for normalized, unsafe in [_normalize_diff_path(path)]
             if normalized and not unsafe
@@ -1602,6 +1636,8 @@ def _apply_policy_rules(repo: Path, packet_path: Path | None, diff_text: str, re
 def _apply_policy_finishers(repo: Path, packet_path: Path | None, diff_text: str, rep: dict, policy_result: dict) -> dict:
     rep = _apply_policy_rules(repo, packet_path, diff_text, rep, policy_result)
     rep = _apply_local_policy(repo, rep)
+    if POLICY_AUTHORITY_ERROR in policy_result.get("errors", []):
+        return rep
     return _apply_policy_config(repo, rep)
 
 def _finalize_early_core_failure(repo: Path, rep: dict, policy_result: dict) -> dict:
@@ -1641,14 +1677,7 @@ def _parse_policy_expiry(value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _policy_entries_for_judgment(repo: Path) -> PolicyLedgerResult:
-    path = repo / ".sourcepack" / "policy" / "allow.jsonl"
-    if not path.exists():
-        return PolicyLedgerResult((), "complete")
-    try:
-        data = _read_stable_verification_file(path, POLICY_LEDGER_LIMIT_BYTES)
-    except (OSError, ValueError) as exc:
-        return PolicyLedgerResult((), "incomplete", str(exc))
+def _parse_policy_ledger_data(data: bytes) -> PolicyLedgerResult:
     lines = data.splitlines()
     if len(lines) > POLICY_LEDGER_RECORD_LIMIT:
         return PolicyLedgerResult((), "incomplete", "policy ledger record limit exceeded")
@@ -1675,6 +1704,24 @@ def _policy_entries_for_judgment(repo: Path) -> PolicyLedgerResult:
             continue
         entries.append(entry)
     return PolicyLedgerResult(tuple(entries), "complete")
+
+
+def _policy_entries_for_judgment(repo: Path) -> PolicyLedgerResult:
+    readable_path = repo / ".sourcepack" / "policy" / "allow.jsonl"
+    if readable_path.exists():
+        try:
+            readable_data = _read_stable_verification_file(readable_path, POLICY_LEDGER_LIMIT_BYTES)
+        except (OSError, ValueError) as exc:
+            return PolicyLedgerResult((), "incomplete", str(exc))
+        readable_result = _parse_policy_ledger_data(readable_data)
+        if readable_result.status != "complete":
+            return readable_result
+    try:
+        authority_entries = active_allow_records(repo)
+        authority_data = b"".join(json.dumps(entry, sort_keys=True).encode("utf-8") + b"\n" for entry in authority_entries)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        return PolicyLedgerResult((), "incomplete", str(exc))
+    return _parse_policy_ledger_data(authority_data)
 
 
 def _policy_matches(entry: dict, finding: dict) -> bool:

@@ -128,7 +128,7 @@ def test_missing_required_packet_file_fails_verification_and_diff_closed(tmp_pat
     assert data["baseline_state"] == "corrupt"
 
 
-def test_extra_inactive_build_does_not_affect_active_baseline_or_diff(tmp_path: Path) -> None:
+def test_malformed_inactive_build_does_not_corrupt_active_baseline_but_fails_diff_closed(tmp_path: Path) -> None:
     repo = init_repo(tmp_path)
     create_baseline(repo)
     inactive = repo / ".sourcepack" / "baseline" / "builds" / "inactive-build" / "packet"
@@ -138,10 +138,13 @@ def test_extra_inactive_build_does_not_affect_active_baseline_or_diff(tmp_path: 
     assert cp.returncode == 0
     assert status["state"] == "present"
     cp, data = json_cli(repo, "diff", ".", "--ci", "--json")
-    assert cp.returncode == 0
-    assert data["verdict"] == "PASS"
+    assert cp.returncode == 1
+    assert data["verdict"] == "FAIL"
     assert data["baseline_state"] == "present"
-    assert "no_diff" in finding_ids(data)
+    protected = [finding for finding in data["findings"] if finding["id"] == "protected_artifact"]
+    assert [finding["path"] for finding in protected] == [
+        ".sourcepack/baseline/builds/inactive-build/packet/manifest.json"
+    ]
 
 
 def test_prompt_only_state_with_no_baseline_fails_ci_closed(tmp_path: Path) -> None:

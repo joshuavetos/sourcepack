@@ -1,6 +1,27 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+
+
+_PACKET_ARTIFACT_NAMES = frozenset({
+    "ai_instructions.md", "context.md", "context.xml", "file_inventory.json",
+    "file_tree.txt", "ignored_files.txt", "manifest.json", "reality_map.json",
+    "receipt.json", "redactions.json", "token_report.json",
+})
+_PROMPT_ARTIFACTS = frozenset({
+    ".sourcepack/prompt/ai_instructions.md",
+    ".sourcepack/prompt/prompt.md",
+    ".sourcepack/prompt/reality_map.json",
+})
+_REPORT_ARTIFACTS = frozenset({
+    ".sourcepack/reports/latest.json", ".sourcepack/reports/latest.md",
+    ".sourcepack/reports/latest.html", ".sourcepack/reports/latest.sarif.json",
+    ".sourcepack/reports/latest_diff.json", ".sourcepack/reports/latest_prompt.json",
+    ".sourcepack/reports/latest_baseline.json",
+})
+_ARCHIVED_REPORT = re.compile(r"^\.sourcepack/reports/archive/\d{8}T\d{12}Z_(?:report|diff|prompt|baseline|auto)\.(?:json|md)$")
+_TEMP_REPORT = re.compile(r"^\.sourcepack/reports/\.latest\.json\.\d+\.tmp$")
 
 
 def sourcepack_paths(repo: str | Path) -> dict[str, Path]:
@@ -49,6 +70,22 @@ def ensure_sourcepack_dirs(repo: str | Path) -> dict[str, Path]:
     paths["archive"].mkdir(parents=True, exist_ok=True)
     paths["state"].mkdir(parents=True, exist_ok=True)
     return paths
+
+
+def operational_sourcepack_artifact_path(path: str) -> bool:
+    """Return whether a path is non-authority output from an operational owner."""
+    normalized = path.replace("\\", "/").removeprefix("./")
+    return bool(
+        normalized in _PROMPT_ARTIFACTS
+        or normalized in _REPORT_ARTIFACTS
+        or _ARCHIVED_REPORT.fullmatch(normalized)
+        or _TEMP_REPORT.fullmatch(normalized)
+        or normalized in {
+            ".sourcepack/state/baseline.lock",
+            ".sourcepack/state/baseline_stale.json",
+        }
+        or normalized.removeprefix(".sourcepack/prompt/packet/") in _PACKET_ARTIFACT_NAMES
+    )
 
 
 def ensure_gitignore_entry(repo: str | Path) -> tuple[bool, str | None]:

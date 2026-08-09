@@ -66,9 +66,11 @@ def test_unsafe_untracked_file_paths_are_not_emitted(monkeypatch, tmp_path):
     (repo / "safe.txt").write_text("safe\n", encoding="utf-8")
 
     def fake_run_git(repo_arg: Path, args: list[str], *, text: bool):
-        assert args == ["ls-files", "--others", "--exclude-standard", "-z"]
         assert text is False
-        return subprocess.CompletedProcess(["git", *args], 0, b"../evil.txt\0safe.txt\0", b"")
+        if args == ["ls-files", "--others", "--exclude-standard", "-z", "--", "."]:
+            return subprocess.CompletedProcess(["git", *args], 0, b"../evil.txt\0safe.txt\0", b"")
+        assert args == ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ".sourcepack"]
+        return subprocess.CompletedProcess(["git", *args], 0, b"", b"")
 
     monkeypatch.setattr(judgment, "canonical_run_git_bounded", fake_run_git)
 
@@ -259,7 +261,7 @@ def test_build_repo_change_report_later_git_diff_timeout_fails(monkeypatch, tmp_
     def fake_run_git(repo, args):
         if args == ["rev-parse", "--show-toplevel"]:
             return subprocess.CompletedProcess(["git", *args], 0, str(tmp_path), "")
-        if args == ["diff"]:
+        if args == ["diff", "--", "."]:
             return subprocess.CompletedProcess(["git", *args], judgment.GIT_RETURNCODE_TIMEOUT, "", "timeout")
         raise AssertionError(f"unexpected git call: {args}")
 
@@ -388,7 +390,7 @@ def test_build_repo_change_report_later_git_diff_os_error_is_not_baseline_failed
     def fake_run_git(repo, args):
         if args == ["rev-parse", "--show-toplevel"]:
             return subprocess.CompletedProcess(["git", *args], 0, str(tmp_path), "")
-        if args == ["diff"]:
+        if args == ["diff", "--", "."]:
             return subprocess.CompletedProcess(["git", *args], judgment.GIT_RETURNCODE_OS_ERROR, "", "permission denied")
         raise AssertionError(f"unexpected git call: {args}")
 

@@ -1635,9 +1635,9 @@ def _apply_policy_rules(repo: Path, packet_path: Path | None, diff_text: str, re
 
 def _apply_policy_finishers(repo: Path, packet_path: Path | None, diff_text: str, rep: dict, policy_result: dict) -> dict:
     rep = _apply_policy_rules(repo, packet_path, diff_text, rep, policy_result)
-    rep = _apply_local_policy(repo, rep)
     if POLICY_AUTHORITY_ERROR in policy_result.get("errors", []):
         return rep
+    rep = _apply_local_policy(repo, rep)
     return _apply_policy_config(repo, rep)
 
 def _finalize_early_core_failure(repo: Path, rep: dict, policy_result: dict) -> dict:

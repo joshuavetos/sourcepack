@@ -80,7 +80,8 @@ def estimate_tokens(text: str) -> int:
 
 def is_probably_binary(path: Path, sample_size: int = 4096) -> bool:
     try:
-        data = path.read_bytes()[:sample_size]
+        with path.open("rb") as stream:
+            data = stream.read(sample_size)
     except OSError:
         return True
     if b"\x00" in data:

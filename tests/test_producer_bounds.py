@@ -8,7 +8,7 @@ from sourcepack.command_center import build_command_center_snapshot
 from sourcepack.policy import POLICY_FILE_LIMIT_BYTES, resolve_effective_policy
 from sourcepack.git import GIT_RETURNCODE_OUTPUT_LIMIT, run_git_bounded
 from sourcepack import baseline, git as git_module, judgment, packet
-from sourcepack.packet import SourceScanner
+from sourcepack.packet import PacketAuthorityError, PacketWriter, SourceScanner
 from sourcepack.reports.json import REPORT_FINDING_LIMIT, traffic_report, validate_report_construction_metadata
 from sourcepack.workbench import (
     CANONICAL_REPORT_COLLECTION_LIMIT,
@@ -62,6 +62,20 @@ def test_repository_entry_limit_is_deterministic_incomplete_authority(tmp_path: 
     scanner = SourceScanner(tmp_path, trust_git_tracked=False, max_entries=2).scan()
     assert scanner.authority == {"status": "incomplete", "complete": False, "reason": "repository_entry_limit"}
     assert scanner.included_files == []
+
+
+def test_packet_writer_refuses_incomplete_repository_scan_without_creating_output(tmp_path: Path):
+    source = tmp_path / "source"
+    source.mkdir()
+    for name in ("a.py", "b.py"):
+        (source / name).write_text(name, encoding="utf-8")
+    scanner = SourceScanner(source, trust_git_tracked=False, max_entries=1).scan()
+    output = tmp_path / "packet"
+
+    with pytest.raises(PacketAuthorityError, match="repository_entry_limit"):
+        PacketWriter(output, scanner).write_all()
+
+    assert not output.exists()
 
 
 def test_repository_depth_and_read_limits_are_explicit(tmp_path: Path):

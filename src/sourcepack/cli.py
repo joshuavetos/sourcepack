@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Iterable
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
 from .baseline import (
+    BaselineLockError,
     build_current_baseline as canonical_build_current_baseline,
     resolve_active_baseline as canonical_resolve_active_baseline,
     validate_baseline as canonical_validate_baseline,
@@ -204,10 +205,6 @@ def emit_diff_report(report: dict, args, added: bool = False, note: str | None =
     verdict = report.get("verdict")
     mode = PolicyMode.CI if getattr(args, "ci", False) else PolicyMode.STRICT if getattr(args, "strict", False) else PolicyMode.LOCAL
     return policy_exit_code(verdict, mode=mode, exit_policy=getattr(args, "exit_policy", None))
-
-
-class BaselineLockError(RuntimeError):
-    pass
 
 
 def _rel_to_repo(repo: Path, path: Path | None) -> str | None:

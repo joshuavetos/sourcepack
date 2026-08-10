@@ -3,7 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from sourcepack.packet import PacketWriter, SourceScanner, sha256_text
+from sourcepack.packet import PacketWriter, SourceScanner, is_probably_binary, sha256_text
 
 
 def init_git_repo(repo: Path) -> None:
@@ -23,6 +23,34 @@ def included_paths(scanner: SourceScanner) -> list[str]:
 
 def ignored_reasons(scanner: SourceScanner) -> dict[str, str]:
     return {item.relative_path: item.reason for item in scanner.ignored_files}
+
+
+def test_binary_probe_reads_only_requested_sample(tmp_path, monkeypatch):
+    path = tmp_path / "large.txt"
+    path.write_bytes(b"a" * (1024 * 1024) + b"\x00")
+    requested_reads = []
+    original_open = Path.open
+
+    def tracking_open(self, *args, **kwargs):
+        stream = original_open(self, *args, **kwargs)
+
+        class TrackingStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return stream.__exit__(*exc)
+
+            def read(self, size=-1):
+                requested_reads.append(size)
+                return stream.read(size)
+
+        return TrackingStream()
+
+    monkeypatch.setattr(Path, "open", tracking_open)
+
+    assert is_probably_binary(path, sample_size=128) is False
+    assert requested_reads == [128]
 
 
 def test_source_scanner_includes_text_and_records_ignored_reasons(tmp_path):

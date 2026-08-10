@@ -481,7 +481,7 @@ class PacketWriter:
         }
         (self.out / "token_report.json").write_text(json.dumps(token_report, indent=2), encoding="utf-8")
         (self.out / "redactions.json").write_text(json.dumps({"redactions": self.scanner.redactions}, indent=2), encoding="utf-8")
-        reality_map = generate_reality_map(manifest, self.out)
+        reality_map = generate_reality_map(manifest, self.out, packet_construction=True)
         (self.out / "reality_map.json").write_text(json.dumps(reality_map, indent=2), encoding="utf-8")
         (self.out / "ai_instructions.md").write_text(render_ai_instructions(reality_map), encoding="utf-8")
         hashes = {name: sha256_file(self.out / name) for name in self.OUTPUT_FILES if (self.out / name).exists()}
@@ -490,214 +490,12 @@ class PacketWriter:
         return self.out
 
 
-def _included_paths(manifest: dict) -> set[str]:
-    return {rec.get("relative_path", "").replace("\\", "/") for rec in manifest.get("included_files", [])}
-
-
-def _package_json_scripts(packet: Path) -> dict[str, str]:
-    contents = _packet_file_contents(packet)
-    for rel, content in contents.items():
-        if Path(rel).name.lower() == "package.json":
-            try:
-                package = json.loads(content)
-            except json.JSONDecodeError:
-                return {}
-            scripts = package.get("scripts")
-            return scripts if isinstance(scripts, dict) else {}
-    return {}
-
-
-def _is_poetry_project(packet: Path) -> bool:
-    for rel, content in _packet_file_contents(packet).items():
-        if Path(rel).name.lower() == "pyproject.toml" and re.search(r"(?m)^\s*\[tool\.poetry\]\s*$", content):
-            return True
-    return False
-
-
-def _uses_unittest(packet: Path) -> bool:
-    for rel, content in _packet_file_contents(packet).items():
-        if Path(rel).suffix.lower() == ".py" and re.search(r"(?m)^\s*(import\s+unittest|from\s+unittest\s+import\s+)", content):
-            return True
-    return False
-
-
-def generate_reality_map(manifest: dict, packet: Path) -> dict:
-    files = _included_paths(manifest)
-    lower_files = {f.lower() for f in files}
-    deps = dependency_inventory(manifest, packet)
-    features = feature_inventory(manifest, packet, deps)
-    scripts = _package_json_scripts(packet)
-    project_types = []
-    package_managers = []
-    frameworks = []
-    supported_commands = []
-    test_commands = []
-    build_commands = []
-    run_commands = []
-    if "pyproject.toml" in lower_files:
-        project_types.append("python")
-    if any(Path(f).name.lower().startswith("requirements") and f.endswith(".txt") for f in lower_files):
-        project_types.append("python")
-        package_managers.append("pip")
-    if _is_poetry_project(packet):
-        package_managers.append("poetry")
-    if "package.json" in lower_files:
-        project_types.append("node")
-        package_managers.append("npm")
-        for name in sorted(scripts):
-            cmd = "npm test" if name == "test" else f"npm run {name}"
-            supported_commands.append(cmd)
-            if name == "test": test_commands.append(cmd)
-            elif name in {"build", "compile"}: build_commands.append(cmd)
-            elif name in {"start", "dev", "serve"}: run_commands.append(cmd)
-    if any(Path(f).name.lower() == "dockerfile" for f in files):
-        supported_commands.append("docker build")
-        build_commands.append("docker build")
-    if any(Path(f).name.lower() in {"docker-compose.yml", "compose.yaml", "compose.yml"} for f in files):
-        supported_commands.append("docker compose up")
-        run_commands.append("docker compose up")
-    if "pytest" in deps or any(f == "tests" or f.startswith("tests/") for f in lower_files):
-        supported_commands.append("pytest")
-        test_commands.append("pytest")
-    if _uses_unittest(packet):
-        supported_commands.append("python -m unittest")
-        test_commands.append("python -m unittest")
-    framework_map = {"fastapi": "FastAPI", "flask": "Flask", "django": "Django", "react": "React"}
-    for dep, label in framework_map.items():
-        if dep in deps or (dep == "react" and "react" in features):
-            frameworks.append(label)
-    ignored = manifest.get("ignored_files", [])
-    ignored_reasons = {}
-    for rec in ignored:
-        reason = rec.get("reason", "unknown")
-        ignored_reasons[reason] = ignored_reasons.get(reason, 0) + 1
-    included_count = len(manifest.get("included_files", []))
-    safe_claims = [
-        f"This packet includes {included_count} source files.",
-        f"SourcePack scanned input path: {manifest.get('input_path', '')}.",
-    ]
-    for name in ["pyproject.toml", "package.json", "Dockerfile"]:
-        present = name.lower() in {Path(f).name.lower() for f in files}
-        safe_claims.append(f"The project {'contains' if present else 'does not include'} {name}.")
-    if "react" not in deps and "react" not in features:
-        safe_claims.append("No React dependency was detected.")
-    if "pdf" not in features:
-        safe_claims.append("No PDF parsing capability was detected.")
-    if ignored:
-        safe_claims.append("The packet includes ignored file records for safety or relevance reasons.")
-    claim_boundaries = [
-        "SourcePack did not execute the application.",
-        "SourcePack did not prove semantic correctness.",
-        "SourcePack did not verify external services.",
-        "SourcePack did not prove security.",
-        "SourcePack did not prove production readiness.",
-        "Absence of evidence means unknown, not impossible.",
-        "Unsupported claims should be treated as ungrounded.",
-    ]
-    return {
-        "reality_map_schema_version": "1.0",
-        "tool_version": __version__,
-        "generated_at": utc_now(),
-        "input_path": manifest.get("input_path", ""),
-        "project_types": sorted(set(project_types)),
-        "package_managers": sorted(set(package_managers)),
-        "frameworks": sorted(set(frameworks)),
-        "entry_points": sorted(f for f in files if Path(f).name in {"main.py", "app.py", "server.py", "cli.py"}),
-        "test_commands": sorted(set(test_commands)),
-        "build_commands": sorted(set(build_commands)),
-        "run_commands": sorted(set(run_commands)),
-        "supported_commands": sorted(set(supported_commands)),
-        "detected_dependencies": sorted(deps),
-        "supported_capabilities": sorted(features),
-        "excluded_files_summary": {"total": len(ignored), "reasons": ignored_reasons, "records": ignored[:25]},
-        "included_file_count": included_count,
-        "confirmed_files": sorted(files),
-        "ignored_file_count": len(ignored),
-        "safe_claims": safe_claims,
-        "unknowns": [
-            "Runtime behavior was not executed.",
-            "Semantic correctness was not proven.",
-            "External services were not verified.",
-            "Capabilities not present in structural evidence must be treated as unknown.",
-            "Missing files must not be invented.",
-        ],
-        "claim_boundaries": claim_boundaries,
-        "ai_constraints": [
-            "Use only the packet and reality map as project evidence.",
-            "Do not invent files, commands, dependencies, frameworks, services, or capabilities.",
-            "If a required file is missing, say it is missing.",
-            "If a command is unsupported by detected evidence, say it is unsupported.",
-            "If a capability is not in supported_capabilities, treat it as unknown or unsupported.",
-            "Cite file paths when making project-specific claims.",
-            "Do not claim SourcePack proves semantic truth.",
-            "Ask for missing files rather than hallucinating them.",
-        ],
-    }
-
-
-def render_ai_instructions(reality_map: dict) -> str:
-    lines = [
-        "# AI Instructions for This SourcePack Packet", "",
-        "Use only the packet and `reality_map.json` as project evidence.",
-        "Do not invent files, commands, dependencies, frameworks, services, or capabilities.",
-        "If a required file is missing, say it is missing and ask for it rather than hallucinating it.",
-        "If a command is unsupported by detected evidence, say it is unsupported.",
-        "If a capability is not listed in `supported_capabilities`, treat it as unknown or unsupported.",
-        "If you introduce a new external dependency, modify the appropriate dependency manifest in the same patch and list it under Dependency Changes.",
-        "Only recommend commands listed under Supported Commands unless your patch also adds the project file that defines the new command.",
-        "Before referencing a file as existing, it must appear in Confirmed Files; label intentional creations as NEW FILE.",
-        "If required evidence is missing, say UNKNOWN and ask for the missing file/output instead of guessing.",
-        "Cite file paths when making project-specific claims.",
-        "Do not claim SourcePack proves semantic truth, security, production readiness, or external service behavior.", "",
-        "## Supported Commands", "",
-    ]
-    cmds = reality_map.get("supported_commands", [])
-    lines.extend([f"- `{cmd}`" for cmd in cmds] or ["- None detected"])
-    lines.extend(["", "## Supported Capabilities", ""])
-    caps = reality_map.get("supported_capabilities", [])
-    lines.extend([f"- {cap}" for cap in caps] or ["- None detected"])
-    lines.extend(["", "## Confirmed Files", ""])
-    lines.extend(f"- `{path}`" for path in reality_map.get("confirmed_files", [])[:200])
-    lines.extend(["", "## Required Answer Contract", "", "- Files to modify", "- New files", "- Dependency changes", "- Commands to run", "- Assumptions/unknowns", "- Patch or code", "", "## Claim Boundaries", ""])
-    lines.extend(f"- {boundary}" for boundary in reality_map.get("claim_boundaries", []))
-    return "\n".join(lines) + "\n"
-
-
-def load_manifest(packet: Path) -> dict:
-    return json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
-
-
 def _load_verification_json(path: Path, byte_limit: int) -> dict:
     raw = _read_stable_verification_file(path, byte_limit)
     value = json.loads(raw)
     if not isinstance(value, dict):
         raise ValueError(f"{path.name} must contain a JSON object")
     return value
-
-
-def _read_stable_verification_file(path: Path, byte_limit: int) -> bytes:
-    """Read a regular file through one descriptor and reject boundary-changing races."""
-    before = path.stat(follow_symlinks=False)
-    if not stat.S_ISREG(before.st_mode) or before.st_size > byte_limit:
-        raise ValueError("not a regular file or byte limit exceeded")
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(path, flags)
-    try:
-        opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-            raise ValueError("file changed before verification read")
-        with os.fdopen(fd, "rb", closefd=False) as handle:
-            raw = handle.read(byte_limit + 1)
-        after = os.fstat(fd)
-    finally:
-        os.close(fd)
-    if len(raw) > byte_limit:
-        raise ValueError("byte limit exceeded during verification read")
-    if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (
-        opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns
-    ) or len(raw) != opened.st_size:
-        raise ValueError("file changed during verification read")
-    return raw
 
 
 def _confined_verification_file(root: Path, raw_path: object) -> tuple[Path | None, str | None]:
@@ -877,270 +675,38 @@ def verify_packet(
     return ok
 
 
-PATHLIKE_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".toml", ".yaml", ".yml", ".md", ".txt", ".cfg", ".ini", ".css", ".html", ".rs", ".go", ".java", ".rb", ".php", ".sh"}
-PROJECT_PATH_PREFIXES = {"src", "sourcepack", "tests", "test", "frontend", "backend", "docs", "app", "lib", "packages", "public", "config", "scripts"}
+# Compatibility exports: packet construction calls the canonical evidence
+# interpreter, while this module retains scanning, writing, and verification.
+from . import repository_evidence as _repository_evidence
 
+_read_stable_verification_file = _repository_evidence._read_stable_verification_file
 
-def _normalize_ai_ref(ref: str) -> str | None:
-    ref = ref.strip().strip("`'\".,;)")
-    ref = ref.replace("\\", "/")
-    if ref.endswith(":"):
-        ref = ref[:-1]
-    while ref.startswith("./"):
-        ref = ref[2:]
-    if not ref or ref.startswith("/") or re.match(r"^[A-Za-z]:/", ref):
-        return None
-    normalized, unsafe = normalize_diff_path(ref)
-    if unsafe or not normalized:
-        return None
-    return normalized
-
-
-def _looks_like_ai_file_ref(ref: str) -> bool:
-    normalized = ref.replace("\\", "/")
-    name = PurePosixPath(normalized).name
-    if name in {"Dockerfile", "docker-compose.yml", "compose.yaml", "compose.yml", "pyproject.toml", "package.json", "requirements.txt"}:
-        return True
-    suffix = PurePosixPath(normalized).suffix.lower()
-    if suffix not in PATHLIKE_EXTENSIONS:
-        return False
-    parts = [p for p in PurePosixPath(normalized).parts if p not in {"."}]
-    return "/" in normalized or (parts and parts[0] in PROJECT_PATH_PREFIXES)
-
-
-def extract_refs(text: str) -> set[str]:
-    refs: set[str] = set()
-    token = r"(?:\./)?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9_.-]+:?|Dockerfile"
-    patterns = [rf"[`'\"]({token})[`'\"]", rf"(?m)^\s*[-*]\s+({token})\b", rf"\b(?:edit|open|update|modify|change|in|file)\s+({token})\b", r"\b((?:\./)?(?:src|sourcepack|tests|test|frontend|backend|docs|app|lib|packages|public|config|scripts)[\\/][A-Za-z0-9_./\\-]+\.[A-Za-z0-9_.-]+:?)\b"]
-    for pattern in patterns:
-        for candidate in re.findall(pattern, text, re.I):
-            normalized = _normalize_ai_ref(candidate)
-            if normalized and _looks_like_ai_file_ref(normalized):
-                refs.add(normalized)
-    return refs
-
-
-def _packet_file_contents(packet: Path) -> dict[str, str]:
-    context_path = packet / "context.md"
-    if not context_path.exists():
-        return {}
-    text = context_path.read_text(encoding="utf-8", errors="ignore")
-    contents: dict[str, str] = {}
-    current: str | None = None
-    body: list[str] = []
-    in_content = False
-    for line in text.splitlines():
-        if line.startswith("## File: "):
-            if current is not None:
-                contents[current] = "\n".join(body).rstrip("\n")
-            current = line.removeprefix("## File: ").strip()
-            body = []
-            in_content = False
-        elif current is not None and line == "Content:":
-            in_content = True
-            body = []
-        elif current is not None and in_content and line == "---":
-            contents[current] = "\n".join(body).rstrip("\n")
-            current = None
-            body = []
-            in_content = False
-        elif current is not None and in_content:
-            body.append(line)
-    if current is not None:
-        contents[current] = "\n".join(body).rstrip("\n")
-    return contents
-
-
-def _normalize_dependency_name(name: str) -> str:
-    return name.strip().lower().replace("_", "-")
-
-
-def _dependency_name_for_import(name: str) -> str:
-    normalized = _normalize_dependency_name(name)
-    return PY_IMPORT_ALIASES.get(normalized, normalized)
-
-
-def _js_package_root(imported: str) -> str:
-    imported = imported.strip().lower()
-    parts = imported.split("/")
-    if imported.startswith("@") and len(parts) >= 2 and parts[0] != "@":
-        return "/".join(parts[:2])
-    if imported.startswith("@/"):
-        return imported
-    return parts[0]
-
-
-def _python_dependency_names_from_requirement_lines(text: str) -> set[str]:
-    deps: set[str] = set()
-    for line in text.splitlines():
-        cleaned = line.split("#", 1)[0].strip()
-        if cleaned and not cleaned.startswith(("-", "--")):
-            deps.add(_normalize_dependency_name(re.split(r"[<>=!~;\[]", cleaned, maxsplit=1)[0]))
-    return deps
-
-
-def _python_dependency_names_from_pyproject(content: str) -> set[str]:
-    try:
-        data = tomllib.loads(content)
-    except tomllib.TOMLDecodeError:
-        return set()
-    deps: set[str] = set()
-
-    def add_requirement(req: object) -> None:
-        if isinstance(req, str):
-            name = re.split(r"[<>=!~;\[]", req.strip(), maxsplit=1)[0]
-            if name:
-                deps.add(_normalize_dependency_name(name))
-
-    project = data.get("project", {})
-    if isinstance(project, dict):
-        for req in project.get("dependencies", []) if isinstance(project.get("dependencies"), list) else []:
-            add_requirement(req)
-        optional = project.get("optional-dependencies", {})
-        if isinstance(optional, dict):
-            for group in optional.values():
-                if isinstance(group, list):
-                    for req in group:
-                        add_requirement(req)
-
-    tool = data.get("tool", {})
-    if isinstance(tool, dict):
-        poetry = tool.get("poetry", {})
-        if isinstance(poetry, dict):
-            for section_name in ("dependencies", "dev-dependencies"):
-                section = poetry.get(section_name, {})
-                if isinstance(section, dict):
-                    for dep in section:
-                        if dep.lower() != "python":
-                            deps.add(_normalize_dependency_name(dep))
-            group = poetry.get("group", {})
-            if isinstance(group, dict):
-                for group_data in group.values():
-                    if isinstance(group_data, dict):
-                        section = group_data.get("dependencies", {})
-                        if isinstance(section, dict):
-                            deps.update(_normalize_dependency_name(dep) for dep in section)
-        for tool_name in ("pdm", "uv"):
-            tool_data = tool.get(tool_name, {})
-            if isinstance(tool_data, dict):
-                for key in ("dev-dependencies", "dependency-groups"):
-                    groups = tool_data.get(key, {})
-                    if isinstance(groups, dict):
-                        for group in groups.values():
-                            if isinstance(group, list):
-                                for req in group:
-                                    add_requirement(req)
-    dependency_groups = data.get("dependency-groups", {})
-    if isinstance(dependency_groups, dict):
-        for group in dependency_groups.values():
-            if isinstance(group, list):
-                for req in group:
-                    add_requirement(req)
-    return deps
-
-
-def _add_common_dependency(deps: set[str], name: str):
-    normalized = _normalize_dependency_name(name)
-    for dep in COMMON_DEPENDENCIES:
-        if normalized == _normalize_dependency_name(dep):
-            deps.add(dep.lower())
-
-
-def dependency_inventory(manifest: dict, packet: Path) -> set[str]:
-    deps: set[str] = set()
-    contents = _packet_file_contents(packet)
-    for rec in manifest.get("included_files", []):
-        rel = rec.get("relative_path", "")
-        content = contents.get(rel, "")
-        name = Path(rel).name.lower()
-        suffix = Path(rel).suffix.lower()
-        if name == "pyproject.toml":
-            for dep in _python_dependency_names_from_pyproject(content):
-                _add_common_dependency(deps, dep)
-        elif name.startswith("requirements") and name.endswith(".txt"):
-            for dep in _python_dependency_names_from_requirement_lines(content):
-                _add_common_dependency(deps, dep)
-        elif name == "package.json":
-            try:
-                package = json.loads(content)
-            except json.JSONDecodeError:
-                package = {}
-            for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
-                section_deps = package.get(section)
-                if isinstance(section_deps, dict):
-                    for dep_name in section_deps:
-                        _add_common_dependency(deps, dep_name)
-        elif suffix == ".py":
-            for imported in re.findall(r"(?m)^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", content):
-                _add_common_dependency(deps, imported)
-        elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
-            for imported in re.findall(r"""(?:from\s+["']|import\s*\(\s*["']|require\s*\(\s*["'])(@?[A-Za-z0-9_.-]+)""", content):
-                _add_common_dependency(deps, _js_package_root(imported))
-    return deps
-
-
-def _has_import(content: str, *modules: str) -> bool:
-    module_pattern = "|".join(re.escape(module) for module in modules)
-    return bool(re.search(rf"(?m)^\s*(?:import|from)\s+({module_pattern})(?:\b|[._])", content))
-
-
-PDF_DEPENDENCIES = {"pypdf", "pdfplumber", "fitz", "pymupdf"}
-
-
-def _declares_pdf_dependency(rel: str, content: str) -> bool:
-    name = Path(rel).name.lower()
-    if name == "pyproject.toml":
-        return any(dep in PDF_DEPENDENCIES for dep in _python_dependency_names_from_pyproject(content))
-    if name.startswith("requirements") and name.endswith(".txt"):
-        return any(dep in PDF_DEPENDENCIES for dep in _python_dependency_names_from_requirement_lines(content))
-    return False
-
-
-def feature_inventory(manifest: dict, packet: Path, deps: set[str] | None = None) -> set[str]:
-    if deps is None:
-        deps = dependency_inventory(manifest, packet)
-    contents = _packet_file_contents(packet)
-    files = {rec.get("relative_path", "").replace("\\", "/") for rec in manifest.get("included_files", [])}
-    lower_files = {rel.lower() for rel in files}
-    features: set[str] = set()
-
-    if any(Path(rel).name.lower() in {"dockerfile", "docker-compose.yml", "compose.yaml", "compose.yml"} for rel in files):
-        features.add("docker")
-    if any(rel.endswith(("/pdf_parser.py", "pdf_parser.py")) for rel in lower_files):
-        features.add("pdf")
-    if any(_declares_pdf_dependency(rel, content) for rel, content in contents.items()):
-        features.add("pdf")
-    if "react" in deps or any(rel in {"frontend/app.tsx", "frontend/app.jsx"} for rel in lower_files):
-        features.add("react")
-    if deps & {"fastapi", "flask", "django"} or any(Path(rel).name.lower() in {"server.py", "app.py"} for rel in files):
-        features.add("web server")
-    if deps & {"sqlalchemy", "prisma"} or any("/migrations/" in f"/{rel}/" or Path(rel).name.lower() in {"schema.prisma", "schema.sql"} for rel in files):
-        features.add("database")
-    if any(part == "auth" or part.startswith("auth_") for rel in lower_files for part in Path(rel).parts):
-        features.add("authentication")
-
-    for rel, content in contents.items():
-        suffix = Path(rel).suffix.lower()
-        if suffix == ".py":
-            if _has_import(content, "pypdf", "pdfplumber", "fitz"):
-                features.add("pdf")
-            if _has_import(content, "fastapi", "flask", "django") or re.search(r"(?m)^\s*@\w+\.(?:route|get|post|put|patch|delete)\(", content):
-                features.add("web server")
-            if _has_import(content, "sqlalchemy", "prisma") or re.search(r"(?i)\b(sqlite|postgres(?:ql)?|mysql)://", content):
-                features.add("database")
-            if _has_import(content, "jwt", "oauthlib", "authlib") or re.search(r"(?i)@\w+\.(?:route|get|post)\([^)]*login", content):
-                features.add("authentication")
-            if _has_import(content, "pytesseract", "easyocr"):
-                features.add("ocr")
-        elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
-            if re.search(r"""(?:from\s+["']react["']|require\s*\(\s*["']react["']|import\s+React\b)""", content):
-                features.add("react")
-            if re.search(r"(?i)\b(jwt|oauth|session|login)\b", content):
-                features.add("authentication")
-        elif Path(rel).name.lower() == "package.json":
-            if re.search(r'"react"\s*:', content):
-                features.add("react")
-    return features
+_included_paths = _repository_evidence._included_paths
+_package_json_scripts = _repository_evidence._package_json_scripts
+_is_poetry_project = _repository_evidence._is_poetry_project
+_uses_unittest = _repository_evidence._uses_unittest
+generate_reality_map = _repository_evidence.generate_reality_map
+render_ai_instructions = _repository_evidence.render_ai_instructions
+def load_manifest(packet: Path):
+    """Load legacy packet manifests without imposing canonical object validation."""
+    return json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
+PATHLIKE_EXTENSIONS = _repository_evidence.PATHLIKE_EXTENSIONS
+PROJECT_PATH_PREFIXES = _repository_evidence.PROJECT_PATH_PREFIXES
+_normalize_ai_ref = _repository_evidence._normalize_ai_ref
+_looks_like_ai_file_ref = _repository_evidence._looks_like_ai_file_ref
+extract_refs = _repository_evidence.extract_refs
+_packet_file_contents = _repository_evidence._packet_file_contents
+_normalize_dependency_name = _repository_evidence._normalize_dependency_name
+_dependency_name_for_import = _repository_evidence._dependency_name_for_import
+_js_package_root = _repository_evidence._js_package_root
+_python_dependency_names_from_requirement_lines = _repository_evidence._python_dependency_names_from_requirement_lines
+_python_dependency_names_from_pyproject = _repository_evidence._python_dependency_names_from_pyproject
+_add_common_dependency = _repository_evidence._add_common_dependency
+dependency_inventory = _repository_evidence.dependency_inventory
+_has_import = _repository_evidence._has_import
+PDF_DEPENDENCIES = _repository_evidence.PDF_DEPENDENCIES
+_declares_pdf_dependency = _repository_evidence._declares_pdf_dependency
+feature_inventory = _repository_evidence.feature_inventory
 
 
 def scanner_config_hash() -> str:

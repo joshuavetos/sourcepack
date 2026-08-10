@@ -23,7 +23,7 @@ from .baseline import BaselineLockError, baseline_report_fields, build_current_b
 from .ecosystems.python import PY_IMPORT_ALIASES
 from .packet import PacketWriter, SourceScanner, _read_stable_verification_file
 from .paths import ensure_sourcepack_dirs, operational_sourcepack_artifact_path
-from .reports.json import build_replay_bundle, normalized_finding, traffic_report, write_user_report
+from .reports.json import build_replay_bundle, finalize_user_report, normalized_finding, traffic_report
 from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code, load_policy_config, finding_ignored_by_policy, policy_path_matches, resolve_effective_policy
 from .policy_authority import POLICY_AUTHORITY_ERROR, guard_effective_policy_result
 from .execution_ledger import execution_findings
@@ -289,16 +289,9 @@ def _latest_report_html_path(repo: str | Path) -> Path:
 
 
 def finalize_diff_report(repo: str | Path | None, report: dict, args, stem: str = "diff") -> dict:
-    full = dict(report)
-    if getattr(args, "ci", False):
-        full["ci"] = True
-    if repo is not None:
-        try:
-            write_user_report(repo, full, stem)
-            full["persistence"] = {"status": "written"}
-        except Exception as exc:
-            full["persistence"] = {"status": "failed", "reason": str(exc)}
-    return full
+    return finalize_user_report(
+        repo, report, stem=stem, ci=getattr(args, "ci", False), record_persistence=True
+    )
 
 
 def git_metadata(repo: str | Path) -> dict:
@@ -1823,10 +1816,6 @@ def _apply_policy_config(repo: Path, rep: dict) -> dict:
     return rep
 
 
-def write_auto_report(repo: Path, report: dict, details: dict) -> None:
-    payload = dict(report)
-    payload.update(details)
-    write_user_report(repo, payload, "auto")
 
 
 

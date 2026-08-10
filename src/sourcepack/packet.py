@@ -337,6 +337,10 @@ class PacketCleanupError(RuntimeError):
         super().__init__(f"packet output cleanup {result['status']}: {result.get('error') or result.get('limit_reached')}")
 
 
+class PacketAuthorityError(RuntimeError):
+    """Packet production was refused because repository evidence is incomplete."""
+
+
 def _cleanup_result(status: str, consumed: int, source_exhausted: bool, limit: int, limit_reached: str | None, error: str | None) -> dict[str, object]:
     return {"status": status, "complete": status == "complete", "consumed": consumed, "retained": 0, "source_exhausted": source_exhausted, "total": consumed, "total_is_lower_bound": not source_exhausted, "configured_limit": limit, "limit_reached": limit_reached, "error": error}
 
@@ -428,6 +432,10 @@ class PacketWriter:
         return self.cleanup_result
 
     def write_all(self):
+        if not self.scanner.authority.get("complete", False):
+            raise PacketAuthorityError(
+                f"repository traversal incomplete: {self.scanner.authority.get('reason') or 'unknown reason'}"
+            )
         self.prepare_out()
         included_records = []
         for f in self.scanner.included_files:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
-import selectors
+import queue
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Final
@@ -22,64 +23,92 @@ class GitProducerIncompleteError(RuntimeError):
 
 
 def _bounded_process(repo: Path, args: list[str], limit: int, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
-    """Drain git incrementally, killing it before retained output exceeds limit."""
+    """Drain git incrementally without relying on selectable subprocess pipes."""
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
         raise ValueError("output limit must be a non-negative integer")
     command = ["git", *args]
     process = subprocess.Popen(command, cwd=repo, stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    selector: selectors.BaseSelector | None = None
     chunks: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
     retained = 0
     state = "complete"
+    events: queue.Queue[tuple[str, bytes | BaseException | None]] = queue.Queue(maxsize=8)
+
+    def read_pipe(name: str, stream) -> None:
+        try:
+            while data := stream.read(65536):
+                events.put((name, data))
+        except BaseException as exc:
+            events.put(("error", exc))
+        finally:
+            events.put((name, None))
+
+    def write_input(stream) -> None:
+        try:
+            assert input_bytes is not None
+            view = memoryview(input_bytes)
+            while view:
+                written = stream.write(view[:65536])
+                if not written:
+                    break
+                view = view[written:]
+            stream.close()
+        except BrokenPipeError:
+            if not stream.closed:
+                stream.close()
+        except BaseException as exc:
+            events.put(("error", exc))
+
+    workers: list[threading.Thread] = []
+    pending_error: BaseException | None = None
     try:
         assert process.stdout is not None and process.stderr is not None
-        selector = selectors.DefaultSelector()
-        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
-        input_offset = 0
+        workers = [
+            threading.Thread(target=read_pipe, args=("stdout", process.stdout), daemon=True),
+            threading.Thread(target=read_pipe, args=("stderr", process.stderr), daemon=True),
+        ]
         if input_bytes is not None:
             assert process.stdin is not None
-            selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+            workers.append(threading.Thread(target=write_input, args=(process.stdin,), daemon=True))
+        for worker in workers:
+            worker.start()
         deadline = time.monotonic() + GIT_TIMEOUT_SECONDS
-        while selector.get_map():
+        open_readers = 2
+        while open_readers:
             remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            if remaining <= 0 and state == "complete":
                 state = "timeout"
                 process.kill()
-                break
-            events = selector.select(remaining)
-            if not events:
-                state = "timeout"
-                process.kill()
-                break
-            for key, _ in events:
-                if key.data == "stdin":
-                    assert input_bytes is not None and process.stdin is not None
-                    try:
-                        written = os.write(process.stdin.fileno(), input_bytes[input_offset:input_offset + 65536])
-                    except BrokenPipeError:
-                        written = 0
-                    input_offset += written
-                    if written == 0 or input_offset >= len(input_bytes):
-                        selector.unregister(process.stdin)
-                        process.stdin.close()
-                    continue
-                data = os.read(key.fileobj.fileno(), min(65536, limit + 1 - retained))
-                if not data:
-                    selector.unregister(key.fileobj)
-                    continue
-                if retained + len(data) > limit:
-                    allowed = max(0, limit - retained)
-                    if allowed:
-                        chunks[key.data].append(data[:allowed])
-                    retained = limit
-                    state = "bounded"
+            try:
+                name, value = events.get(timeout=max(0.01, remaining) if state == "complete" else 0.1)
+            except queue.Empty:
+                if state == "complete":
+                    state = "timeout"
                     process.kill()
-                    break
-                chunks[key.data].append(data)
-                retained += len(data)
+                continue
+            if name == "error":
+                assert isinstance(value, BaseException)
+                pending_error = value
+                if process.poll() is None:
+                    process.kill()
+                continue
+            if value is None:
+                open_readers -= 1
+                continue
+            assert isinstance(value, bytes)
             if state != "complete":
-                break
+                continue
+            if retained + len(value) > limit:
+                allowed = max(0, limit - retained)
+                if allowed:
+                    chunks[name].append(value[:allowed])
+                retained = limit
+                state = "bounded"
+                process.kill()
+                continue
+            chunks[name].append(value)
+            retained += len(value)
+        if pending_error is not None:
+            raise pending_error
     finally:
         try:
             if process.poll() is None:
@@ -90,16 +119,14 @@ def _bounded_process(repo: Path, args: list[str], limit: int, input_bytes: bytes
             else:
                 process.wait()
         finally:
-            try:
-                if selector is not None:
-                    selector.close()
-            finally:
-                if process.stdout is not None:
-                    process.stdout.close()
-                if process.stderr is not None:
-                    process.stderr.close()
-                if process.stdin is not None and not process.stdin.closed:
-                    process.stdin.close()
+            for worker in workers:
+                worker.join(timeout=1)
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
     stdout = b"".join(chunks["stdout"])
     stderr = b"".join(chunks["stderr"])
     if state == "bounded":

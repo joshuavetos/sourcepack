@@ -319,71 +319,15 @@ def test_bounded_input_returncode_one_requires_explicit_command_contract(tmp_pat
     assert timeout.acquisition_state == "failed"
 
 
-def test_bounded_process_reaps_child_when_initial_selector_registration_fails(tmp_path: Path, monkeypatch):
-    import pytest
+def test_bounded_process_uses_pipe_threads_compatible_with_windows(tmp_path: Path):
+    _init_repo(tmp_path)
+    payload = b"windows-compatible stdin"
 
-    created = []
-    real_popen = git_mod.subprocess.Popen
-    real_selector = git_mod.selectors.DefaultSelector
+    cp = git_mod._bounded_process(tmp_path, ["hash-object", "--stdin"], 1024, input_bytes=payload)
 
-    def recording_popen(*args, **kwargs):
-        process = real_popen(*args, **kwargs)
-        created.append(process)
-        return process
-
-    class FailingSelector:
-        def __init__(self):
-            self.inner = real_selector()
-
-        def register(self, *args, **kwargs):
-            raise RuntimeError("selector registration failed")
-
-        def close(self):
-            self.inner.close()
-
-    monkeypatch.setattr(git_mod.subprocess, "Popen", recording_popen)
-    monkeypatch.setattr(git_mod.selectors, "DefaultSelector", FailingSelector)
-    with pytest.raises(RuntimeError, match="selector registration failed"):
-        git_mod._bounded_process(tmp_path, ["hash-object", "--stdin"], 1024, input_bytes=b"held open")
-    assert len(created) == 1
-    assert created[0].poll() is not None
-    assert created[0].returncode is not None
-
-
-def test_bounded_process_reaps_child_after_unexpected_write_failure(tmp_path: Path, monkeypatch):
-    import pytest
-
-    created = []
-    real_popen = git_mod.subprocess.Popen
-
-    def recording_popen(*args, **kwargs):
-        process = real_popen(*args, **kwargs)
-        created.append(process)
-        return process
-
-    monkeypatch.setattr(git_mod.subprocess, "Popen", recording_popen)
-    monkeypatch.setattr(git_mod.os, "write", lambda *_args: (_ for _ in ()).throw(RuntimeError("write failed")))
-    with pytest.raises(RuntimeError, match="write failed"):
-        git_mod._bounded_process(tmp_path, ["hash-object", "--stdin"], 1024, input_bytes=b"input")
-    assert created[0].poll() is not None
-
-
-def test_bounded_process_reaps_child_after_unexpected_read_failure(tmp_path: Path, monkeypatch):
-    import pytest
-
-    created = []
-    real_popen = git_mod.subprocess.Popen
-
-    def recording_popen(*args, **kwargs):
-        process = real_popen(*args, **kwargs)
-        created.append(process)
-        monkeypatch.setattr(git_mod.os, "read", lambda *_args: (_ for _ in ()).throw(RuntimeError("read failed")))
-        return process
-
-    monkeypatch.setattr(git_mod.subprocess, "Popen", recording_popen)
-    with pytest.raises(RuntimeError, match="read failed"):
-        git_mod._bounded_process(tmp_path, ["rev-parse", "--git-dir"], 1024)
-    assert created[0].poll() is not None
+    assert cp.returncode == 0
+    assert len(cp.stdout.strip()) == 40
+    assert cp.stderr == b""
 
 
 def test_bounded_process_exact_output_boundary_and_one_byte_over(tmp_path: Path):

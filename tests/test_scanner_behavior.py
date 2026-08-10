@@ -233,3 +233,14 @@ def test_cli_and_judgment_scanner_writer_exports_are_canonical():
 
 def test_scanner_behavior_file_can_run_directly_under_pytest(tmp_path):
     assert sys.version_info >= (3, 11)
+
+
+def test_packet_writer_reality_map_preserves_legacy_separator_line_semantics(tmp_path):
+    (tmp_path / "requirements.txt").write_text("---\nfastapi\n", encoding="utf-8")
+    packet = tmp_path / "packet"
+
+    PacketWriter(packet, SourceScanner(tmp_path).scan(), force=True).write_all()
+
+    reality_map = json.loads((packet / "reality_map.json").read_text(encoding="utf-8"))
+    assert "fastapi" not in reality_map["detected_dependencies"]
+    assert "FastAPI" not in reality_map["frameworks"]

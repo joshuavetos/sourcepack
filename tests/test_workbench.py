@@ -613,3 +613,43 @@ def test_repeated_server_construction_uses_same_canonical_handler(tmp_path):
     finally:
         first.server_close()
         second.server_close()
+
+
+def test_dashboard_payload_uses_request_local_dependencies_concurrently(tmp_path):
+    from sourcepack import command_center_state
+
+    original_policy = command_center_state.resolve_effective_policy
+    original_git = command_center_state.git_metadata
+    entered = threading.Barrier(2)
+    release = threading.Barrier(2)
+    observed: dict[str, str] = {}
+
+    def resolver(name):
+        def resolve(_repo):
+            entered.wait(timeout=2)
+            release.wait(timeout=2)
+            observed[name] = name
+            return {"resolution_status": "PASS", "request": name}
+        return resolve
+
+    results: dict[str, dict] = {}
+
+    def request_payload(name):
+        results[name] = workbench._dashboard_payload(
+            tmp_path,
+            "policy",
+            policy_reader=resolver(name),
+        )
+
+    threads = [threading.Thread(target=request_payload, args=(name,)) for name in ("A", "B")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+
+    assert observed == {"A": "A", "B": "B"}
+    assert results["A"]["policy"]["request"] == "A"
+    assert results["B"]["policy"]["request"] == "B"
+    assert command_center_state.resolve_effective_policy is original_policy
+    assert command_center_state.git_metadata is original_git

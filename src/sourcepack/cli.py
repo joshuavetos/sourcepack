@@ -23,15 +23,20 @@ from typing import Iterable
 from .diff_parser import PatchFileChange, normalize_diff_path as _normalize_diff_path, parse_unified_diff
 from .baseline import (
     BaselineLockError,
-    build_current_baseline as canonical_build_current_baseline,
-    resolve_active_baseline as canonical_resolve_active_baseline,
-    validate_baseline as canonical_validate_baseline,
+    DIRTY_BASELINE_REFUSAL,
+    acquire_baseline_lock,
+    baseline_corrupt_result,
+    baseline_report_fields,
+    build_current_baseline,
+    release_baseline_lock,
+    resolve_active_baseline,
+    validate_baseline,
 )
 from .ecosystems.python import PY_IMPORT_ALIASES
 from .packet import PacketWriter, SourceScanner, sourcepack_bootstrap_file, verify_packet as canonical_verify_packet
 from .paths import ensure_gitignore_entry, ensure_sourcepack_dirs, sourcepack_paths
 from .reports.html import render_report_html
-from .reports.json import normalized_finding, traffic_report, write_user_report
+from .reports.json import finalize_user_report, normalized_finding, traffic_report, write_auto_report, write_user_report
 from .reports.markdown import render_traffic
 from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, run_git as canonical_run_git, tracked_paths as canonical_tracked_paths
 from .execution_ledger import clear_ledger, iter_entries, run_and_record, find_repo_root
@@ -180,15 +185,14 @@ def judge_ai_answer(packet_path: str | Path, ai_answer_path: str | Path, out_dir
 
 
 def finalize_diff_report(repo: str | Path | None, report: dict, args, stem: str = "diff") -> dict:
-    full = dict(report)
-    if getattr(args, "ci", False):
-        full["ci"] = True
-    if repo is not None:
-        try:
-            write_user_report(repo, full, stem)
-        except Exception as exc:
-            print(f"WARNING: could not write SourcePack report artifacts: {exc}", file=sys.stderr)
-    return full
+    try:
+        return finalize_user_report(repo, report, stem=stem, ci=getattr(args, "ci", False))
+    except Exception as exc:
+        print(f"WARNING: could not write SourcePack report artifacts: {exc}", file=sys.stderr)
+        full = dict(report)
+        if getattr(args, "ci", False):
+            full["ci"] = True
+        return full
 
 def emit_diff_report(report: dict, args, added: bool = False, note: str | None = None) -> int:
     if getattr(args, "ci", False):
@@ -206,132 +210,6 @@ def emit_diff_report(report: dict, args, added: bool = False, note: str | None =
     mode = PolicyMode.CI if getattr(args, "ci", False) else PolicyMode.STRICT if getattr(args, "strict", False) else PolicyMode.LOCAL
     return policy_exit_code(verdict, mode=mode, exit_policy=getattr(args, "exit_policy", None))
 
-
-def _rel_to_repo(repo: Path, path: Path | None) -> str | None:
-    if path is None:
-        return None
-    try:
-        return str(path.resolve().relative_to(repo.resolve())).replace("\\", "/")
-    except Exception:
-        return str(path)
-
-
-def _read_json_file(path: Path) -> tuple[dict | None, str | None]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        return None, f"malformed JSON: {exc}"
-    except OSError as exc:
-        return None, f"unreadable: {exc}"
-    if not isinstance(data, dict):
-        return None, "JSON root is not an object"
-    return data, None
-
-
-def baseline_corrupt_result(repo: Path, message: str, details: dict | None = None, packet_path: Path | None = None, metadata_path: Path | None = None, active_pointer_path: Path | None = None, mode: str = "none", active_build_id: str | None = None) -> dict:
-    return {"ok": False, "state": "corrupt", "finding_id": "baseline_corrupt", "message": "Trusted SourcePack baseline is corrupt or unverifiable. Recreate the baseline only after verifying the current repo state should be trusted.", "details": {"reason": message, **(details or {})}, "packet_path": _rel_to_repo(repo, packet_path), "metadata_path": _rel_to_repo(repo, metadata_path), "active_pointer_path": _rel_to_repo(repo, active_pointer_path), "mode": mode, "active_build_id": active_build_id}
-
-
-def resolve_active_baseline(repo: str | Path) -> dict:
-    return canonical_resolve_active_baseline(repo)
-
-def _validate_packet_artifacts(repo: Path, packet: Path) -> dict | None:
-    required = ["manifest.json", "receipt.json", "reality_map.json"]
-    for name in required:
-        if not (packet / name).exists():
-            return baseline_corrupt_result(repo, f"active packet missing {name}", packet_path=packet)
-    for name in ["manifest.json", "receipt.json", "reality_map.json", "token_report.json", "redactions.json"]:
-        path = packet / name
-        if path.exists():
-            _, err = _read_json_file(path)
-            if err:
-                return baseline_corrupt_result(repo, f"{name} {err}", packet_path=packet)
-    receipt, err = _read_json_file(packet / "receipt.json")
-    if err:
-        return baseline_corrupt_result(repo, f"receipt.json {err}", packet_path=packet)
-    hashes = receipt.get("hashes")
-    if not isinstance(hashes, dict) or not hashes:
-        return baseline_corrupt_result(repo, "receipt.json has no hashes", packet_path=packet)
-    for name, expected in hashes.items():
-        if not isinstance(name, str) or not isinstance(expected, str):
-            return baseline_corrupt_result(repo, "receipt.json contains invalid hash entry", packet_path=packet)
-        if Path(name).is_absolute() or ".." in Path(name).parts:
-            return baseline_corrupt_result(repo, "receipt.json tracks unsafe artifact path", packet_path=packet)
-        packet_root = packet.resolve()
-        path = (packet / name).resolve()
-        try:
-            path.relative_to(packet_root)
-        except ValueError:
-            return baseline_corrupt_result(repo, "receipt.json tracks path outside packet", packet_path=packet)
-        if not path.exists():
-            return baseline_corrupt_result(repo, f"receipt-tracked artifact missing: {name}", packet_path=packet)
-        try:
-            actual = sha256_file(path)
-        except OSError as exc:
-            return baseline_corrupt_result(repo, f"receipt-tracked artifact unreadable: {name}: {exc}", packet_path=packet)
-        if actual != expected:
-            return baseline_corrupt_result(repo, f"receipt hash mismatch: {name}", packet_path=packet)
-    return None
-
-
-def validate_baseline(repo: str | Path) -> dict:
-    return canonical_validate_baseline(repo)
-
-def acquire_baseline_lock(repo: str | Path, command: str | None = None) -> tuple[Path, int]:
-    paths = ensure_sourcepack_dirs(repo); lock = paths["baseline_lock"]
-    try:
-        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError as exc:
-        raise BaselineLockError("Another SourcePack baseline operation is already in progress.") from exc
-    payload = {"pid": os.getpid(), "command": command, "started_at": utc_now()}
-    os.write(fd, json.dumps(payload).encode("utf-8"))
-    os.fsync(fd)
-    return lock, fd
-
-
-def release_baseline_lock(lock: Path, fd: int) -> None:
-    try:
-        os.close(fd)
-    finally:
-        try:
-            lock.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-        f.write("\n")
-        f.flush(); os.fsync(f.fileno())
-    os.replace(tmp, path)
-
-
-def _unique_build_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + f"-{os.getpid()}"
-
-
-DIRTY_BASELINE_REFUSAL = "SourcePack refused to create a trusted baseline from a dirty working tree. Review, commit, or stash current changes first, or rerun with --force only if this state should become trusted."
-
-
-def build_current_baseline(repo: str | Path, quiet: bool = False, fail_stage: str | None = None, force: bool = False) -> tuple[dict, bool]:
-    return canonical_build_current_baseline(repo, quiet=quiet, fail_stage=fail_stage, force=force)
-
-
-def baseline_report_fields(status: dict) -> dict:
-    return {
-        "baseline_state": status.get("state"),
-        "baseline_integrity_ok": bool(status.get("ok")) and status.get("state") in {"present", "stale"},
-        "baseline_integrity_finding_id": status.get("finding_id"),
-        "baseline_integrity_message": status.get("message"),
-        "baseline_stale": status.get("state") == "stale",
-        "baseline_stale_details": (status.get("details") or {}).get("stale_details"),
-        "baseline_mode": status.get("mode"),
-        "baseline_packet_path": status.get("packet_path"),
-        "baseline_metadata_path": status.get("metadata_path"),
-        "baseline_active_pointer_path": status.get("active_pointer_path"),
-    }
 
 def cli_prompt(args) -> int:
     repo = Path(args.repo).resolve()
@@ -595,12 +473,6 @@ def init_workspace(path: str | Path):
     if not config.exists():
         config.write_text(json.dumps({"max_file_size": 1_000_000, "include_hidden": False, "redact_secrets": True}, indent=2), encoding="utf-8")
     print(f"Initialized SourcePack workspace at {p}")
-
-
-def write_auto_report(repo: Path, report: dict, details: dict) -> None:
-    payload = dict(report)
-    payload.update(details)
-    write_user_report(repo, payload, "auto")
 
 
 def cli_init(args) -> int:

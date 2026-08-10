@@ -9,12 +9,12 @@ from .baseline import validate_baseline
 from .command_center_limits import MAX_COLLECTION_ITEMS, MAX_PROMPT_CHARS, MAX_SNAPSHOT_BYTES, bounded_value, clip_text, collection_status
 from .git import metadata as git_metadata
 from .policy import resolve_effective_policy
-from .workbench import (
-    _bounded_changed_file_excerpt,
-    _dashboard_payload,
-    _read_canonical_report,
-    _sourcepack_status_payload,
-    _workbench_action,
+from .command_center_state import (
+    bounded_changed_file_excerpt,
+    dashboard_payload,
+    read_canonical_report,
+    sourcepack_status_payload,
+    workbench_action,
 )
 
 COMMAND_CENTER_SCHEMA_VERSION = "sourcepack.command_center.v1"
@@ -330,8 +330,8 @@ def build_command_center_snapshot(
     baseline_reader: Callable[[Path], dict[str, Any]] = validate_baseline,
     policy_reader: Callable[[Path], dict[str, Any]] = resolve_effective_policy,
     git_reader: Callable[[Path], dict[str, Any]] = git_metadata,
-    status_reader: Callable[[Path], dict[str, Any]] = _sourcepack_status_payload,
-    report_reader: Callable[[Path], tuple[dict[str, Any] | None, dict[str, Any] | None]] = _read_canonical_report,
+    status_reader: Callable[[Path], dict[str, Any]] = sourcepack_status_payload,
+    report_reader: Callable[[Path], tuple[dict[str, Any] | None, dict[str, Any] | None]] = read_canonical_report,
 ) -> dict[str, Any]:
     root = Path(repo).resolve()
     root_display = clip_text(root)
@@ -340,7 +340,7 @@ def build_command_center_snapshot(
     git = git_reader(root)
     status = status_reader(root)
     report, report_error = report_reader(root)
-    decisions = _dashboard_payload(root, "overrides")
+    decisions = dashboard_payload(root, "overrides")
     raw_verdict = report.get("verdict") if report else None
     supported_verdict = raw_verdict in {"PASS", "WARN", "FAIL"}
     canonical_report = report if supported_verdict else None
@@ -379,7 +379,7 @@ def build_command_center_snapshot(
         "FAIL": ("fail", "×", "Change Blocked"),
         None: ("neutral", "·", "No Report Available"),
     }[verdict] if report is None or supported_verdict else ("neutral", "·", "Unsupported Report")
-    review_action = _workbench_action(report) if report_error is None else {
+    review_action = workbench_action(report) if report_error is None else {
         "action_type": "none", "label": "Action Unavailable", "reason": str(report_error_code or "report_unavailable"),
         "target_surface": "none", "available": False,
     }
@@ -463,7 +463,7 @@ def build_command_center_snapshot(
         ],
         "workbench": {
             "review_action": review_action,
-            "proposed_change": _bounded_changed_file_excerpt(root, canonical_report) if canonical_report is not None else None,
+            "proposed_change": bounded_changed_file_excerpt(root, canonical_report) if canonical_report is not None else None,
             **workbench_presentation,
         },
         "artifacts": {},

@@ -460,3 +460,36 @@ def write_user_report(repo: str | Path, report: dict, stem: str = "report") -> N
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     _write_optional_report_file(paths["archive"] / f"{ts}_{stem}.json", json_text)
     _write_optional_report_file(paths["archive"] / f"{ts}_{stem}.md", md_text)
+
+
+def finalize_user_report(
+    repo: str | Path | None,
+    report: dict,
+    *,
+    stem: str = "report",
+    ci: bool = False,
+    details: dict | None = None,
+    record_persistence: bool = False,
+) -> dict:
+    """Finalize and, when a repository is supplied, persist a user report."""
+    full = dict(report)
+    if details:
+        full.update(details)
+    if ci:
+        full["ci"] = True
+    if repo is not None:
+        try:
+            write_user_report(repo, full, stem)
+        except Exception as exc:
+            if record_persistence:
+                full["persistence"] = {"status": "failed", "reason": str(exc)}
+            else:
+                raise
+        else:
+            if record_persistence:
+                full["persistence"] = {"status": "written"}
+    return full
+
+
+def write_auto_report(repo: str | Path, report: dict, details: dict) -> None:
+    finalize_user_report(repo, report, stem="auto", details=details)

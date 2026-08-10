@@ -171,3 +171,61 @@ def test_git_acquisition_is_owned_outside_facade() -> None:
     acquisition = (ROOT / "src/sourcepack/git_acquisition.py").read_text(encoding="utf-8")
     assert "def worktree_dirty" in acquisition
     assert "return worktree_dirty(repo, run_git)" in facade
+
+
+def test_cli_baseline_exports_are_compatibility_delegates() -> None:
+    import sourcepack.baseline as baseline
+    import sourcepack.cli as cli
+
+    for name in (
+        "acquire_baseline_lock",
+        "baseline_corrupt_result",
+        "baseline_report_fields",
+        "build_current_baseline",
+        "release_baseline_lock",
+        "resolve_active_baseline",
+        "validate_baseline",
+    ):
+        assert getattr(cli, name) is getattr(baseline, name)
+
+    source = (ROOT / "src/sourcepack/cli.py").read_text(encoding="utf-8")
+    assert "def _validate_packet_artifacts" not in source
+    assert "def baseline_corrupt_result" not in source
+
+
+def test_packet_interpretation_exports_delegate_to_repository_evidence() -> None:
+    import sourcepack.packet as packet
+    import sourcepack.repository_evidence as repository_evidence
+
+    for name in (
+        "dependency_inventory",
+        "extract_refs",
+        "feature_inventory",
+        "generate_reality_map",
+        "render_ai_instructions",
+    ):
+        assert getattr(packet, name) is getattr(repository_evidence, name)
+
+
+def test_report_persistence_is_owned_by_reports_module() -> None:
+    judgment_source = (ROOT / "src/sourcepack/judgment.py").read_text(encoding="utf-8")
+    reports_source = (ROOT / "src/sourcepack/reports/json.py").read_text(encoding="utf-8")
+    assert "def write_auto_report" not in judgment_source
+    assert "def finalize_user_report" in reports_source
+    assert "return finalize_user_report(" in judgment_source
+
+
+def test_command_center_does_not_import_workbench_implementation() -> None:
+    source = (ROOT / "src/sourcepack/command_center.py").read_text(encoding="utf-8")
+    assert "from .workbench import" not in source
+    assert "from .command_center_state import" in source
+
+
+def test_packet_load_manifest_preserves_non_object_json_compatibility(tmp_path) -> None:
+    import sourcepack.packet as packet
+    import sourcepack.repository_evidence as repository_evidence
+
+    (tmp_path / "manifest.json").write_text("[]", encoding="utf-8")
+    assert packet.load_manifest(tmp_path) == []
+    with pytest.raises(ValueError, match="packet manifest must be an object"):
+        repository_evidence.load_manifest(tmp_path)

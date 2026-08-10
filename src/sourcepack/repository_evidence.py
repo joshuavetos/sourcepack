@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import stat
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -20,7 +21,6 @@ from .dependencies import resolve_js_import, resolve_python_import
 from .diff_parser import normalize_diff_path as _normalize_diff_path
 from .ecosystems.python import PY_IMPORT_ALIASES
 from .git import run_git_bytes as canonical_run_git_bytes
-from .packet import _read_stable_verification_file
 
 JS_EXTS = {".js", ".jsx", ".ts", ".tsx"}
 
@@ -177,8 +177,8 @@ def _included_paths(manifest: dict) -> set[str]:
     return {rec.get("relative_path", "").replace("\\", "/") for rec in manifest.get("included_files", [])}
 
 
-def _package_json_scripts(packet: Path) -> dict[str, str]:
-    contents = _packet_file_contents(packet)
+def _package_json_scripts(packet: Path, *, packet_construction: bool = False) -> dict[str, str]:
+    contents = _packet_file_contents(packet, packet_construction=packet_construction)
     for rel, content in contents.items():
         if Path(rel).name.lower() == "package.json":
             try:
@@ -190,26 +190,26 @@ def _package_json_scripts(packet: Path) -> dict[str, str]:
     return {}
 
 
-def _is_poetry_project(packet: Path) -> bool:
-    for rel, content in _packet_file_contents(packet).items():
+def _is_poetry_project(packet: Path, *, packet_construction: bool = False) -> bool:
+    for rel, content in _packet_file_contents(packet, packet_construction=packet_construction).items():
         if Path(rel).name.lower() == "pyproject.toml" and re.search(r"(?m)^\s*\[tool\.poetry\]\s*$", content):
             return True
     return False
 
 
-def _uses_unittest(packet: Path) -> bool:
-    for rel, content in _packet_file_contents(packet).items():
+def _uses_unittest(packet: Path, *, packet_construction: bool = False) -> bool:
+    for rel, content in _packet_file_contents(packet, packet_construction=packet_construction).items():
         if Path(rel).suffix.lower() == ".py" and re.search(r"(?m)^\s*(import\s+unittest|from\s+unittest\s+import\s+)", content):
             return True
     return False
 
 
-def generate_reality_map(manifest: dict, packet: Path) -> dict:
+def generate_reality_map(manifest: dict, packet: Path, *, packet_construction: bool = False) -> dict:
     files = _included_paths(manifest)
     lower_files = {f.lower() for f in files}
-    deps = dependency_inventory(manifest, packet)
-    features = feature_inventory(manifest, packet, deps)
-    scripts = _package_json_scripts(packet)
+    deps = dependency_inventory(manifest, packet, packet_construction=packet_construction)
+    features = feature_inventory(manifest, packet, deps, packet_construction=packet_construction)
+    scripts = _package_json_scripts(packet, packet_construction=packet_construction)
     project_types = []
     package_managers = []
     frameworks = []
@@ -222,7 +222,7 @@ def generate_reality_map(manifest: dict, packet: Path) -> dict:
     if any(Path(f).name.lower().startswith("requirements") and f.endswith(".txt") for f in lower_files):
         project_types.append("python")
         package_managers.append("pip")
-    if _is_poetry_project(packet):
+    if _is_poetry_project(packet, packet_construction=packet_construction):
         package_managers.append("poetry")
     if "package.json" in lower_files:
         project_types.append("node")
@@ -242,7 +242,7 @@ def generate_reality_map(manifest: dict, packet: Path) -> dict:
     if "pytest" in deps or any(f == "tests" or f.startswith("tests/") for f in lower_files):
         supported_commands.append("pytest")
         test_commands.append("pytest")
-    if _uses_unittest(packet):
+    if _uses_unittest(packet, packet_construction=packet_construction):
         supported_commands.append("python -m unittest")
         test_commands.append("python -m unittest")
     framework_map = {"fastapi": "FastAPI", "flask": "Flask", "django": "Django", "react": "React"}
@@ -345,6 +345,29 @@ def render_ai_instructions(reality_map: dict) -> str:
     lines.extend(f"- {boundary}" for boundary in reality_map.get("claim_boundaries", []))
     return "\n".join(lines) + "\n"
 
+def _read_stable_verification_file(path: Path, byte_limit: int) -> bytes:
+    """Read one stable regular-file descriptor within a fixed byte bound."""
+    before = path.stat(follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode) or before.st_size > byte_limit:
+        raise ValueError("not a regular file or byte limit exceeded")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("file changed before verification read")
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            raw = handle.read(byte_limit + 1)
+        after = os.fstat(fd)
+    finally:
+        os.close(fd)
+    if len(raw) > byte_limit:
+        raise ValueError("byte limit exceeded during verification read")
+    if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns) or len(raw) != opened.st_size:
+        raise ValueError("file changed during verification read")
+    return raw
+
+
 def _load_packet_bytes(packet: Path, name: str, *, limit: int = PACKET_ARTIFACT_LIMIT_BYTES) -> bytes:
     root = packet.resolve(strict=True)
     path = root / name
@@ -409,7 +432,41 @@ def extract_refs(text: str) -> set[str]:
     return refs
 
 
-def _packet_file_contents(packet: Path) -> dict[str, str]:
+def _legacy_packet_file_contents(packet: Path) -> dict[str, str]:
+    """Parse context.md with the packet-construction semantics retained for compatibility."""
+    context_path = packet / "context.md"
+    if not context_path.exists():
+        return {}
+    text = context_path.read_text(encoding="utf-8", errors="ignore")
+    contents: dict[str, str] = {}
+    current: str | None = None
+    body: list[str] = []
+    in_content = False
+    for line in text.splitlines():
+        if line.startswith("## File: "):
+            if current is not None:
+                contents[current] = "\n".join(body).rstrip("\n")
+            current = line.removeprefix("## File: ").strip()
+            body = []
+            in_content = False
+        elif current is not None and line == "Content:":
+            in_content = True
+            body = []
+        elif current is not None and in_content and line == "---":
+            contents[current] = "\n".join(body).rstrip("\n")
+            current = None
+            body = []
+            in_content = False
+        elif current is not None and in_content:
+            body.append(line)
+    if current is not None:
+        contents[current] = "\n".join(body).rstrip("\n")
+    return contents
+
+
+def _packet_file_contents(packet: Path, *, packet_construction: bool = False) -> dict[str, str]:
+    if packet_construction:
+        return _legacy_packet_file_contents(packet)
     context_path = packet / "context.xml"
     if not context_path.exists():
         # Compatibility for pre-XML packets. Current packets always use the
@@ -560,9 +617,9 @@ def _add_common_dependency(deps: set[str], name: str):
             deps.add(dep.lower())
 
 
-def dependency_inventory(manifest: dict, packet: Path) -> set[str]:
+def dependency_inventory(manifest: dict, packet: Path, *, packet_construction: bool = False) -> set[str]:
     deps: set[str] = set()
-    contents = _packet_file_contents(packet)
+    contents = _packet_file_contents(packet, packet_construction=packet_construction)
     for rec in manifest.get("included_files", []):
         rel = rec.get("relative_path", "")
         content = contents.get(rel, "")
@@ -610,10 +667,10 @@ def _declares_pdf_dependency(rel: str, content: str) -> bool:
     return False
 
 
-def feature_inventory(manifest: dict, packet: Path, deps: set[str] | None = None) -> set[str]:
+def feature_inventory(manifest: dict, packet: Path, deps: set[str] | None = None, *, packet_construction: bool = False) -> set[str]:
     if deps is None:
-        deps = dependency_inventory(manifest, packet)
-    contents = _packet_file_contents(packet)
+        deps = dependency_inventory(manifest, packet, packet_construction=packet_construction)
+    contents = _packet_file_contents(packet, packet_construction=packet_construction)
     files = {rec.get("relative_path", "").replace("\\", "/") for rec in manifest.get("included_files", [])}
     lower_files = {rel.lower() for rel in files}
     features: set[str] = set()

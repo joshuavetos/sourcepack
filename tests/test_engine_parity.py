@@ -69,7 +69,7 @@ def test_cli_has_no_independent_canonical_analysis_definitions() -> None:
     judgment_functions = {node.name for node in judgment_tree.body if isinstance(node, ast.FunctionDef)}
 
     # These are presentation/persistence adapters, not judgment computation.
-    allowed_adapters = {"finalize_diff_report", "write_auto_report"}
+    allowed_adapters = {"finalize_diff_report"}
     assert cli_functions & judgment_functions == allowed_adapters
     assert "def analyze_patch" not in (root / "src/sourcepack/cli.py").read_text(encoding="utf-8")
     assert "def judge_patch_text" not in (root / "src/sourcepack/cli.py").read_text(encoding="utf-8")

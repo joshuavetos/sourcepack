@@ -78,19 +78,24 @@ class SourcePackSmokeTest(unittest.TestCase):
             self.assertNotIn("pdf", dependency_inventory(load_manifest(packet), packet))
 
     def test_verify_against_uses_source_hash_when_packet_is_redacted(self):
-        with TemporaryDirectory() as td:
-            tmp = Path(td)
-            repo = tmp / "repo"
-            repo.mkdir()
-            secret_line = "OPENAI_API_KEY=sk-proj-SECRETSECRETSECRETSECRET\n"
-            (repo / "config.py").write_text(secret_line)
-            packet = tmp / "packet"
+        for newline in (b"\n", b"\r\n"):
+            with self.subTest(newline=newline), TemporaryDirectory() as td:
+                tmp = Path(td)
+                repo = tmp / "repo"
+                repo.mkdir()
+                secret_line = b"OPENAI_API_KEY=sk-proj-SECRETSECRETSECRETSECRET" + newline
+                source = repo / "config.py"
+                source.write_bytes(secret_line)
+                packet = tmp / "packet"
 
-            self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
+                self.assertEqual(run_cli(["build", str(repo), "--out", str(packet), "--force"]), 0)
 
-            context = (packet / "context.md").read_text()
-            self.assertIn("[REDACTED:openai_key]", context)
-            self.assertEqual(run_cli(["verify", str(packet), "--against", str(repo)]), 0)
+                context = (packet / "context.md").read_text()
+                self.assertIn("[REDACTED:openai_key]", context)
+                self.assertEqual(run_cli(["verify", str(packet), "--against", str(repo)]), 0)
+
+                source.write_bytes(secret_line.replace(b"OPENAI_API_KEY", b"OTHER_API_KEY"))
+                self.assertEqual(run_cli(["verify", str(packet), "--against", str(repo)]), 1)
 
     def test_doctor_reports_production_readiness_checks(self):
         buffer = io.StringIO()

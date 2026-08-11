@@ -14,6 +14,7 @@ POLICY_FILE_LIMIT_BYTES = 256 * 1024
 POLICY_COLLECTION_LIMIT = 256
 POLICY_STRING_LIMIT_CHARS = 1024
 POLICY_NESTING_LIMIT = 12
+_WINDOWS_BOUNDED_POLICY_FALLBACK = os.name == "nt"
 
 
 class PolicyMode(StrEnum):
@@ -455,7 +456,64 @@ def _read_repository_policy_file(repo: Path, path: Path) -> tuple[object | None,
             return None, None, "unsafe:policy_symlink", True
         if not stat.S_ISREG(unsupported_stat.st_mode):
             return None, None, "unsafe:not_regular_file", True
-        return None, None, "unsupported:descriptor_relative_no_follow", True
+        if not _WINDOWS_BOUNDED_POLICY_FALLBACK:
+            return None, None, "unsupported:descriptor_relative_no_follow", True
+
+        # Windows has no descriptor-relative O_NOFOLLOW equivalent.  Retain the
+        # pathname classification above, then use descriptor and pathname
+        # identity checks around a bounded read.  This detects observed
+        # replacement/mutation but does not claim POSIX-equivalent confinement.
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        try:
+            file_fd = os.open(path, flags)
+        except (OSError, NotImplementedError) as exc:
+            return None, None, f"unsafe_or_unreadable:{exc}", True
+        try:
+            opened = os.fstat(file_fd)
+            if not stat.S_ISREG(opened.st_mode):
+                return None, None, "unsafe:not_regular_file", True
+            initial_identity = (unsupported_stat.st_dev, unsupported_stat.st_ino)
+            opened_identity = (opened.st_dev, opened.st_ino)
+            if initial_identity != opened_identity:
+                return None, None, "unstable:path_replaced", True
+            chunks: list[bytes] = []
+            remaining = POLICY_FILE_LIMIT_BYTES + 1
+            while remaining:
+                chunk = os.read(file_fd, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(file_fd)
+            data = b"".join(chunks)
+            descriptor_before = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+            descriptor_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            if descriptor_before != descriptor_after or len(data) != opened.st_size:
+                return None, _sha256_bytes(data[:POLICY_FILE_LIMIT_BYTES]), "unstable:mutation_detected", True
+            try:
+                current = path.lstat()
+                current_directory = policy_dir.lstat()
+            except OSError as exc:
+                return None, _sha256_bytes(data[:POLICY_FILE_LIMIT_BYTES]), f"unstable:path_recheck:{exc}", True
+            if stat.S_ISLNK(current.st_mode) or (current.st_dev, current.st_ino) != opened_identity:
+                return None, _sha256_bytes(data[:POLICY_FILE_LIMIT_BYTES]), "unstable:path_replaced", True
+            if stat.S_ISLNK(current_directory.st_mode) or (
+                current_directory.st_dev,
+                current_directory.st_ino,
+            ) != (directory_stat.st_dev, directory_stat.st_ino):
+                return None, _sha256_bytes(data[:POLICY_FILE_LIMIT_BYTES]), "unstable:policy_directory_replaced", True
+        finally:
+            os.close(file_fd)
+        if len(data) > POLICY_FILE_LIMIT_BYTES:
+            return None, _sha256_bytes(data[:POLICY_FILE_LIMIT_BYTES]), f"limit_exceeded:file_bytes:{POLICY_FILE_LIMIT_BYTES}", True
+        try:
+            return json.loads(data.decode("utf-8")), _sha256_bytes(data), None, True
+        except UnicodeDecodeError as exc:
+            return None, _sha256_bytes(data), f"malformed_json:utf8:{exc}", True
+        except json.JSONDecodeError as exc:
+            return None, _sha256_bytes(data), f"malformed_json:{exc.msg}:line={exc.lineno}:column={exc.colno}", True
+        except (RecursionError, MemoryError) as exc:
+            return None, _sha256_bytes(data), f"malformed_json:parser_limit:{type(exc).__name__}", True
     try:
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         directory_fd = os.open(policy_dir, flags)

@@ -249,6 +249,24 @@ def test_repository_policy_unsupported_dir_fd_is_structured_failure(tmp_path, mo
     assert result.errors == ("policy_config_unsupported:descriptor_relative_no_follow",)
 
 
+def test_windows_policy_fallback_is_bounded_without_claiming_descriptor_confinement(tmp_path, monkeypatch):
+    from sourcepack import policy
+
+    write_policy(tmp_path, {"schema_version": "sourcepack.policy.v1"})
+    monkeypatch.setattr(policy.os, "supports_dir_fd", frozenset())
+    monkeypatch.setattr(policy, "_WINDOWS_BOUNDED_POLICY_FALLBACK", True)
+    result = policy.validate_policy_config(tmp_path)
+    assert result.valid is True
+
+    policy_path = tmp_path / ".sourcepack" / "policy.json"
+    policy_path.write_bytes(b" " * (policy.POLICY_FILE_LIMIT_BYTES + 1))
+    result = policy.validate_policy_config(tmp_path)
+    assert result.valid is False
+    assert result.errors == (
+        f"policy_config_limit_exceeded:file_bytes:{policy.POLICY_FILE_LIMIT_BYTES}",
+    )
+
+
 def test_repository_policy_unsupported_platform_preserves_absence_and_rejects_unsafe_objects(tmp_path, monkeypatch):
     from sourcepack import policy
 

@@ -74,6 +74,11 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _normalize_text_newlines(text: str) -> str:
+    """Match Path.read_text's universal-newline representation for source identity."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def estimate_tokens(text: str) -> int:
     return (len(text) + 3) // 4
 
@@ -658,7 +663,7 @@ def verify_packet(
                 content_hash = hashlib.sha256(raw).hexdigest()
             else:
                 try:
-                    content = raw.decode("utf-8")
+                    content = _normalize_text_newlines(raw.decode("utf-8"))
                 except UnicodeDecodeError:
                     print(f"FAIL source unreadable {rel}")
                     ok = False

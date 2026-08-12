@@ -258,6 +258,12 @@ def test_tracked_paths_split_nul_preserves_spaces_and_unicode(monkeypatch, tmp_p
     assert git_mod.tracked_paths(tmp_path) == {"space name.py", "unicodé.py"}
 
 
+def test_decode_git_path_is_host_encoding_independent() -> None:
+    decoded = git_mod.decode_git_path(b"bad_\xff.py")
+
+    assert decoded.encode("utf-8", "surrogateescape") == b"bad_\xff.py"
+
+
 def test_tracked_paths_preserves_non_utf8_git_filename_with_surrogateescape(tmp_path: Path) -> None:
     if os.name != "posix":
         return

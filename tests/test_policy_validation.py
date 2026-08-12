@@ -1,8 +1,13 @@
 import json
+import os
 import stat
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
+
+from tests.conftest import symlink_or_skip
 
 
 def run_cli(repo, *args):
@@ -187,7 +192,6 @@ def test_policy_paths_reject_cross_platform_unsafe_spellings_and_match_case_sens
 
 
 def test_unknown_policy_mode_fails_closed():
-    import pytest
     from sourcepack.policy import exit_code, normalize_policy_mode
 
     with pytest.raises(ValueError, match="unknown policy mode"):
@@ -199,7 +203,7 @@ def test_unknown_policy_mode_fails_closed():
 def test_dangling_repository_policy_symlink_is_invalid(tmp_path):
     policy_dir = tmp_path / ".sourcepack"
     policy_dir.mkdir()
-    (policy_dir / "policy.json").symlink_to(policy_dir / "missing.json")
+    symlink_or_skip(policy_dir / "policy.json", policy_dir / "missing.json")
     cp = run_cli(tmp_path, "policy", "validate", str(tmp_path), "--json")
     data = json.loads(cp.stdout)
     assert cp.returncode != 0
@@ -223,7 +227,7 @@ def test_repository_policy_rejects_symlinked_ancestry_and_non_regular_file(tmp_p
 
     outside = tmp_path / "outside"
     outside.mkdir()
-    (tmp_path / ".sourcepack").symlink_to(outside, target_is_directory=True)
+    symlink_or_skip(tmp_path / ".sourcepack", outside, target_is_directory=True)
     result = validate_policy_config(tmp_path)
     assert result.policy_present is True
     assert result.valid is False
@@ -243,6 +247,7 @@ def test_repository_policy_unsupported_dir_fd_is_structured_failure(tmp_path, mo
 
     write_policy(tmp_path, {"schema_version": "sourcepack.policy.v1"})
     monkeypatch.setattr(policy.os, "supports_dir_fd", frozenset())
+    monkeypatch.setattr(policy, "_WINDOWS_BOUNDED_POLICY_FALLBACK", False)
     result = policy.validate_policy_config(tmp_path)
     assert result.policy_present is True
     assert result.valid is False
@@ -279,7 +284,7 @@ def test_repository_policy_unsupported_platform_preserves_absence_and_rejects_un
     assert absent.valid is True
 
     policy_path = policy_dir / "policy.json"
-    policy_path.symlink_to(policy_dir / "missing.json")
+    symlink_or_skip(policy_path, policy_dir / "missing.json")
     dangling = policy.validate_policy_config(tmp_path)
     assert dangling.policy_present is True
     assert dangling.valid is False
@@ -328,6 +333,7 @@ def test_repository_policy_replacement_during_descriptor_read_is_invalid(tmp_pat
     replacement = tmp_path / ".sourcepack" / "replacement.json"
     replacement.write_text('{"schema_version":"sourcepack.policy.v1","rules":{}}', encoding="utf-8")
     real_read = policy.os.read
+    real_lstat = Path.lstat
     replaced = False
 
     def replacing_read(fd, size):
@@ -335,10 +341,17 @@ def test_repository_policy_replacement_during_descriptor_read_is_invalid(tmp_pat
         data = real_read(fd, size)
         if data and not replaced:
             replaced = True
-            replacement.replace(policy_path)
+            if os.name != "nt":
+                replacement.replace(policy_path)
         return data
 
+    def replacement_aware_lstat(path):
+        if os.name == "nt" and replaced and path == policy_path:
+            return real_lstat(replacement)
+        return real_lstat(path)
+
     monkeypatch.setattr(policy.os, "read", replacing_read)
+    monkeypatch.setattr(Path, "lstat", replacement_aware_lstat)
     result = policy.validate_policy_config(tmp_path)
     assert result.policy_present is True
     assert result.valid is False

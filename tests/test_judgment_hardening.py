@@ -4,6 +4,10 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from tests.conftest import symlink_or_skip
+
 from sourcepack import judgment
 from tests.simulation_helpers import multi_patch, write_packet
 
@@ -100,7 +104,7 @@ def test_untracked_symlink_is_not_followed_and_uses_symlink_mode(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     outside = tmp_path / "outside-secret.txt"
     outside.write_text("must not be read\n", encoding="utf-8")
-    (repo / "linked path").symlink_to(outside)
+    symlink_or_skip(repo / "linked path", outside)
 
     diff = judgment.untracked_files_as_diff(repo)
     changes = judgment.parse_unified_diff(diff)
@@ -112,6 +116,7 @@ def test_untracked_symlink_is_not_followed_and_uses_symlink_mode(tmp_path):
     assert changes[0].new_mode == "120000"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="host filesystem cannot represent newline path components")
 def test_untracked_filename_with_newline_round_trips(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -129,7 +134,7 @@ def test_untracked_symlink_target_with_newline_round_trips(tmp_path):
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     target = "first\nsecond"
-    (repo / "link").symlink_to(target)
+    symlink_or_skip(repo / "link", target)
 
     changes = judgment.parse_unified_diff(judgment.untracked_files_as_diff(repo))
 
@@ -215,7 +220,7 @@ def test_packet_loader_rejects_top_level_artifact_symlink(tmp_path):
     packet = tmp_path / "packet"
     packet.mkdir()
     (packet / "real.json").write_text("{}", encoding="utf-8")
-    (packet / "manifest.json").symlink_to("real.json")
+    symlink_or_skip(packet / "manifest.json", "real.json")
 
     try:
         judgment.load_manifest(packet)
@@ -223,6 +228,32 @@ def test_packet_loader_rejects_top_level_artifact_symlink(tmp_path):
         assert "regular file" in str(exc)
     else:
         raise AssertionError("packet artifact symlink was accepted")
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_legacy_packet_context_accepts_lf_and_crlf_records(tmp_path, newline):
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    context = newline.join(["# SourcePack Context", "", "## File: app.py", "", "Content:", "VALUE = 1", "---", ""])
+    (packet / "context.md").write_bytes(context.encode("utf-8"))
+
+    assert judgment._packet_file_contents(packet) == {"app.py": "VALUE = 1"}
+
+
+@pytest.mark.parametrize(
+    ("context", "message"),
+    [
+        ("# SourcePack Context\n\n## File: app.py\n\nVALUE = 1\n---\n", "malformed legacy packet context record"),
+        ("# SourcePack Context\n\n## File: app.py\n\nContent:\nVALUE = 1\n", "malformed legacy packet context terminator"),
+    ],
+)
+def test_legacy_packet_context_rejects_malformed_records(tmp_path, context, message):
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    (packet / "context.md").write_text(context, encoding="utf-8", newline="")
+
+    with pytest.raises(ValueError, match=message):
+        judgment._packet_file_contents(packet)
 
 
 def test_duplicate_inventory_paths_fail_authority(tmp_path):

@@ -249,7 +249,10 @@ _DEFAULT_RUN_GIT_BYTES = run_git_bytes
 
 
 def decode_git_path(raw: bytes) -> str:
-    path = os.fsdecode(raw)
+    # Git path output is bytes, not text in the host filesystem encoding.
+    # Surrogateescape gives it one deterministic, reversible internal form on
+    # every supported Python platform.
+    path = raw.decode("utf-8", "surrogateescape")
     return path.replace("\\", "/") if os.name == "nt" else path
 
 

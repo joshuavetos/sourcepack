@@ -8,6 +8,8 @@ from unittest import mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from tests.conftest import symlink_or_skip
+
 from sourcepack.cli import build_current_baseline, run_cli, validate_baseline, acquire_baseline_lock, release_baseline_lock
 
 
@@ -87,7 +89,7 @@ class BaselineIntegrityTest(unittest.TestCase):
             external = root / "external-pointer.json"
             external.write_bytes(pointer.read_bytes())
             pointer.unlink()
-            pointer.symlink_to(external)
+            symlink_or_skip(pointer, external)
 
             status = validate_baseline(repo)
 
@@ -103,7 +105,7 @@ class BaselineIntegrityTest(unittest.TestCase):
                 path = repo / ancestor
                 external = root / ("external-" + path.name)
                 path.rename(external)
-                path.symlink_to(external, target_is_directory=True)
+                symlink_or_skip(path, external, target_is_directory=True)
 
                 status = validate_baseline(repo)
 
@@ -125,7 +127,7 @@ class BaselineIntegrityTest(unittest.TestCase):
                 nonlocal replaced
                 if path == "baseline" and dir_fd is not None and not replaced:
                     baseline.rename(external)
-                    baseline.symlink_to(external, target_is_directory=True)
+                    symlink_or_skip(baseline, external, target_is_directory=True)
                     replaced = True
                 return real_open(path, flags, mode, dir_fd=dir_fd)
 
@@ -191,7 +193,7 @@ class BaselineIntegrityTest(unittest.TestCase):
             repo = self.repo(root)
             build_current_baseline(repo, quiet=True)
             marker = repo / ".sourcepack" / "state" / "baseline_stale.json"
-            marker.symlink_to(root / "missing-stale-details.json")
+            symlink_or_skip(marker, root / "missing-stale-details.json")
 
             status = validate_baseline(repo)
 
@@ -213,7 +215,7 @@ class BaselineIntegrityTest(unittest.TestCase):
                 nonlocal replaced
                 if path == "baseline_stale.json" and dir_fd is not None and not replaced:
                     marker.unlink()
-                    marker.symlink_to(root / "missing-stale-details.json")
+                    symlink_or_skip(marker, root / "missing-stale-details.json")
                     replaced = True
                 return real_open(path, flags, mode, dir_fd=dir_fd)
 

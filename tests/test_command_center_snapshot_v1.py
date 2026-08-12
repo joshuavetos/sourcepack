@@ -22,7 +22,7 @@ def _build(tmp_path: Path, *, verdict: str | None = "PASS", report_error=None, r
 
 
 def test_checked_in_schema_prevents_contract_drift() -> None:
-    checked_in = json.loads(Path("schemas/command_center_snapshot.schema.json").read_text())
+    checked_in = json.loads(Path("schemas/command_center_snapshot.schema.json").read_text(encoding="utf-8"))
     assert checked_in == command_center_snapshot_schema()
 
 
@@ -127,8 +127,8 @@ def test_identical_inputs_produce_identical_output(tmp_path: Path) -> None:
 
 
 def test_workbench_has_one_snapshot_source_and_no_client_assembly() -> None:
-    html = Path("src/sourcepack/workbench_static/index.html").read_text()
-    client = Path("src/sourcepack/workbench_static/command-center-aggregate.js").read_text()
+    html = Path("src/sourcepack/workbench_static/index.html").read_text(encoding="utf-8")
+    client = Path("src/sourcepack/workbench_static/command-center-aggregate.js").read_text(encoding="utf-8")
     assert client.count("/api/command-center/v1/snapshot") == 1
     assert "Promise.all" not in html + client
     assert "/api/dashboard/v1/" not in html + client

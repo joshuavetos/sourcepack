@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT
+from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_TIMEOUT, decode_git_path
 
 
 _PORCELAIN_V1_STATUSES = frozenset({
@@ -48,7 +48,7 @@ def parse_porcelain_v1_z(data: bytes, prefix: bytes) -> tuple[list[StatusRecord]
             raw = raw[len(prefix):]
             if not raw:
                 raise ValueError("status path is the selected directory")
-        return os.fsdecode(raw)
+        return decode_git_path(raw)
 
     try:
         while index < len(fields):

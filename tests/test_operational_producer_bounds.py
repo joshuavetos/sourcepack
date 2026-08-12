@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import symlink_or_skip
+
 from sourcepack import baseline as baseline_module, cli, packet as packet_module
 from sourcepack.decision_ledger import new_event, read_events
 from sourcepack.fleet import summarize_ledgers, summarize_reports
@@ -52,7 +54,7 @@ def test_fleet_entry_depth_and_read_boundaries_are_incomplete(tmp_path: Path) ->
 def test_fleet_skips_symlinks_without_leaking_or_mutating_trust_state(tmp_path: Path) -> None:
     outside = tmp_path.parent / "outside-fleet.json"
     _report(outside)
-    (tmp_path / "linked.json").symlink_to(outside)
+    symlink_or_skip(tmp_path / "linked.json", outside)
     before = outside.read_bytes()
     summary = summarize_reports(tmp_path)
     assert summary["accepted_report_paths"] == []
@@ -72,7 +74,7 @@ def test_packet_cleanup_exact_boundary_and_symlink_confinement(tmp_path: Path) -
     (output / "a.txt").write_text("a", encoding="utf-8")
     outside = tmp_path / "outside.txt"
     outside.write_text("keep", encoding="utf-8")
-    (output / "link").symlink_to(outside)
+    symlink_or_skip(output / "link", outside)
 
     writer = PacketWriter(output, scanner, force=True, cleanup_entry_limit=3)
     writer.prepare_out()
@@ -103,7 +105,7 @@ def test_packet_partial_cleanup_is_explicit_and_output_root_symlink_is_rejected(
     sentinel = real / "sentinel"
     sentinel.write_text("keep", encoding="utf-8")
     link = tmp_path / "linked-output"
-    link.symlink_to(real, target_is_directory=True)
+    symlink_or_skip(link, real, target_is_directory=True)
     with pytest.raises(PacketCleanupError) as escaped:
         PacketWriter(link, scanner, force=True).prepare_out()
     assert escaped.value.result["status"] == "failed"
@@ -166,14 +168,14 @@ def test_packet_verification_rejects_symlinked_artifact_and_root(tmp_path: Path)
     before = outside.read_bytes()
     packet = tmp_path / "packet"
     packet.mkdir()
-    (packet / "linked.txt").symlink_to(outside)
+    symlink_or_skip(packet / "linked.txt", outside)
     (packet / "receipt.json").write_text(
         json.dumps({"hashes": {"linked.txt": packet_module.sha256_file(outside)}}),
         encoding="utf-8",
     )
     assert verify_packet(packet) is False
     linked_root = tmp_path / "linked-packet"
-    linked_root.symlink_to(packet, target_is_directory=True)
+    symlink_or_skip(linked_root, packet, target_is_directory=True)
     assert verify_packet(linked_root) is False
     assert outside.read_bytes() == before
 
@@ -189,7 +191,7 @@ def test_packet_verification_rejects_external_symlinked_receipt(tmp_path: Path) 
         encoding="utf-8",
     )
     before = external_receipt.read_bytes()
-    (packet / "receipt.json").symlink_to(external_receipt)
+    symlink_or_skip(packet / "receipt.json", external_receipt)
     assert verify_packet(packet) is False
     assert external_receipt.read_bytes() == before
 
@@ -202,7 +204,7 @@ def test_packet_verification_rejects_external_symlinked_manifest(tmp_path: Path)
     external_manifest = tmp_path / "external-manifest.json"
     external_manifest.write_text(json.dumps({"included_files": []}), encoding="utf-8")
     before = external_manifest.read_bytes()
-    (packet / "manifest.json").symlink_to(external_manifest)
+    symlink_or_skip(packet / "manifest.json", external_manifest)
     (packet / "receipt.json").write_text(json.dumps({"hashes": {}}), encoding="utf-8")
     assert verify_packet(packet, source) is False
     assert external_manifest.read_bytes() == before
@@ -230,11 +232,11 @@ def test_packet_verification_rejects_escaping_and_symlinked_source_paths(tmp_pat
     _packet_with_manifest(packet, [{"relative_path": "../outside.txt", "source_sha256": expected}])
     assert verify_packet(packet, source) is False
 
-    (source / "linked.txt").symlink_to(outside)
+    symlink_or_skip(source / "linked.txt", outside)
     _packet_with_manifest(packet, [{"relative_path": "linked.txt", "source_sha256": expected}])
     assert verify_packet(packet, source) is False
     linked_source = tmp_path / "linked-source"
-    linked_source.symlink_to(source, target_is_directory=True)
+    symlink_or_skip(linked_source, source, target_is_directory=True)
     assert verify_packet(packet, linked_source) is False
     assert outside.read_bytes() == before
 

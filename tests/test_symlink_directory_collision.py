@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import symlink_or_skip
+
 from sourcepack.diff_parser import PatchFileChange, parse_unified_diff
 from sourcepack.judgment import _rebuild_from_findings, patch_report_to_traffic
 from sourcepack.replay import reconstruct_replay
@@ -80,6 +82,18 @@ def test_absent_and_empty_paths_are_distinct_and_not_collisions(repo: Path) -> N
     assert (empty["worktree_object_type"], empty["directory_nonempty"], empty["unrepresented_content_observed"]) == ("real_directory", False, False)
 
 
+def test_windows_path_fallback_reports_its_narrower_confinement(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sourcepack.worktree_collision as collision
+
+    monkeypatch.setattr(collision, "_WINDOWS_PATH_FALLBACK", True)
+    monkeypatch.setattr(collision, "_open_root_strict", lambda _repo: (None, None, NotImplementedError()))
+    result = inspect(repo, change())
+
+    assert result["worktree_object_type"] == "absent"
+    assert result["confinement_method"] == "windows_path_identity_checks"
+    assert result["descriptor_relative_confinement"] is False
+
+
 @pytest.mark.parametrize(("name", "ignored"), [("draft.txt", False), ("draft.ignored", True)])
 def test_untracked_and_ignored_content_fail(repo: Path, name: str, ignored: bool) -> None:
     directory = repo / "books_out"
@@ -135,7 +149,7 @@ def test_symlinked_parent_is_not_followed(repo: Path, tmp_path: Path) -> None:
     outside = tmp_path.parent / "outside-dir"
     outside.mkdir()
     (outside / "sentinel").write_text("safe", encoding="utf-8")
-    (repo / "linked").symlink_to(outside, target_is_directory=True)
+    symlink_or_skip(repo / "linked", outside, target_is_directory=True)
     result = inspect(repo, change("linked/books_out"))
     assert result["acquisition_status"] == "failed_symlink_component"
     assert result["source_exhausted"] is False
@@ -261,7 +275,7 @@ def test_report_json_and_replay_preserve_finding_and_incomplete_authority(repo: 
 
 
 def test_current_resulting_symlink_records_unavailable_historical_state(repo: Path) -> None:
-    (repo / "books_out").symlink_to("books")
+    symlink_or_skip(repo / "books_out", "books")
     inspection = inspect(repo, change())
     assert inspection["worktree_object_type"] == "symlink"
     assert inspection["worktree_evidence_phase"] == "current_post_transition_observation"

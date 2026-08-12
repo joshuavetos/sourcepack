@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Final
 
 from .diff_parser import PatchFileChange
-from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_OUTPUT_LIMIT, GIT_RETURNCODE_TIMEOUT, run_git_bounded_input
+from .git import GIT_RETURNCODE_NOT_FOUND, GIT_RETURNCODE_OS_ERROR, GIT_RETURNCODE_OUTPUT_LIMIT, GIT_RETURNCODE_TIMEOUT, decode_git_path, run_git_bounded_input
 
 SYMLINK_MODE: Final[str] = "120000"
 TRANSITION_LIMIT: Final[int] = 64
@@ -22,6 +22,7 @@ STRING_LIMIT: Final[int] = 4096
 IGNORE_INPUT_LIMIT_BYTES: Final[int] = 256 * 1024
 IGNORE_OUTPUT_LIMIT_BYTES: Final[int] = 256 * 1024
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
+_WINDOWS_PATH_FALLBACK = os.name == "nt"
 
 
 @dataclass
@@ -133,6 +134,95 @@ def _open_root_strict(repo: Path) -> tuple[Path | None, int | None, BaseExceptio
         return None, None, exc
 
 
+def _scan_transition_windows_path(
+    repo: Path, result: dict, parts: list[str], tracked_paths: set[str] | None,
+    tracked_authority: dict, budget: _Budget, *, entry_limit: int,
+    depth_limit: int, evidence_limit: int, limits: dict,
+) -> dict:
+    """Bounded Windows traversal with explicit, non-descriptor authority."""
+    result.update(confinement_method="windows_path_identity_checks", descriptor_relative_confinement=False)
+    try:
+        root = repo.resolve(strict=True)
+        current = root
+        for component in parts[:-1]:
+            current /= component
+            info = current.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                return _fail(result, "failed_symlink_component")
+            if not stat.S_ISDIR(info.st_mode):
+                return _fail(result, "failed_symlink_component")
+        target_path = current / parts[-1]
+        try:
+            info = target_path.lstat()
+        except FileNotFoundError:
+            result.update(worktree_object_type="absent", directory_nonempty=False)
+            return result
+        if stat.S_ISLNK(info.st_mode):
+            result.update(worktree_object_type="symlink", worktree_evidence_phase="current_post_transition_observation", pre_transition_state="unavailable", acquisition_status="historical_state_unavailable", source_exhausted=False, entry_count_state="lower_bound")
+            return result
+        if not stat.S_ISDIR(info.st_mode):
+            result["worktree_object_type"] = "regular_file" if stat.S_ISREG(info.st_mode) else "other"
+            return result
+        result["worktree_object_type"] = "real_directory"
+        if tracked_paths is None or not tracked_authority.get("complete"):
+            return _fail(result, "tracked_authority_incomplete")
+        stack = [(target_path, "/".join(parts), 0, (info.st_dev, info.st_ino))]
+        while stack:
+            directory, directory_rel, depth, identity = stack.pop()
+            before = directory.lstat()
+            if stat.S_ISLNK(before.st_mode) or not directory.resolve(strict=True).is_relative_to(root):
+                return _fail(result, "failed_symlink_component")
+            if (before.st_dev, before.st_ino) != identity:
+                return _fail(result, "directory_identity_changed")
+            names = sorted(os.listdir(directory), key=os.fsencode)
+            after = directory.lstat()
+            if stat.S_ISLNK(after.st_mode) or (after.st_dev, after.st_ino) != identity:
+                return _fail(result, "directory_identity_changed")
+            for name in names:
+                if result["entries_inspected"] >= entry_limit:
+                    result.update(acquisition_status="per_transition_entry_limit_reached", source_exhausted=False, entry_count_state="lower_bound", directory_nonempty=True)
+                    return result
+                if budget.entries_remaining <= 0:
+                    result.update(acquisition_status="global_entry_limit_reached", source_exhausted=False, entry_count_state="lower_bound", directory_nonempty=True)
+                    return result
+                child_path = directory / name
+                child = child_path.lstat()
+                budget.entries_remaining -= 1
+                result["entries_inspected"] += 1
+                rel = f"{directory_rel}/{name}"
+                nested = depth > 0
+                result["nested_entries_observed"] |= nested
+                represented = rel in tracked_paths
+                if not represented:
+                    result["unrepresented_content_observed"] = True
+                    result["_unrepresented_paths"].append(rel)
+                    result["ignore_classification_state"] = "pending"
+                if len(result["retained_entries"]) < evidence_limit and budget.evidence_remaining > 0:
+                    budget.evidence_remaining -= 1
+                    shown, truncated = _display(rel, limits["string_limit"])
+                    result["retained_entries"].append({"path": shown, "path_truncated": truncated, "_full_path": rel, "tracked": represented, "ignored": None if not represented else False, "nested": nested})
+                    result["evidence_retained"] += 1
+                else:
+                    result["evidence_limit_reached"] = True
+                    result["evidence_omitted_lower_bound"] += 1
+                if stat.S_ISDIR(child.st_mode):
+                    if depth >= depth_limit:
+                        result.update(acquisition_status="depth_limit_reached", source_exhausted=False, entry_count_state="lower_bound", directory_nonempty=True)
+                        return result
+                    opened = child_path.lstat()
+                    if stat.S_ISLNK(opened.st_mode) or not child_path.resolve(strict=True).is_relative_to(root):
+                        return _fail(result, "failed_symlink_component")
+                    if (opened.st_dev, opened.st_ino) != (child.st_dev, child.st_ino):
+                        return _fail(result, "child_identity_changed")
+                    stack.append((child_path, rel, depth + 1, (child.st_dev, child.st_ino)))
+        result["directory_nonempty"] = result["entries_inspected"] > 0
+        result["retained_entries"].sort(key=lambda item: item["_full_path"])
+        return result
+    except (OSError, ValueError, RuntimeError) as exc:
+        result["directory_nonempty"] = result["entries_inspected"] > 0 or None
+        return _fail(result, "read_failed", error=exc)
+
+
 def _scan_transition(repo: Path, change: PatchFileChange, tracked_paths: set[str] | None, tracked_authority: dict, budget: _Budget, *, entry_limit: int, depth_limit: int, evidence_limit: int, limits: dict) -> dict:
     result = _base_result(change, classify_symlink_target(repo, change.path, change.proposed_symlink_target, string_limit=limits["string_limit"]), tracked_authority, limits)
     parts, unsafe = _safe_change_parts(change.path)
@@ -140,6 +230,8 @@ def _scan_transition(repo: Path, change: PatchFileChange, tracked_paths: set[str
         return _fail(result, unsafe)
     canonical, root_fd, root_error = _open_root_strict(repo)
     if root_fd is None or canonical is None:
+        if _WINDOWS_PATH_FALLBACK and parts is not None:
+            return _scan_transition_windows_path(repo, result, parts, tracked_paths, tracked_authority, budget, entry_limit=entry_limit, depth_limit=depth_limit, evidence_limit=evidence_limit, limits=limits)
         return _fail(result, "repository_confinement_unavailable", error=root_error)
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     parent_fd = root_fd
@@ -248,7 +340,7 @@ def _classify_ignored(repo: Path, inspections: list[dict], limits: dict) -> dict
             for entry in item["retained_entries"]:
                 entry.pop("_full_path", None)
         return {"status": status, "complete": False, "reason": reason, "path_count": len(paths), "git_invocations": 1, "returncode": cp.returncode}
-    ignored = {os.fsdecode(raw).replace("\\", "/") for raw in cp.stdout.split(b"\0") if raw}
+    ignored = {decode_git_path(raw) for raw in cp.stdout.split(b"\0") if raw}
     for item, item_paths in paths_by_item:
         if item["ignore_classification_state"] == "pending":
             item["ignored_observed"] = any(path in ignored for path in item_paths)

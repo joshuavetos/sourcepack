@@ -114,6 +114,7 @@ class PrechangePolicyAuthorityTests(unittest.TestCase):
             [".sourcepack/policy/allow.jsonl"],
         )
 
+    @unittest.skipUnless(os.name == "posix", "host filesystem cannot represent newline path components")
     def test_untracked_policy_filename_with_newline_preserves_identity(self) -> None:
         td, repo = self._repo()
         self.addCleanup(td.cleanup)

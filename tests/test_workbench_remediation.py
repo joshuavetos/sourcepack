@@ -9,7 +9,7 @@ from sourcepack.workbench import WORKBENCH_EXCERPT_FILE_LIMIT_BYTES, _dashboard_
 
 
 def test_workbench_surfaces_copyable_remediation_without_html_injection():
-    ui = (workbench.STATIC_ROOT / "index.html").read_text() + (workbench.STATIC_ROOT / "command-center-aggregate.js").read_text()
+    ui = (workbench.STATIC_ROOT / "index.html").read_text(encoding="utf-8") + (workbench.STATIC_ROOT / "command-center-aggregate.js").read_text(encoding="utf-8")
     assert "Agent correction instruction" in ui
     assert "Copy correction prompt" in ui
     assert "action.action_type === 'copy_prompt'" in ui
@@ -23,14 +23,14 @@ def test_workbench_surfaces_copyable_remediation_without_html_injection():
 
 
 def test_workbench_removes_supplied_token_from_browser_url():
-    ui = (workbench.STATIC_ROOT / "index.html").read_text()
+    ui = (workbench.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
     assert "if (suppliedToken)" in ui
     assert "history.replaceState({}, document.title, location.pathname + location.hash)" in ui
 
 
 def test_priority_navigation_mapping_points_only_to_existing_elements():
-    html = (workbench.STATIC_ROOT / "index.html").read_text()
-    client = (workbench.STATIC_ROOT / "command-center-aggregate.js").read_text()
+    html = (workbench.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    client = (workbench.STATIC_ROOT / "command-center-aggregate.js").read_text(encoding="utf-8")
     mapping = re.search(r"const SURFACE_TARGETS = \{([^}]+)\}", client)
     assert mapping is not None
     targets = re.findall(r': "([^"]+)"', mapping.group(1))
@@ -40,7 +40,7 @@ def test_priority_navigation_mapping_points_only_to_existing_elements():
 
 
 def test_priority_actions_fail_closed_and_copy_failure_is_visible():
-    ui = (workbench.STATIC_ROOT / "command-center-aggregate.js").read_text()
+    ui = (workbench.STATIC_ROOT / "command-center-aggregate.js").read_text(encoding="utf-8")
     assert "PRIORITY_ACTION_IDS.has(item.id)" in ui
     assert "button.disabled = !PRIORITY_ACTION_IDS.has(item.id)" in ui
     assert 'showActionError("Action unavailable: unsupported snapshot metadata")' in ui
@@ -128,14 +128,14 @@ def test_workbench_action_metadata_is_deterministic_for_canonical_states():
 
 
 def test_workbench_client_consumes_backend_action_without_selection_logic():
-    ui = (workbench.STATIC_ROOT / "command-center-aggregate.js").read_text()
+    ui = (workbench.STATIC_ROOT / "command-center-aggregate.js").read_text(encoding="utf-8")
     assert "snapshot.workbench.review_action" in ui
     assert "reportRes.action" not in ui
     assert "function reasonOf(" not in ui
 
 
 def test_workbench_empty_agent_prompt_hides_copy_controls_and_prevents_empty_copy():
-    ui = (workbench.STATIC_ROOT / "index.html").read_text() + (workbench.STATIC_ROOT / "command-center-aggregate.js").read_text()
+    ui = (workbench.STATIC_ROOT / "index.html").read_text(encoding="utf-8") + (workbench.STATIC_ROOT / "command-center-aggregate.js").read_text(encoding="utf-8")
     assert "if (!currentPrompt) return" in ui
     assert "await navigator.clipboard.writeText(currentPrompt)" in ui
     assert "action.available" in ui
@@ -147,13 +147,13 @@ def test_workbench_empty_agent_prompt_hides_copy_controls_and_prevents_empty_cop
 
 
 def test_workbench_uses_safe_text_rendering_without_json_html_injection():
-    ui = (workbench.STATIC_ROOT / "index.html").read_text() + (workbench.STATIC_ROOT / "command-center-aggregate.js").read_text()
+    ui = (workbench.STATIC_ROOT / "index.html").read_text(encoding="utf-8") + (workbench.STATIC_ROOT / "command-center-aggregate.js").read_text(encoding="utf-8")
     assert ".innerHTML" not in ui
     assert ".textContent" in ui
 
 
 def test_workbench_technical_report_toggle_has_no_stray_empty_object_text():
-    ui = (workbench.STATIC_ROOT / "index.html").read_text()
+    ui = (workbench.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
     assert "{} Show Technical Report" not in ui
     assert 'id="toggle-report" type="button">Show Technical Report</button>' in ui
     assert "'Hide Technical Report':'Show Technical Report'" in ui

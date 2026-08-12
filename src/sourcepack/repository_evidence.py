@@ -20,7 +20,7 @@ from .commands import resolve_command
 from .dependencies import resolve_js_import, resolve_python_import
 from .diff_parser import normalize_diff_path as _normalize_diff_path
 from .ecosystems.python import PY_IMPORT_ALIASES
-from .git import run_git_bytes as canonical_run_git_bytes
+from .git import decode_git_path, run_git_bytes as canonical_run_git_bytes
 
 JS_EXTS = {".js", ".jsx", ".ts", ".tsx"}
 
@@ -142,7 +142,7 @@ def _tracked_file_inventory(root: Path, included_records: list[dict], *, run_git
     source = "scanner_included_files"
     cp = run_git_bytes(root, ["ls-files", "-z"])
     if cp.returncode == 0:
-        raw_paths = [os.fsdecode(p).replace("\\", "/") for p in cp.stdout.split(b"\0") if p]
+        raw_paths = [decode_git_path(p) for p in cp.stdout.split(b"\0") if p]
         source = "git_ls_files" if raw_paths else "scanner_included_files"
         if not raw_paths:
             raw_paths = sorted(included)
@@ -475,6 +475,10 @@ def _packet_file_contents(packet: Path, *, packet_construction: bool = False) ->
         if not legacy.exists():
             return {}
         text = _load_packet_bytes(packet, "context.md").decode("utf-8")
+        # Legacy packets are text artifacts and were historically written with
+        # the host's newline convention.  Canonicalize only the two supported
+        # text line endings before applying the strict record grammar below.
+        text = text.replace("\r\n", "\n")
         contents: dict[str, str] = {}
         sections = text.split("\n## File: ")[1:]
         for section in sections:
@@ -841,6 +845,4 @@ def extract_imports_from_text(text: str, suffix: str = ".py") -> set[str]:
     elif suffix in JS_EXTS:
         imports |= extract_js_import_specifiers_from_text(text)
     return {i.lower() for i in imports}
-
-
 

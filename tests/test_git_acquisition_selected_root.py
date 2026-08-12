@@ -74,6 +74,7 @@ def test_worktree_dirty_detects_selected_change_when_outside_change_also_exists(
 
 
 def test_porcelain_v1_z_parser_preserves_bytes_and_rename_copy_fields() -> None:
+    non_utf8_path = b"unicode-\xe9"
     data = (
         b" M selected/space name\0"
         b"?? selected/unicode-\xe9\0"
@@ -89,12 +90,14 @@ def test_porcelain_v1_z_parser_preserves_bytes_and_rename_copy_fields() -> None:
     assert state is None
     assert [(record.status, record.path, record.old_path) for record in records] == [
         (" M", "space name", None),
-        ("??", os.fsdecode(b"unicode-\xe9"), None),
+        ("??", non_utf8_path.decode("utf-8", "surrogateescape"), None),
         ("??", "tab\tname", None),
         ("??", "new\nline", None),
         ("R ", "new name", "old name"),
         ("C ", "copy name", None),
     ]
+    assert records[1].path is not None
+    assert records[1].path.encode("utf-8", "surrogateescape") == non_utf8_path
 
 
 @pytest.mark.parametrize(
@@ -107,9 +110,9 @@ def test_porcelain_v1_z_parser_fails_closed_on_malformed_records(data: bytes) ->
 
 def test_baseline_status_handles_special_names_and_selected_rename(tmp_path: Path) -> None:
     root, selected = _repo(tmp_path)
-    names = ["space name.txt", "unicode-雪.txt", "tab\tname.txt"]
+    names = ["space name.txt", "unicode-雪.txt"]
     if os.name == "posix":
-        names.append("new\nline.txt")
+        names.extend(["tab\tname.txt", "new\nline.txt"])
     for name in names:
         (selected / name).write_text("content\n", encoding="utf-8")
     if os.name == "posix":

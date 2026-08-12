@@ -85,13 +85,41 @@ def test_absent_and_empty_paths_are_distinct_and_not_collisions(repo: Path) -> N
 def test_windows_path_fallback_reports_its_narrower_confinement(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import sourcepack.worktree_collision as collision
 
+    directory = repo / "books_out"
+    directory.mkdir()
+    (directory / "observed.txt").write_text("evidence", encoding="utf-8")
     monkeypatch.setattr(collision, "_WINDOWS_PATH_FALLBACK", True)
     monkeypatch.setattr(collision, "_open_root_strict", lambda _repo: (None, None, NotImplementedError()))
-    result = inspect(repo, change())
+    envelope = inspect_symlink_transitions(
+        repo,
+        [change()],
+        tracked_paths=set(),
+        tracked_authority={"source": "test", "status": "complete", "complete": True, "reason": None},
+    )
+    result = envelope["inspections"][0]
 
-    assert result["worktree_object_type"] == "absent"
+    assert result["worktree_object_type"] == "real_directory"
+    assert result["unrepresented_content_observed"] is True
+    assert result["retained_entries"][0]["path"] == "books_out/observed.txt"
     assert result["confinement_method"] == "windows_path_identity_checks"
     assert result["descriptor_relative_confinement"] is False
+    assert result["acquisition_status"] == "pathname_confinement_incomplete"
+    assert result["entry_count_state"] == "lower_bound"
+    assert result["source_exhausted"] is False
+    assert envelope["source_exhausted"] is False
+
+    report = patch_report_to_traffic({
+        "verdict": "FAIL",
+        "symlink_directory_collisions": [result],
+        "symlink_worktree_inspection_incomplete": [result],
+        "symlink_worktree_inspection": envelope,
+    })
+    assert report["authority"]["complete"] is False
+    assert report["construction_bounds"]["symlink_worktree_inspection"]["source_exhausted"] is False
+    assert {finding["id"] for finding in report["findings"]} >= {
+        "symlink_replaces_nonempty_directory",
+        "symlink_worktree_inspection_incomplete",
+    }
 
 
 @pytest.mark.parametrize(("name", "ignored"), [("draft.txt", False), ("draft.ignored", True)])

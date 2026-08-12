@@ -140,7 +140,17 @@ def _scan_transition_windows_path(
     depth_limit: int, evidence_limit: int, limits: dict,
 ) -> dict:
     """Bounded Windows traversal with explicit, non-descriptor authority."""
-    result.update(confinement_method="windows_path_identity_checks", descriptor_relative_confinement=False)
+    # Path identity checks can detect many changes, but they cannot bind the
+    # pathname enumerated by listdir to the objects checked immediately before
+    # and after it.  Retain observations from this fallback without claiming
+    # that its traversal exhausted the authoritative source.
+    result.update(
+        confinement_method="windows_path_identity_checks",
+        descriptor_relative_confinement=False,
+        acquisition_status="pathname_confinement_incomplete",
+        source_exhausted=False,
+        entry_count_state="lower_bound",
+    )
     try:
         root = repo.resolve(strict=True)
         current = root

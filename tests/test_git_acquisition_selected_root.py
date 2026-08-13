@@ -12,6 +12,7 @@ from sourcepack.decision_ledger import new_event
 from sourcepack.git_acquisition import parse_porcelain_v1_z
 from sourcepack.judgment import build_repo_change_report, git_worktree_dirty
 from sourcepack.reports.json import traffic_report, write_user_report
+from sourcepack.reports.markdown import render_traffic
 from sourcepack.judgment import untracked_files_as_diff
 
 
@@ -203,6 +204,89 @@ def test_only_repository_backed_generated_internal_artifacts_are_excluded(tmp_pa
     synthetic = untracked_files_as_diff(selected)
 
     assert synthetic == ""
+
+
+def test_legacy_repository_backed_archived_reports_are_excluded(tmp_path: Path) -> None:
+    root, selected = _repo(tmp_path)
+    baseline.build_current_baseline(selected, quiet=True)
+    _git(root, "add", "selected/.gitignore")
+    _git(root, "commit", "-m", "ignore SourcePack outputs")
+    report = traffic_report("PASS")
+    report.update(
+        sourcepack_version="1.10.0a0",
+        generated_at="2026-07-19T14:34:43+00:00",
+    )
+    archive = selected / ".sourcepack" / "reports" / "archive"
+    archive.mkdir(parents=True, exist_ok=True)
+    base = archive / "20260719T143443Z_diff"
+    base.with_suffix(".json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    base.with_suffix(".md").write_text(render_traffic(report, verbose=True), encoding="utf-8")
+
+    assert _git(selected, "status", "--short").stdout == b""
+    assert untracked_files_as_diff(selected) == ""
+
+
+def test_attacker_created_archive_lookalike_is_not_excluded(tmp_path: Path) -> None:
+    _, selected = _repo(tmp_path)
+    archive = selected / ".sourcepack" / "reports" / "archive"
+    archive.mkdir(parents=True)
+    base = archive / "20260719T143443Z_diff"
+    base.with_suffix(".json").write_text('{"forged": true}\n', encoding="utf-8")
+    base.with_suffix(".md").write_text("forged\n", encoding="utf-8")
+
+    synthetic = untracked_files_as_diff(selected)
+
+    assert "b/.sourcepack/reports/archive/20260719T143443Z_diff.json" in synthetic
+    assert "b/.sourcepack/reports/archive/20260719T143443Z_diff.md" in synthetic
+
+
+def test_tracked_report_modification_remains_patch_evidence(tmp_path: Path) -> None:
+    root, selected = _repo(tmp_path)
+    baseline.build_current_baseline(selected, quiet=True)
+    _git(root, "add", "selected/.gitignore")
+    _git(root, "commit", "-m", "baseline ignore")
+    report_path = selected / ".sourcepack" / "reports" / "latest.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("{}\n", encoding="utf-8")
+    _git(root, "add", "-f", "selected/.sourcepack/reports/latest.json")
+    _git(root, "commit", "-m", "tracked report")
+    report_path.write_text('{"forged": true}\n', encoding="utf-8")
+
+    report = build_repo_change_report(selected)
+
+    protected = [finding for finding in report["findings"] if finding["id"] == "protected_artifact"]
+    assert [finding["path"] for finding in protected] == [".sourcepack/reports/latest.json"]
+
+
+def test_unrelated_untracked_protected_report_artifact_remains_detected(tmp_path: Path) -> None:
+    _, selected = _repo(tmp_path)
+    baseline.build_current_baseline(selected, quiet=True)
+    path = selected / ".sourcepack" / "reports" / "archive" / "manual.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}\n", encoding="utf-8")
+
+    synthetic = untracked_files_as_diff(selected)
+    report = build_repo_change_report(selected, patch_text=synthetic)
+
+    assert "b/.sourcepack/reports/archive/manual.json" in synthetic
+    assert ".sourcepack/reports/archive/manual.json" in [
+        finding["path"] for finding in report["findings"]
+        if finding["id"] == "protected_artifact"
+    ]
+
+
+def test_diff_operational_output_does_not_contaminate_same_review(tmp_path: Path) -> None:
+    root, selected = _repo(tmp_path)
+    baseline.build_current_baseline(selected, quiet=True)
+    _git(root, "add", "selected/.gitignore")
+    _git(root, "commit", "-m", "ignore SourcePack outputs")
+    write_user_report(selected, traffic_report("PASS"), "diff")
+
+    report = build_repo_change_report(selected)
+
+    assert _git(selected, "status", "--short").stdout == b""
+    assert report["verdict"] == "PASS"
+    assert not [finding for finding in report["findings"] if finding["id"] in {"new_file", "protected_artifact"}]
 
 
 def test_unexpected_untracked_sourcepack_artifacts_remain_in_patch_evidence(tmp_path: Path) -> None:

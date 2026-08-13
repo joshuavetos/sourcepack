@@ -20,7 +20,10 @@ _REPORT_ARTIFACTS = frozenset({
     ".sourcepack/reports/latest_diff.json", ".sourcepack/reports/latest_prompt.json",
     ".sourcepack/reports/latest_baseline.json",
 })
-_ARCHIVED_REPORT = re.compile(r"^\.sourcepack/reports/archive/\d{8}T\d{12}Z_(?:report|diff|prompt|baseline|auto)\.(?:json|md)$")
+_ARCHIVED_REPORT = re.compile(
+    r"^\.sourcepack/reports/archive/(\d{8}T(?:\d{6}|\d{12})Z)_"
+    r"(report|diff|prompt|baseline|auto)\.(json|md)$"
+)
 _TEMP_REPORT = re.compile(r"^\.sourcepack/reports/\.latest\.json\.\d+\.tmp$")
 
 
@@ -78,7 +81,6 @@ def operational_sourcepack_artifact_path(path: str) -> bool:
     return bool(
         normalized in _PROMPT_ARTIFACTS
         or normalized in _REPORT_ARTIFACTS
-        or _ARCHIVED_REPORT.fullmatch(normalized)
         or _TEMP_REPORT.fullmatch(normalized)
         or normalized in {
             ".sourcepack/state/baseline.lock",
@@ -86,6 +88,13 @@ def operational_sourcepack_artifact_path(path: str) -> bool:
         }
         or normalized.removeprefix(".sourcepack/prompt/packet/") in _PACKET_ARTIFACT_NAMES
     )
+
+
+def archived_report_path_parts(path: str) -> tuple[str, str, str] | None:
+    """Parse a current or legacy archive path without granting it authority."""
+    normalized = path.replace("\\", "/").removeprefix("./")
+    match = _ARCHIVED_REPORT.fullmatch(normalized)
+    return match.groups() if match is not None else None
 
 
 def ensure_gitignore_entry(repo: str | Path) -> tuple[bool, str | None]:

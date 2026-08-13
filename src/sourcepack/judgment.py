@@ -23,7 +23,7 @@ from .baseline import BaselineLockError, baseline_report_fields, build_current_b
 from .ecosystems.python import PY_IMPORT_ALIASES
 from .packet import PacketWriter, SourceScanner, _read_stable_verification_file
 from .paths import ensure_sourcepack_dirs, operational_sourcepack_artifact_path
-from .reports.json import build_replay_bundle, finalize_user_report, normalized_finding, traffic_report
+from .reports.json import build_replay_bundle, finalize_user_report, generated_untracked_report_artifacts, normalized_finding, traffic_report
 from .policy import PolicyMode, normalize_policy_mode, exit_code as policy_exit_code, load_policy_config, finding_ignored_by_policy, policy_path_matches, resolve_effective_policy
 from .policy_authority import POLICY_AUTHORITY_ERROR, guard_effective_policy_result
 from .execution_ledger import execution_findings
@@ -1040,7 +1040,7 @@ def untracked_files_as_diff(repo: str | Path, *, with_authority: bool = False):
     decoded_paths = [item.decode("utf-8", "surrogateescape") for item in raw_paths]
     generated_paths = {
         path for path in decoded_paths if operational_sourcepack_artifact_path(path)
-    } | generated_untracked_baseline_artifacts(repo, decoded_paths)
+    } | generated_untracked_baseline_artifacts(repo, decoded_paths) | generated_untracked_report_artifacts(repo, decoded_paths)
     allow_path = repo / ".sourcepack" / "policy" / "allow.jsonl"
     if ".sourcepack/policy/allow.jsonl" in decoded_paths and readable_allow_file_matches_active(repo, allow_path):
         generated_paths.add(".sourcepack/policy/allow.jsonl")

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sourcepack import __version__
-from sourcepack.paths import ensure_sourcepack_dirs
+from sourcepack.paths import archived_report_path_parts, ensure_sourcepack_dirs
 from sourcepack.reports.html import render_report_html
 from sourcepack.reports.sarif import render_sarif
 from sourcepack.reports.markdown import LIGHT_BY_VERDICT, render_traffic
@@ -39,6 +39,62 @@ PROVENANCE_FIELDS = (
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def generated_untracked_report_artifacts(
+    repo: str | Path, relative_paths: list[str]
+) -> set[str]:
+    """Return archive pairs whose contents prove SourcePack report ownership.
+
+    A filename is only a candidate. Authority requires a bounded, regular JSON
+    report, a generation time agreeing with the archive name, and the exact
+    Markdown rendering that ``write_user_report`` writes beside that report.
+    """
+    root = Path(repo).resolve()
+    candidates = {path.replace("\\", "/").removeprefix("./") for path in relative_paths}
+    groups: dict[tuple[str, str], dict[str, str]] = {}
+    for path in candidates:
+        parts = archived_report_path_parts(path)
+        if parts is not None:
+            timestamp, stem, extension = parts
+            groups.setdefault((timestamp, stem), {})[extension] = path
+
+    generated: set[str] = set()
+    for (timestamp, _stem), pair in groups.items():
+        if set(pair) != {"json", "md"}:
+            continue
+        json_path = root / pair["json"]
+        markdown_path = root / pair["md"]
+        try:
+            json_stat = json_path.lstat()
+            markdown_stat = markdown_path.lstat()
+            if not json_path.is_file() or not markdown_path.is_file():
+                continue
+            if json_path.is_symlink() or markdown_path.is_symlink():
+                continue
+            if max(json_stat.st_size, markdown_stat.st_size) > CANONICAL_REPORT_SNAPSHOT_LIMIT_BYTES:
+                continue
+            report = json.loads(json_path.read_text(encoding="utf-8"))
+            markdown = markdown_path.read_text(encoding="utf-8")
+            generated_at = datetime.fromisoformat(str(report.get("generated_at", "")).replace("Z", "+00:00"))
+            archive_time = datetime.strptime(timestamp[:15] + "Z", "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(report, dict):
+            continue
+        if report.get("schema_version") != "traffic_report.v1" or not isinstance(report.get("sourcepack_version"), str):
+            continue
+        if generated_at.tzinfo is None:
+            continue
+        # The archive timestamp is sampled after generated_at; tolerate a
+        # second-boundary rollover without accepting a historical lookalike.
+        elapsed = (archive_time - generated_at.astimezone(timezone.utc)).total_seconds()
+        if not (-1 < elapsed < 2):
+            continue
+        if markdown != render_traffic(report, verbose=True):
+            continue
+        generated.update(pair.values())
+    return generated
 
 
 def normalized_finding(

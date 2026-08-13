@@ -252,7 +252,14 @@ def test_custom_limits_are_enforced_and_reported_identically(repo: Path) -> None
     assert inspection["evidence_retained"] == envelope["evidence_retained"] == 1
     assert inspection["evidence_limit_reached"] is envelope["evidence_limit_reached"] is True
     assert inspection["evidence_omitted_lower_bound"] == envelope["evidence_omitted_lower_bound"] == 1
-    assert inspection["source_exhausted"] is True
+    if inspection["acquisition_status"] == "pathname_confinement_incomplete":
+        assert inspection["descriptor_relative_confinement"] is False
+        assert inspection["source_exhausted"] is False
+        assert inspection["entry_count_state"] == "lower_bound"
+    else:
+        assert inspection["acquisition_status"] == "complete"
+        assert inspection["source_exhausted"] is True
+        assert inspection["entry_count_state"] == "exact"
 
 
 def test_long_evidence_uses_full_path_for_identity_and_ignore(repo: Path) -> None:

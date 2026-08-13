@@ -167,6 +167,8 @@ See [`BUILD_WEEK.md`](BUILD_WEEK.md) for the dated evidence trail and judge path
 
 SourcePack is not a general AI code reviewer. It does not decide whether code is elegant, scalable, secure, production-ready, architecturally sound, or aligned with business intent.
 
+A deterministic Architecture Contract Layer has a pre-implementation design record, but it is not implemented or part of current SourcePack behavior.
+
 It does not replace tests, type checkers, linters, security scanners, dependency review, runtime validation, or human review.
 
 Use SourcePack when the disputed claim can be checked against local repository evidence.
@@ -175,7 +177,7 @@ Use SourcePack when the disputed claim can be checked against local repository e
 
 SourcePack is in the v1.10 public-alpha series.
 
-Core judgment behavior, packaging, reports, demos, policy resolution, replay, local execution evidence, CI behavior, evidence bundles, and the local Workbench are implemented. Public-alpha work continues around compatibility, packaging, integration coverage, and UX polish.
+Core judgment behavior, packaging, reports, demos, policy resolution, replay, local execution evidence, CI behavior, evidence bundles, and the local Workbench are implemented. The current merged hardening state has completed native-Windows verification, including the full configured Windows pytest suite and SourcePack self-dogfood. Windows fallbacks that cannot provide POSIX-equivalent descriptor-relative confinement remain explicitly bounded and non-authoritative where documented. Public-alpha work continues around compatibility, packaging, integration coverage, and UX polish.
 
 `sourcepack doctor --strict` checks local production-readiness prerequisites and packaged assets. Hosted GitHub Actions remain the source of truth for hosted checks.
 

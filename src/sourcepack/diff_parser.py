@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from typing import Final
 
 
-_DRIVE_PATH_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z]:/")
+_DRIVE_PATH_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z]:")
 
 
 @dataclass

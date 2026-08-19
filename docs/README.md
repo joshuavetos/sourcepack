@@ -2,6 +2,7 @@
 
 ## Product and trust model
 
+- [Current behavior claim audit](current-behavior-audit.md)
 - [Problem fit](problem-fit.md)
 - [Architecture](architecture.md)
 - [Threat model](threat-model.md)

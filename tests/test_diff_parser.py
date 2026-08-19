@@ -240,6 +240,10 @@ def test_normalize_diff_path_marks_windows_style_traversal_unsafe():
     assert normalize_diff_path(r"..\outside.txt") == ("outside.txt", True)
 
 
+def test_normalize_diff_path_marks_windows_drive_relative_path_unsafe():
+    assert normalize_diff_path("C:outside.txt") == ("C:outside.txt", True)
+
+
 def test_normalize_diff_path_canonicalizes_internal_parent_without_marking_escape():
     assert normalize_diff_path("directory/../file.py") == ("file.py", False)
     assert normalize_diff_path("directory/nested/../../file.py") == ("file.py", False)

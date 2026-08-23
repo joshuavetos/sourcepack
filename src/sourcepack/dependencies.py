@@ -65,17 +65,43 @@ def _python_dependency_inventory(root: str | Path) -> tuple[dict[str, str], list
         except (OSError, UnicodeError, tomllib.TOMLDecodeError):
             data = {}
             invalid.append("pyproject.toml")
-        for dep in data.get("project", {}).get("dependencies", []) or []:
+        try:
+            project = data.get("project", {}) or {}
+            dependencies = project.get("dependencies", []) or []
+            optional = project.get("optional-dependencies", {}) or {}
+            groups = data.get("dependency-groups", {}) or {}
+            poetry = data.get("tool", {}).get("poetry", {}).get("dependencies", {}) or {}
+            if (
+                not isinstance(project, dict)
+                or not isinstance(dependencies, list)
+                or not all(isinstance(dep, str) for dep in dependencies)
+            ):
+                raise TypeError
+            if not isinstance(optional, dict) or not all(
+                isinstance(deps, list) and all(isinstance(dep, str) for dep in deps)
+                for deps in optional.values()
+            ):
+                raise TypeError
+            if not isinstance(groups, dict) or not all(isinstance(deps, list) for deps in groups.values()):
+                raise TypeError
+            if not isinstance(poetry, dict):
+                raise TypeError
+        except (AttributeError, TypeError):
+            if "pyproject.toml" not in invalid:
+                invalid.append("pyproject.toml")
+            dependencies, optional, groups, poetry = [], {}, {}, {}
+
+        for dep in dependencies:
             found[_dep_name(dep)] = "pyproject.toml"
-        for group, deps in (data.get("project", {}).get("optional-dependencies", {}) or {}).items():
-            for dep in deps or []:
+        for group, deps in optional.items():
+            for dep in deps:
                 found.setdefault(_dep_name(dep), f"pyproject.toml optional:{group}")
-        for group, gdata in (data.get("dependency-groups", {}) or {}).items():
-            for dep in (gdata if isinstance(gdata, list) else []):
-                found.setdefault(_dep_name(str(dep)), f"pyproject.toml group:{group}")
-        poetry = data.get("tool", {}).get("poetry", {}).get("dependencies", {}) or {}
+        for group, gdata in groups.items():
+            for dep in gdata:
+                if isinstance(dep, str):
+                    found.setdefault(_dep_name(dep), f"pyproject.toml group:{group}")
         for dep in poetry:
-            if dep.lower() != "python":
+            if isinstance(dep, str) and dep.lower() != "python":
                 found[_dep_name(dep)] = "pyproject.toml poetry"
     for req in sorted(root.glob("requirements*.txt")):
         try:
@@ -104,8 +130,13 @@ def _js_dependency_inventory(root: str | Path) -> tuple[dict[str, str], list[str
         data = json.loads(pj.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return found, ["package.json"]
+    if not isinstance(data, dict):
+        return found, ["package.json"]
     for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
-        for dep in (data.get(section) or {}):
+        dependencies = data.get(section) or {}
+        if not isinstance(dependencies, dict):
+            return {}, ["package.json"]
+        for dep in dependencies:
             found[dep] = f"package.json {section}"
     return found, []
 

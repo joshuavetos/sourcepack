@@ -32,3 +32,15 @@ def test_ts_alias_inconclusive_and_unsupported_ecosystem(tmp_path):
     assert resolve_js_import(tmp_path, "@/lib").reason_code == "js_alias_uncertain"
     (tmp_path/"Cargo.toml").write_text("[package]\nname='x'\n")
     assert unsupported_ecosystems(tmp_path)[0].reason_code == "unsupported_ecosystem"
+
+
+def test_structurally_invalid_manifests_fail_closed(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\ndependencies='fastapi'\n")
+    python_result = resolve_python_import(tmp_path, "fastapi")
+    assert python_result.verdict == "FAIL"
+    assert python_result.reason_code == "manifest_parse_failure"
+
+    (tmp_path / "package.json").write_text('{"dependencies":["react"]}')
+    js_result = resolve_js_import(tmp_path, "react")
+    assert js_result.verdict == "FAIL"
+    assert js_result.reason_code == "manifest_parse_failure"

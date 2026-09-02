@@ -11,23 +11,21 @@
 ![License](https://img.shields.io/github/license/joshuavetos/sourcepack)
 ![Status](https://img.shields.io/badge/status-public%20alpha-orange)
 
+# SourcePack
+
 **SourcePack blocks AI-generated code changes that rely on fake repo facts.**
 
-It checks proposed diffs against locally verifiable evidence such as tracked files, dependency manifests, scripts, commands, protected paths, trusted baseline artifacts, policy, and recorded execution evidence.
+SourcePack is a Python 3.11+ command-line tool, local Workbench, and GitHub Action for checking a proposed change against evidence that a maintainer has accepted from the repository. It finds locally testable mismatches—such as edits to nonexistent files, undeclared imports, unsupported commands, protected trust-state changes, and unsafe paths—before commit or in pull-request CI.
 
-A simple example: an AI assistant adds FastAPI code to a repository that does not declare FastAPI. SourcePack detects the unsupported dependency and blocks the change before it becomes a review problem.
+SourcePack is local-first and deterministic. It evaluates the change, policy, repository evidence, and bounded execution records without sending the repository to an AI service. It does not reject a change merely because AI produced it.
 
-SourcePack is a local-first public-alpha guardrail. It does not prove code correctness, security, runtime success, semantic validity, dependency safety, external API truth, or user intent.
+> SourcePack answers a narrow question: does this change rely on a repository fact that the accepted local evidence does not support?
 
-## See SourcePack catch an AI mistake
+It does **not** establish that code is correct, secure, useful, or ready to ship. Keep tests, type checking, linting, security scanning, dependency review, and human review in the development loop.
 
-Follow one AI-generated change from plausible patch to evidence-backed block and verified correction.
+## See it catch an unsupported assumption
 
-[Open the interactive showcase](https://joshuavetos.github.io/sourcepack/)
-
-No installation required.
-
-The browser showcase is a static walkthrough that uses SourcePack-generated fixture data. It does not execute SourcePack in the browser, and it is separate from both the packaged `sourcepack demo` and the local Workbench correction walkthrough.
+[Open the static interactive showcase](https://joshuavetos.github.io/sourcepack/) to follow an unsupported FastAPI change from finding to correction. The showcase uses SourcePack-generated fixture data; it does not execute SourcePack in the browser.
 
 ## Try the demo
 
@@ -36,7 +34,7 @@ python -m pip install sourcepack
 sourcepack demo
 ```
 
-The demo creates a small packaged repository, applies an unsupported FastAPI change, runs SourcePack against it, and prints the generated packet and judgment paths.
+The packaged demo creates a small temporary repository, applies an unsupported FastAPI change, runs SourcePack against it, and prints the generated packet and judgment paths.
 
 Expected decisive output:
 
@@ -50,30 +48,41 @@ Verdict: FAIL
 A separate Workbench walkthrough demonstrates the full correction loop: unsupported FastAPI produces `FAIL` / `unsupported_dependency`, and a manually prepared revision using repository-supported Flask produces `PASS` with the presentation label `change_supported`. This scenario is documented in [`docs/workbench-review-flow.md`](docs/workbench-review-flow.md); `sourcepack demo` does not launch or prepare Workbench.
 
 - `RED LIGHT` is the human stop signal.
-- `Verdict: FAIL` is the formal judgment.
+- `Verdict: FAIL` is the canonical judgment.
 - `unsupported_dependency` is the machine-readable reason code.
 
-## What SourcePack checks
+## Install and use
 
-SourcePack focuses on repository assumptions that can be tested locally:
+SourcePack requires Python 3.11 or newer.
 
-- AI coding agents can edit files that do not exist.
-- They can import undeclared dependencies.
-- They can reference missing scripts or unsupported commands.
-- They can reshape project structure based on prompt assumptions.
-- SourcePack catches those locally verifiable failures before commit or in CI.
-- unsupported project ecosystems
-- unsafe or protected paths
-- malformed or binary diffs
-- stale, missing, or corrupt trusted baselines
-- policy violations in the proposed change
-- bounded local execution evidence
+```bash
+python -m pip install sourcepack
+sourcepack --version
+sourcepack doctor --strict
+```
 
-Its judgment is deliberately narrow:
+Initialize a repository only after reviewing its current state and deciding that it is an acceptable basis for future comparisons:
 
-> This proposed change relies on a repository fact that the local evidence does not support.
+```bash
+cd your-repository
+sourcepack init . --auto
+git add .sourcepack/baseline
+git commit -m "Add accepted SourcePack baseline"
+```
 
-SourcePack does not reject code merely because AI produced it.
+`sourcepack init . --auto` refuses to create trusted baseline state from a dirty Git working tree unless `--force` is deliberately supplied. Initialization is a maintainer trust decision, not a way to make an existing finding disappear. Review the generated `.sourcepack/baseline/` state before committing it.
+
+Then inspect local changes from the terminal or Workbench:
+
+```bash
+sourcepack diff .
+sourcepack diff . --staged
+sourcepack ui .
+sourcepack report path
+sourcepack report open
+```
+
+Local mode exits nonzero for `FAIL`; `WARN` is non-blocking. Use `--strict` or `--ci` when warnings must also block. `--ci` emits machine-readable JSON.
 
 ## First five minutes
 
@@ -84,102 +93,148 @@ sourcepack init . --auto
 sourcepack ui .
 ```
 
-`sourcepack init . --auto` creates or refreshes local SourcePack state only after you decide the current repository state should be trusted. Do not use initialization to bless a failed AI patch. Then launch SourcePack Workbench, click **Run Review**, inspect findings and evidence, copy the deterministic remediation prompt, let an external coding agent edit the repository, and click **Run Review Again**.
+After initialization, make a change and click **Run Review** in Workbench. Inspect the findings and their evidence, copy the deterministic remediation prompt if useful, let your coding tool revise the repository, and click **Run Review Again**. Workbench uses the same authority-bearing judgment entry point as `sourcepack diff .`; it cannot edit code, invoke an AI coding agent, run arbitrary commands, or silently trust a baseline.
 
-## What SourcePack catches
+## What SourcePack checks
 
-| Case | Formal result | Reason code |
+SourcePack focuses on repository assumptions that can be tested locally:
+
+- AI coding agents can edit files that do not exist.
+- They can import undeclared dependencies.
+- They can reference missing scripts or unsupported commands.
+- They can reshape project structure based on prompt assumptions.
+- SourcePack catches those locally verifiable failures before commit or in CI.
+
+| Change or state | Typical result | Reason code |
 | --- | --- | --- |
-| Missing or fake file edits | FAIL | `missing_file` |
-| New or deleted file review | WARN | `new_file`, `deleted_file` |
-| Undeclared imports or dependencies | FAIL | `unsupported_dependency` |
-| Same-patch dependency additions | WARN | `declared_dependency` |
-| Unsupported commands | FAIL | `unsupported_command` |
-| Unsupported ecosystems | WARN | `unsupported_ecosystem` |
-| Protected `.sourcepack/` edits | FAIL | `protected_artifact` |
-| `.git/` path edits | FAIL | `git_path_modification` |
-| Unsafe paths | FAIL | `unsafe_path`, `path_escape` |
-| Binary or malformed diffs | WARN or FAIL by path and condition | `binary_diff`, `malformed_diff` |
-| Missing, stale, or corrupt baseline | FAIL or WARN by state and mode | `baseline_missing`, `baseline_stale`, `baseline_corrupt` |
-| Workflow automation changes | WARN or FAIL by mode and policy | `workflow_change` |
+| Edit to a missing or invented file | FAIL | `missing_file` |
+| New or deleted file | WARN | `new_file`, `deleted_file` |
+| Undeclared import or dependency | FAIL | `unsupported_dependency` |
+| Dependency declared in the same change | WARN | `declared_dependency` |
+| Missing repository command | FAIL | `unsupported_command` |
+| Unsupported ecosystem marker | WARN | `unsupported_ecosystem` |
+| Protected `.sourcepack/` edit | FAIL | `protected_artifact` |
+| `.git/` path edit | FAIL | `git_path_modification` |
+| Unsafe or escaping path | FAIL | `unsafe_path`, `path_escape` |
+| Binary or malformed diff | WARN or FAIL, depending on condition | `binary_diff`, `malformed_diff` |
+| Missing, stale, or corrupt baseline | FAIL or WARN, depending on state and mode | `baseline_missing`, `baseline_stale`, `baseline_corrupt` |
+| Workflow automation change | WARN or policy-dependent FAIL | `workflow_change` |
+| Symlink replacing a proven nonempty directory | FAIL | `symlink_replaces_nonempty_directory` |
 
-See [`docs/reason-codes.md`](docs/reason-codes.md) for exact behavior and remediation guidance.
+Python and Node.js have dedicated dependency evidence adapters. Recognized but not fully modeled ecosystems—including Cargo, Go modules, Maven, Gradle, Bundler, Composer, .NET projects, Terraform, and Nix flakes—produce explicit uncertainty rather than being silently treated as understood. See the complete, canonical behavior table in [`docs/reason-codes.md`](docs/reason-codes.md) and the current constraints in [`docs/limitations.md`](docs/limitations.md).
 
-## How the trust model works
+## Trust model
 
-SourcePack keeps reviewed repository evidence separate from AI guidance.
+SourcePack keeps authority separate from advice:
 
-- **Accepted baseline:** local enforcement state accepted through a maintainer-controlled workflow
-- **Baseline integrity:** stored artifact bytes checked against the receipt's cryptographic SHA-256 hashes
-- **Prompt context:** advisory material for an AI assistant
-- **Diff:** the actual proposed repository change
-- **Judgment:** the result of checking that change against trusted evidence and policy
+1. **Accepted baseline:** repository evidence accepted through a maintainer-controlled workflow.
+2. **Integrity check:** SHA-256 receipt hashes detect later changes to stored baseline artifacts.
+3. **Prompt context:** optional, non-authoritative guidance for an AI assistant.
+4. **Proposed diff:** working-tree, staged, supplied-patch, or committed-range changes to inspect.
+5. **Policy and execution evidence:** bounded local inputs that can affect or explain judgment.
+6. **Judgment:** canonical `PASS`, `WARN`, or `FAIL` plus findings and reason codes.
 
-Prompt context never becomes trust.
+Hash agreement does not authenticate the baseline's creator or prove that its contents were reviewed. Prompt context never becomes enforcement authority. In pull-request CI, SourcePack consumes the reviewed baseline committed to the repository; CI must never create, refresh, repair, or silently bless baseline state. See [`docs/baseline-lifecycle.md`](docs/baseline-lifecycle.md) for the full lifecycle.
 
-Hash agreement detects stored-artifact changes relative to the accepted receipt; it does not authenticate the baseline's creator, prove that the state was reviewed, or independently establish trust. SourcePack therefore relies on both maintainer acceptance and subsequent integrity checking, and refers to a usable baseline as an **integrity-checked accepted baseline**.
+## Reports and evidence
 
-Diff paths are normalized before judgment. Separator variants and `.` components are canonicalized, and internal parent components such as `directory/../file.py` become `file.py`. A parent component that would move above the repository-relative root, as in `../file.py`, is unsafe and fails closed. SourcePack does not reject every occurrence of `..`.
+A local review writes canonical report artifacts under `.sourcepack/reports/`:
 
-SourcePack refuses to create a trusted baseline from a dirty Git working tree unless `--force` is explicitly supplied. In CI, committed `.sourcepack/baseline/` state must be consumed as-is. CI must never create, refresh, repair, or silently bless trusted baseline state.
+| Surface | Purpose |
+| --- | --- |
+| `latest.json` | machine-readable judgment, findings, provenance, and replay data |
+| `latest.md` | human-readable text report |
+| `latest.html` | local rendered review report |
+| Workbench | authenticated local UI and bounded Command Center snapshot |
+| SARIF | optional CI/code-scanning interchange |
+| Evidence bundle | portable, verifiable local review evidence |
 
-See [`docs/baseline-lifecycle.md`](docs/baseline-lifecycle.md).
+Additional commands support non-authoritative prompt context, bounded command execution evidence, report replay, finding explanations and decisions, policy validation, schema validation, and fleet summaries. Use `sourcepack --help` and each subcommand's `--help` for the installed version; use the [documentation index](docs/README.md) for workflows and trust-boundary details.
 
-## Reports, Workbench, CI, and evidence
+## Pull-request CI
 
-A normal local run writes HTML, JSON, and Markdown reports under `.sourcepack/reports/`. The canonical SourcePack JSON report path is `.sourcepack/reports/latest.json`. Use `sourcepack report path` to print the rendered HTML report path and `sourcepack report open` to regenerate and open that rendered report.
-
-```bash
-sourcepack ui .
-sourcepack diff .
-sourcepack report path
-sourcepack report open
-```
-
-SourcePack Workbench can run a bounded local review using the same `sourcepack.judgment.judge_repo_change()` path used by `sourcepack diff .`, then write the canonical report artifacts under `.sourcepack/reports/`. It cannot run arbitrary commands, edit code, invoke Codex, or silently trust a baseline. CLI review commands remain available for automation, CI, and advanced use.
-
-Minimal CI usage:
+CI must start with reviewed, committed `.sourcepack/baseline/` state and must expose the pull-request delta to the working tree. A clean checkout of the PR head contains no local diff for `sourcepack diff .` to inspect.
 
 ```yaml
 - uses: actions/checkout@v4
+  with:
+    ref: ${{ github.event.pull_request.head.sha }}
+    fetch-depth: 0
+- run: git fetch --no-tags origin ${{ github.event.pull_request.base.ref }}
+- run: git reset --mixed ${{ github.event.pull_request.base.sha }}
+- uses: actions/setup-python@v5
+  with:
+    python-version: "3.11"
 - run: python -m pip install sourcepack
 - run: sourcepack diff . --ci --json
 ```
 
-SourcePack also supports replay, evidence bundles, local execution evidence, repository policy, finding identities, overrides, decision ledgers, fleet summaries, and committed-range inspection.
+The bundled composite action can also emit JSON, Markdown, command records, SARIF, uploaded artifacts, step summaries, and an optional update-in-place pull-request comment. PR commenting is presentation-only: an unavailable token or comment failure does not replace the SourcePack verdict. Copy the complete workflow, permission requirements, and fork caveats from [`docs/github-action-quickstart.md`](docs/github-action-quickstart.md) rather than relying on this abbreviated example.
 
-See the [documentation index](docs/README.md) for exact commands and deeper workflows.
+## Current scope and status
 
-## Built with GPT-5.6 and Codex
+The package metadata identifies the repository as the `1.10.0a3` public-alpha release. The implemented surfaces include:
 
-SourcePack was developed through an inspectable AI-directed workflow:
+- working-tree, staged, supplied-patch, and committed-range review;
+- integrity-checked accepted baselines and local/organization policy resolution;
+- canonical JSON, Markdown, HTML, and SARIF reporting;
+- evidence graphs, replay data, evidence bundles, overrides, and decision ledgers;
+- bounded local execution evidence and deterministic remediation prompts;
+- an authenticated local Workbench and versioned internal Command Center snapshot;
+- Git hooks, pull-request CI, a composite GitHub Action, and fleet summaries;
+- public JSON Schema validation and an optional hosted-control-plane surface.
 
-1. product behavior and constraints were defined through GPT-5.6
-2. GPT-5.6 converted those decisions into bounded implementation prompts, reviews, and correction prompts
-3. Codex implemented repository changes and tests
-4. the resulting pull requests were reviewed and merged through GitHub
+Operational inputs are deliberately bounded. When evidence acquisition is incomplete, SourcePack preserves that uncertainty rather than turning the retained prefix into authoritative `PASS`. The detailed repository-grounded implementation inventory is in [`docs/current-behavior-audit.md`](docs/current-behavior-audit.md), and release changes are in [`CHANGELOG.md`](CHANGELOG.md).
 
-The public repository history preserves both sides of that workflow, including a GPT-5.6-directed README change, Codex implementation PRs, and the trust-boundary failure that helped shape the current dirty-baseline guard.
+## High-value next improvements
 
-See [`BUILD_WEEK.md`](BUILD_WEEK.md) for the dated evidence trail and judge path.
+These are opportunities, **not implemented behavior**. They are ordered roughly by how much they could broaden day-to-day usefulness.
+
+### Coverage and accuracy
+
+- Add first-class dependency and command adapters for Rust, Go, Java/Kotlin, Ruby, PHP, .NET, Terraform, and Nix.
+- Model monorepo workspaces and dependency scope explicitly, including package ownership, nested manifests, and cross-package changes.
+- Expand Python and Node.js alias, extras, workspace, lockfile, generated-code, and dynamic-import handling while retaining visible uncertainty.
+- Add local symbol and API-surface evidence so a change can be checked for invented functions, configuration keys, routes, and schema fields—not only files, packages, and commands.
+- Add migration- and schema-aware checks for databases, API specifications, infrastructure plans, and generated clients.
+
+### Workflow integrations
+
+- Provide documented pre-commit/pre-push integrations, reusable workflows for other CI providers, and a stable check-run annotation experience.
+- Build IDE integrations that show findings and evidence at the edited line; the existing VS Code work is currently a plan, not a shipped extension.
+- Offer a supported machine API or SDK around the public judgment facade, with compatibility policy and examples for coding-agent integrations.
+- Add policy packs and organization presets that can be reviewed, pinned, composed, and explained without weakening local authority.
+
+### Trust and collaboration
+
+- Add signed baseline/receipt provenance and optional maintainer approval metadata while preserving the distinction between integrity and identity.
+- Improve safe baseline-update workflows with reviewable deltas, expiry/refresh guidance, ownership rules, and branch-protection examples.
+- Add richer, auditable suppression lifecycles: owners, justification templates, expiration, review status, and policy-controlled approval.
+- Make evidence bundles easier to compare across revisions and easier to attach to code review without exposing sensitive repository content.
+
+### Usability and operations
+
+- Add a guided setup wizard that explains trust decisions, detects repository layout, previews generated state, and validates CI configuration.
+- Improve finding prioritization, side-by-side correction comparisons, historical trends, and team-oriented review queues in Workbench.
+- Add incremental scanning and caching with explicit invalidation so large repositories are faster without reusing stale authority.
+- Expand fleet reporting with ownership, policy drift, baseline age, recurring reason codes, and export formats while keeping summaries non-authoritative.
+- Publish platform-specific installation and troubleshooting guidance, broaden native Windows/macOS/Linux verification, and test more Git/filesystem edge cases.
+
+### Quality and project health
+
+- Grow the checked-in external-repository corpus and publish repeatable false-positive/false-negative measurements by ecosystem.
+- Add property-based and coverage-guided fuzzing for diff parsing, path handling, manifests, policies, reports, and evidence bundles.
+- Define performance budgets and benchmarks for large diffs, large monorepos, Workbench payloads, and fleet discovery.
+- Publish a contributor guide, development setup, support policy, compatibility/deprecation policy, architecture decision records, and a versioned roadmap.
+- Automate documentation/CLI/schema drift checks and publish a capability matrix that separates supported, partial, and unsupported behavior.
+
+Contributions should preserve SourcePack's central invariant: missing or incomplete evidence must remain visible and must never be silently upgraded into trust.
 
 ## What SourcePack is not
 
-SourcePack is not a general AI code reviewer. It does not decide whether code is elegant, scalable, secure, production-ready, architecturally sound, or aligned with business intent.
-
-A deterministic Architecture Contract Layer has a pre-implementation design record, but it is not implemented or part of current SourcePack behavior.
-
-It does not replace tests, type checkers, linters, security scanners, dependency review, runtime validation, or human review.
+SourcePack is not a general AI code reviewer. It does not decide whether code is elegant, scalable, secure, production-ready, architecturally sound, or aligned with business intent. It does not replace tests, type checkers, linters, security scanners, dependency review, runtime validation, or human review.
 
 Use SourcePack when the disputed claim can be checked against local repository evidence.
-
-## Status
-
-SourcePack is in the v1.10 public-alpha series.
-
-Core judgment behavior, packaging, reports, demos, policy resolution, replay, local execution evidence, CI behavior, evidence bundles, and the local Workbench are implemented. The current merged hardening state has completed native-Windows verification, including the full configured Windows pytest suite and SourcePack self-dogfood. Windows fallbacks that cannot provide POSIX-equivalent descriptor-relative confinement remain explicitly bounded and non-authoritative where documented. Public-alpha work continues around compatibility, packaging, integration coverage, and UX polish.
-
-`sourcepack doctor --strict` checks local production-readiness prerequisites and packaged assets. Hosted GitHub Actions remain the source of truth for hosted checks.
 
 ## What SourcePack does not claim
 
@@ -191,14 +246,15 @@ Core judgment behavior, packaging, reports, demos, policy resolution, replay, lo
 - does not prove dependency safety
 - does not prove user intent
 
-## Public proof links
+## Project links
 
-- [Build Week evidence](BUILD_WEEK.md)
 - [Documentation](docs/README.md)
-- [Changelog](CHANGELOG.md)
+- [Architecture](docs/architecture.md)
+- [Current behavior audit](docs/current-behavior-audit.md)
 - [Reason codes](docs/reason-codes.md)
 - [CI usage](docs/ci.md)
 - [Problem fit](docs/problem-fit.md)
-- [AI-agent workflow](docs/ai-agent-workflow.md)
-- [Public-alpha readiness](docs/public-alpha-readiness.md)
+- [Limitations](docs/limitations.md)
+- [Security policy](SECURITY.md)
+- [Changelog](CHANGELOG.md)
 - [License](LICENSE)

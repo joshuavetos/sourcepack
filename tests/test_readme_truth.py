@@ -125,7 +125,7 @@ def test_readme_first_five_minutes_and_public_alpha_limits() -> None:
         "sourcepack report open",
     ]:
         assert required in text
-    claims = text.split("## What SourcePack does not claim", 1)[1].split("## Public proof links", 1)[0].strip()
+    claims = text.split("## What SourcePack does not claim", 1)[1].split("## Project links", 1)[0].strip()
     assert claims == "\n".join([
         "- does not prove code correctness",
         "- does not prove security",
@@ -135,6 +135,18 @@ def test_readme_first_five_minutes_and_public_alpha_limits() -> None:
         "- does not prove dependency safety",
         "- does not prove user intent",
     ])
+
+
+def test_readme_omits_competition_build_narrative() -> None:
+    text = readme().lower()
+    for removed in [
+        "built with gpt",
+        "codex implemented",
+        "build week evidence",
+        "competition",
+        "submission",
+    ]:
+        assert removed not in text
 
 
 def test_demo_and_workbench_walkthrough_are_separate() -> None:

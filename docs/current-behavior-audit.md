@@ -23,6 +23,7 @@ SourcePack's explicit non-claims into guarantees.
 | Provide schema validation, fleet summaries, replay/bundle commands, an optional hosted control plane, and the packaged demonstration | `schema_contracts.py`, `fleet.py`, `commands/`, `cloud.py`, `hosted.py`, and `cli.py` | `test_schema_contracts.py`, `test_fleet.py`, `test_cloud_optional.py`, `test_demo_smoke.py`, `test_release_smoke.py` |
 | Bound repository, Git, report, ledger, packet, fleet, Workbench, and Command Center producers; incomplete evidence cannot become authoritative PASS | `repository_evidence.py`, `git_acquisition.py`, `reports/json.py`, `decision_ledger.py`, `evidence_bundle.py`, `fleet.py`, and `command_center_limits.py` | `test_producer_bounds.py`, `test_operational_producer_bounds.py`, `test_command_center_payload_bounds.py`, `test_final_boss_integration.py` |
 | Detect a proposed symlink replacing a nonempty directory, while failing separately when the necessary current/prior evidence is incomplete | `worktree_collision.py` and `judgment.py` | `test_symlink_directory_collision.py`, `test_operational_producer_bounds.py` |
+| Enforce declared Python forbidden-direct-import rules from accepted pre-change contracts, with baseline-carried rule lifecycle and last-known-valid evidence | `architecture_contract.py`, `baseline.py`, and `judgment.py` | `test_architecture_contract.py` |
 
 CLI registration and help text are additionally checked by
 `test_cli_registry.py`; the README's executable commands, links, demo output,
@@ -49,6 +50,7 @@ the following implementation/test ownership map.
 | `workflow_change`, `gitignore_unwritable`, `prompt_context_failed`, `clipboard_unavailable`, `hook_install_failed`, `hygiene_hooks_deferred` | `judgment.py`, `paths.py`, `packet.py`, `cli.py` | judgment, clipboard, lifecycle CLI, GitHub Action, and smoke tests |
 | `report_construction_limit` | `reports/json.py` and Command Center projection | producer-bound and Command Center integrity tests |
 | `symlink_replaces_nonempty_directory`, `symlink_worktree_inspection_incomplete` | `worktree_collision.py`, `judgment.py`, `reports/json.py` | symlink-collision and operational-producer-bound tests |
+| `architecture_forbidden_import`, `architecture_scope_changed`, `architecture_contract_changed`, `architecture_contract_drift`, `architecture_rule_unverifiable`, `architecture_verifiability_reduced`, `architecture_violation_detected_after_drift`, `architecture_rule_retirement_unresolved`, `architecture_rule_retired`, `architecture_authority_corrupt` | `architecture_contract.py`, `baseline.py`, `judgment.py` | architecture-contract lifecycle and integration tests |
 
 The registry/document parity itself is enforced by `test_reason_code_docs.py`.
 Schema/report contracts and presentation layers test the codes they accept, but

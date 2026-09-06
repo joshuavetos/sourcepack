@@ -8,6 +8,7 @@ SourcePack intentionally has a narrow local-first scope.
 - Generated code may be difficult to classify.
 - Import/package aliases are incomplete.
 - Lockfile-only evidence may not be authoritative.
+- Architecture contracts currently support only Python forbidden direct imports. They do not construct call graphs, infer semantic ownership or intent, understand arbitrary reflection/plugin/runtime dispatch, or prove that no unresolved relationship exists.
 - SourcePack does not prove code correctness.
 - SourcePack does not detect vulnerabilities or replace dependency, secret, or supply-chain scanning tools.
 - Docker build semantics beyond obvious command and file evidence are limited.

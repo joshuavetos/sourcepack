@@ -31,6 +31,7 @@ from .local_allow_trust import active_allow_records, readable_allow_file_matches
 from .commands import resolve_command
 from .dependencies import resolve_js_import, resolve_python_import
 from .worktree_collision import inspect_symlink_transitions
+from .architecture_contract import CONTRACT_PATH, STATE_ARTIFACT, evaluate_change
 
 try:
     from . import __version__
@@ -912,6 +913,45 @@ def judge_patch_text(packet_path: str | Path, patch_text: str, *, trusted_files:
     return report
 
 
+def _architecture_review(packet: Path, patch_text: str) -> tuple[list[dict], dict]:
+    """Project the patch over accepted packet contents and evaluate baseline authority."""
+    before = _packet_file_contents(packet)
+    state_path = packet / STATE_ARTIFACT
+    if CONTRACT_PATH not in before and not state_path.exists():
+        return [], {"status": "not_declared", "rules": []}
+    if not state_path.exists():
+        raw_findings = [{"id": "architecture_authority_corrupt", "severity": "error", "category": "architecture", "message": "Accepted baseline architecture authority is missing."}]
+        return [normalized_finding(item.pop("id"), **item) for item in raw_findings], {"status": "unavailable", "rules": []}
+    try:
+        state = _load_packet_json(packet, STATE_ARTIFACT)
+        if not isinstance(state, dict):
+            raise ValueError("architecture state must be an object")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raw_findings = [{"id": "architecture_authority_corrupt", "severity": "error", "category": "architecture", "message": f"Accepted baseline architecture authority is corrupt: {exc}"}]
+        return [normalized_finding(item.pop("id"), **item) for item in raw_findings], {"status": "unavailable", "rules": []}
+    after = dict(before)
+    path_transitions = []
+    projection_failures = []
+    for change in parse_unified_diff(patch_text):
+        old_path = change.old_path or change.path
+        path_transitions.append({"old_path": old_path, "new_path": change.path, "deleted": change.deleted_file, "new_file": change.new_file})
+        if change.deleted_file:
+            after.pop(old_path, None)
+            continue
+        base = before.get(old_path, "")
+        projected = _apply_patch_change_to_text(base, change)
+        if projected is None:
+            if old_path.endswith(".py") or change.path.endswith(".py") or CONTRACT_PATH in {old_path, change.path}:
+                projection_failures.append(change.path)
+                after.pop(old_path, None)
+            continue
+        if old_path != change.path:
+            after.pop(old_path, None)
+        after[change.path] = projected
+    raw_findings, evidence = evaluate_change(before, after, state, path_transitions=path_transitions, projection_failures=projection_failures)
+    return [normalized_finding(item.pop("id"), **item) for item in raw_findings], evidence
+
+
 def patch_report_to_traffic(report: dict, report_path: str = ".sourcepack/reports/latest.json") -> dict:
     findings=[]
     for p in report.get("missing_modified_files", []): findings.append(normalized_finding("missing_file", "error", "file", f"{p} not found in the trusted baseline.", p, suggestion="Restore the file, create it as a new file, or refresh the baseline only after accepting the current repo state."))
@@ -1234,6 +1274,11 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
     else:
         packet_path = repo / baseline_status["packet_path"]
         raw = judge_patch_text(packet_path, diff_text, trusted_files=trusted_base_files, worktree_root=repo); rep = patch_report_to_traffic(raw); rep["raw_patch_judgment"] = raw
+        architecture_findings, architecture_evidence = _architecture_review(packet_path, diff_text)
+        if architecture_findings:
+            rep = _rebuild_from_findings(rep, list(rep.get("findings", [])) + architecture_findings)
+            rep["raw_patch_judgment"] = raw
+        rep["architecture"] = architecture_evidence
         rep = _integrate_execution_findings(repo, diff_text, rep)
         rep = _apply_policy_finishers(repo, packet_path, diff_text, rep, policy_result)
         if stale_findings:
@@ -1262,7 +1307,7 @@ def build_repo_change_report(repo_path: str | Path, *, staged: bool = False, pat
 def _rebuild_from_findings(rep: dict, findings: list[dict]) -> dict:
     verdict = "FAIL" if any(f.get("severity") == "error" for f in findings) else "WARN" if any(f.get("severity") == "warn" for f in findings) else "PASS"
     rebuilt = traffic_report(verdict, findings=findings, checked_categories=rep.get("checked_categories") or rep.get("checked") or [], report_path=rep.get("report_path", ".sourcepack/reports/latest.json"))
-    for key in ("raw_patch_judgment", "policy", "policy_overrides", "policy_config", "policy_config_ignores", "policy_config_warnings", "policy_rule_findings"):
+    for key in ("raw_patch_judgment", "architecture", "policy", "policy_overrides", "policy_config", "policy_config_ignores", "policy_config_warnings", "policy_rule_findings"):
         if key in rep:
             rebuilt[key] = rep[key]
     if isinstance(rep.get("authority"), dict) and rep["authority"].get("complete") is False:

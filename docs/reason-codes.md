@@ -21,6 +21,47 @@ SourcePack reason codes explain why a repo-state transition is `PASS`, `WARN`, o
 
 Reason codes are machine-readable identifiers. Human-readable messages may change, but canonical reason-code IDs should remain stable.
 
+## architecture_forbidden_import
+
+- **Typical severity:** `FAIL` for a new mechanically resolved direct import forbidden by accepted pre-change architecture authority.
+- **Non-claim:** This does not establish semantic or runtime correctness or the absence of unresolved relationships.
+
+## architecture_scope_changed
+
+- **Typical severity:** `WARN` when a governed Python file changes or escapes its accepted layer classification.
+
+## architecture_contract_changed
+
+- **Typical severity:** `WARN`; proposed contract bytes never authorize the review that introduces them.
+
+## architecture_contract_drift
+
+- **Typical severity:** `WARN`; the affected rule lacks blocking authority while its declared required scope cannot be evaluated.
+
+## architecture_rule_unverifiable
+
+- **Typical severity:** `WARN` when bounded Python analysis cannot evaluate an affected rule; uncertainty is not fabricated into a violation.
+
+## architecture_verifiability_reduced
+
+- **Typical severity:** `WARN` when a patch changes a previously verifiable rule into an unverifiable state.
+
+## architecture_violation_detected_after_drift
+
+- **Typical severity:** `WARN`; a violation differs from last-known-valid evidence after authority is restored, without claiming which patch introduced it.
+
+## architecture_rule_retirement_unresolved
+
+- **Typical severity:** `WARN` when proposed deletion or retirement would leave known violations, drift, unverifiability, or carried history unresolved.
+
+## architecture_rule_retired
+
+- **Typical severity:** Informational lifecycle finding for a clean explicit retirement with no unresolved architecture state.
+
+## architecture_authority_corrupt
+
+- **Typical severity:** `FAIL` when a contract-bearing baseline lacks valid architecture lifecycle evidence.
+
 The canonical vocabulary lives in:
 
 ```text

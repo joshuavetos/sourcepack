@@ -6,6 +6,7 @@ from pathlib import Path
 from sourcepack.cli import run_cli
 from sourcepack.policy import resolve_effective_policy
 from sourcepack.schema_contracts import CONTRACTS, schema_bytes, schema_for, validate_schema_registry
+from sourcepack.architecture_contract import validate_contract
 
 
 def _policy(tmp_path: Path) -> dict:
@@ -18,6 +19,18 @@ def test_registry_schema_is_deterministic_and_metaschema_valid():
     assert [c.name for c in CONTRACTS] == sorted(c.name for c in CONTRACTS)
     assert schema_bytes(CONTRACTS[0]) == schema_bytes(CONTRACTS[0])
     assert schema_for(CONTRACTS[0])["$id"].startswith("https://schemas.sourcepack.local/")
+
+
+def test_schema_validate_architecture_contract(tmp_path: Path, capsys):
+    artifact = tmp_path / "architecture.json"
+    value = {"schema_version": "architecture_contract.v1", "coverage": {"exhaustive": False, "paths": ["src/**/*.py"]}, "layers": [{"id": "ui", "paths": ["src/ui/**/*.py"], "must_match": True}, {"id": "data", "paths": ["src/data/**/*.py"], "must_match": True}], "rules": [{"id": "arch.ui-no-data", "type": "forbidden_import", "from": "ui", "to": "data", "reachability": "direct"}]}
+    validate_contract(value)
+    artifact.write_text(json.dumps(value), encoding="utf-8")
+    assert run_cli(["schema", "validate", "architecture-contract.v1", str(artifact)]) == 0
+    capsys.readouterr()
+    value["rules"][0]["to"] = "missing"
+    artifact.write_text(json.dumps(value), encoding="utf-8")
+    assert run_cli(["schema", "validate", "architecture-contract.v1", str(artifact)]) == 5
 
 
 def test_schema_validate_effective_policy_and_alias(tmp_path: Path, capsys):

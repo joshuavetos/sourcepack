@@ -7,9 +7,10 @@ opens Git nor creates `.sourcepack` state.
 
 | Canonical name | Artifact version | Alias | Owner | Structural/semantic scope |
 | --- | --- | --- | --- | --- |
+| `architecture-contract.v1` | `architecture_contract.v1` | `architecture-contract` | `sourcepack.architecture_contract.validate_contract` | Closed repository-declared Python forbidden-direct-import contract with explicit layers, coverage, rule IDs, and direct reachability. |
 | `effective-policy.v1` | `sourcepack.effective_policy.v1` | `effective-policy` | `sourcepack.policy.resolve_effective_policy` | Closed resolved-policy envelope, policy rule values, IDs, package-manager and policy-rule vocabularies. |
 
-The registry is deliberately small.  `traffic_report.v1`, findings, repository
+The registry is deliberately small. `architecture-contract.v1` validates the declared contract shape and cross-references through the runtime owner; it does not establish that a contract has been accepted into a baseline. `traffic_report.v1`, findings, repository
 policy, organization policy, override, decision-ledger events, execution-ledger
 entries, evidence bundles, and replay bundles are **deferred**: inspection found
 open or insufficiently versioned value domains, or one version with output

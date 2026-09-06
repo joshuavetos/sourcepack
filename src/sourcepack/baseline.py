@@ -51,7 +51,8 @@ def generated_untracked_baseline_artifacts(
     candidates = {path.replace("\\", "/").removeprefix("./") for path in relative_paths}
     from .packet import PacketWriter, verify_packet
 
-    packet_names = {*PacketWriter.OUTPUT_FILES, "receipt.json"}
+    from .architecture_contract import STATE_ARTIFACT
+    packet_names = {*PacketWriter.OUTPUT_FILES, STATE_ARTIFACT, "receipt.json"}
     generated: set[str] = set()
     status = validate_baseline(root)
     if status.get("state") in {"present", "stale"}:
@@ -493,13 +494,34 @@ def _unique_build_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + f"-{os.getpid()}"
 
 
-def _write_baseline_packet(repo: Path, packet: Path) -> None:
+def _write_baseline_packet(repo: Path, packet: Path, previous_packet: Path | None = None) -> None:
     from .packet import PacketWriter, SourceScanner
+    from .architecture_contract import STATE_ARTIFACT, build_state
 
     scanner = SourceScanner(repo).scan()
     if not scanner.authority["complete"]:
         raise RuntimeError(f"repository traversal incomplete: {scanner.authority['reason']}")
     PacketWriter(packet, scanner, force=True).write_all()
+    contents = {item.relative_path: item.content for item in scanner.included_files}
+    if previous_packet is None:
+        previous = validate_baseline(repo)
+        if previous.get("state") in {"present", "stale"} and previous.get("packet_path"):
+            previous_packet = repo / previous["packet_path"]
+    previous_state = None
+    if previous_packet is not None and (previous_packet / STATE_ARTIFACT).exists():
+        previous_state, previous_error = _read_json_file(previous_packet / STATE_ARTIFACT)
+        if previous_error:
+            raise RuntimeError(f"prior {STATE_ARTIFACT} {previous_error}")
+    architecture_state = build_state(contents, previous_state)
+    if architecture_state["contract_present"] and not architecture_state["contract_valid"]:
+        raise RuntimeError(f"architecture contract invalid: {architecture_state['contract_error']}")
+    if architecture_state["contract_present"] or architecture_state["rules"]:
+        artifact = packet / STATE_ARTIFACT
+        artifact.write_text(json.dumps(architecture_state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        receipt_path = packet / "receipt.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["hashes"][STATE_ARTIFACT] = sha256_file(artifact)
+        receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
 
 
 def _verify_baseline_packet(packet: Path) -> bool:
@@ -667,6 +689,11 @@ def build_current_baseline(
         build_dir = paths["builds"] / build_id
         packet = build_dir / "packet"
         build_dir.mkdir(parents=True, exist_ok=False)
+        previous_packet = (
+            repo / previous["packet_path"]
+            if previous.get("state") in {"present", "stale"} and previous.get("packet_path")
+            else None
+        )
         _write_baseline_packet(repo, packet)
         if not quiet and not _verify_baseline_packet(packet):
             raise RuntimeError("packet verification returned FAIL")

@@ -61,6 +61,16 @@ class ReasonCode(StrEnum):
     REPORT_CONSTRUCTION_LIMIT = "report_construction_limit"
     SYMLINK_REPLACES_NONEMPTY_DIRECTORY = "symlink_replaces_nonempty_directory"
     SYMLINK_WORKTREE_INSPECTION_INCOMPLETE = "symlink_worktree_inspection_incomplete"
+    ARCHITECTURE_FORBIDDEN_IMPORT = "architecture_forbidden_import"
+    ARCHITECTURE_SCOPE_CHANGED = "architecture_scope_changed"
+    ARCHITECTURE_CONTRACT_CHANGED = "architecture_contract_changed"
+    ARCHITECTURE_CONTRACT_DRIFT = "architecture_contract_drift"
+    ARCHITECTURE_RULE_UNVERIFIABLE = "architecture_rule_unverifiable"
+    ARCHITECTURE_VERIFIABILITY_REDUCED = "architecture_verifiability_reduced"
+    ARCHITECTURE_VIOLATION_DETECTED_AFTER_DRIFT = "architecture_violation_detected_after_drift"
+    ARCHITECTURE_RULE_RETIREMENT_UNRESOLVED = "architecture_rule_retirement_unresolved"
+    ARCHITECTURE_RULE_RETIRED = "architecture_rule_retired"
+    ARCHITECTURE_AUTHORITY_CORRUPT = "architecture_authority_corrupt"
 
 
 _CANONICAL = {code.value for code in ReasonCode}

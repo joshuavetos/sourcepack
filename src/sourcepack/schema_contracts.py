@@ -15,6 +15,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
 from .policy import EFFECTIVE_POLICY_SCHEMA_VERSION, SUPPORTED_PACKAGE_MANAGERS, _POLICY_RULE_NAMES
+from .architecture_contract import ArchitectureContractError, CONTRACT_VERSION, validate_contract
 
 DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 EXIT_UNKNOWN_SCHEMA = 2
@@ -119,12 +120,22 @@ def effective_policy_schema() -> dict[str, Any]:
         },
     }
 
-CONTRACTS = (Contract("effective-policy.v1", EFFECTIVE_POLICY_SCHEMA_VERSION, "Resolved organization and repository policy.", ("effective-policy",), "sourcepack.policy.resolve_effective_policy"),)
+def architecture_contract_schema() -> dict[str, Any]:
+    safe_glob = _safe_policy_path_schema()
+    layer = {"type": "object", "additionalProperties": False, "required": ["id", "paths", "must_match"], "properties": {"id": {"type": "string", "minLength": 1}, "paths": {"type": "array", "minItems": 1, "uniqueItems": True, "items": safe_glob}, "must_match": {"type": "boolean"}}}
+    rule = {"type": "object", "additionalProperties": False, "required": ["id", "type", "from", "to", "reachability"], "properties": {"id": {"type": "string", "minLength": 1}, "type": {"const": "forbidden_import"}, "from": {"type": "string", "minLength": 1}, "to": {"type": "string", "minLength": 1}, "reachability": {"const": "direct"}, "status": {"enum": ["active", "retired"]}, "replaced_by": {"type": "string", "minLength": 1}, "replaces": {"type": "array", "uniqueItems": True, "items": {"type": "string", "minLength": 1}}}}
+    return {"$schema": DRAFT_2020_12, "$id": "https://schemas.sourcepack.local/architecture-contract.v1.schema.json", "title": "SourcePack Architecture Contract v1", "type": "object", "additionalProperties": False, "required": ["schema_version", "coverage", "layers", "rules"], "properties": {"schema_version": {"const": CONTRACT_VERSION}, "coverage": {"type": "object", "additionalProperties": False, "required": ["exhaustive", "paths"], "properties": {"exhaustive": {"type": "boolean"}, "paths": {"type": "array", "minItems": 1, "uniqueItems": True, "items": safe_glob}}}, "layers": {"type": "array", "items": layer}, "rules": {"type": "array", "items": rule}}}
+
+CONTRACTS = (
+    Contract("architecture-contract.v1", CONTRACT_VERSION, "Declared forbidden-direct-import architecture authority.", ("architecture-contract",), "sourcepack.architecture_contract.validate_contract"),
+    Contract("effective-policy.v1", EFFECTIVE_POLICY_SCHEMA_VERSION, "Resolved organization and repository policy.", ("effective-policy",), "sourcepack.policy.resolve_effective_policy"),
+)
 
 def resolve(name: str) -> Contract | None:
     return next((c for c in CONTRACTS if name == c.name or name in c.aliases), None)
 
 def schema_for(contract: Contract) -> dict[str, Any]:
+    if contract.name == "architecture-contract.v1": return architecture_contract_schema()
     if contract.name == "effective-policy.v1": return effective_policy_schema()
     raise KeyError(contract.name)
 
@@ -147,6 +158,12 @@ def load_json(path: str | Path) -> Any:
 def _semantic_errors(instance: Any) -> list[dict[str, str]]:
     """Validate stable bidirectional relationships emitted by the resolver."""
     if not isinstance(instance, dict):
+        return []
+    if instance.get("schema_version") == CONTRACT_VERSION:
+        try:
+            validate_contract(instance)
+        except ArchitectureContractError:
+            return [{"document_path": "/", "schema_path": "/semantic", "keyword": "architecture_contract_invalid", "message": "artifact does not satisfy architecture contract semantics"}]
         return []
     errors = instance.get("errors") if isinstance(instance.get("errors"), list) else []
     status = instance.get("resolution_status")

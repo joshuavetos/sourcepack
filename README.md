@@ -182,7 +182,8 @@ The package metadata identifies the repository as the `1.10.0a3` public-alpha re
 - bounded local execution evidence and deterministic remediation prompts;
 - an authenticated local Workbench and versioned internal Command Center snapshot;
 - Git hooks, pull-request CI, a composite GitHub Action, and fleet summaries;
-- public JSON Schema validation and an optional hosted-control-plane surface.
+- public JSON Schema validation and an optional hosted-control-plane surface;
+- a baseline-owned Architecture Contract Layer for declared Python forbidden direct imports, with rule-scoped drift and last-known-valid evidence.
 
 Operational inputs are deliberately bounded. When evidence acquisition is incomplete, SourcePack preserves that uncertainty rather than turning the retained prefix into authoritative `PASS`. The detailed repository-grounded implementation inventory is in [`docs/current-behavior-audit.md`](docs/current-behavior-audit.md), and release changes are in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -195,7 +196,7 @@ These are opportunities, **not implemented behavior**. They are ordered roughly 
 - Add first-class dependency and command adapters for Rust, Go, Java/Kotlin, Ruby, PHP, .NET, Terraform, and Nix.
 - Model monorepo workspaces and dependency scope explicitly, including package ownership, nested manifests, and cross-package changes.
 - Expand Python and Node.js alias, extras, workspace, lockfile, generated-code, and dynamic-import handling while retaining visible uncertainty.
-- Add local symbol and API-surface evidence so a change can be checked for invented functions, configuration keys, routes, and schema fields—not only files, packages, and commands.
+- Expand architecture evidence beyond the current bounded forbidden-direct-import contract into local symbols, configuration keys, routes, and schema fields.
 - Add migration- and schema-aware checks for databases, API specifications, infrastructure plans, and generated clients.
 
 ### Workflow integrations

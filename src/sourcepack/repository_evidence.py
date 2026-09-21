@@ -185,6 +185,8 @@ def _package_json_scripts(packet: Path, *, packet_construction: bool = False) ->
                 package = json.loads(content)
             except json.JSONDecodeError:
                 return {}
+            if not isinstance(package, dict):
+                return {}
             scripts = package.get("scripts")
             return scripts if isinstance(scripts, dict) else {}
     return {}
@@ -640,6 +642,8 @@ def dependency_inventory(manifest: dict, packet: Path, *, packet_construction: b
                 package = json.loads(content)
             except json.JSONDecodeError:
                 package = {}
+            if not isinstance(package, dict):
+                continue
             for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
                 section_deps = package.get(section)
                 if isinstance(section_deps, dict):

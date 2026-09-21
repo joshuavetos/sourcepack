@@ -207,6 +207,9 @@ def analyze_patch(packet_path: str | Path, patch_text: str, changes: list[PatchF
         except json.JSONDecodeError:
             command_uncertainties.append({"id": "command_manifest_uncertain", "message": f"Could not parse {ch.path} as JSON", "path": ch.path})
             continue
+        if not isinstance(package, dict):
+            command_uncertainties.append({"id": "command_manifest_uncertain", "message": f"Expected {ch.path} to contain a JSON object", "path": ch.path})
+            continue
         package_scripts = package.get("scripts")
         if isinstance(package_scripts, dict):
             patch_scripts.update(str(script) for script in package_scripts if isinstance(script, str) and script not in scripts)
@@ -502,6 +505,8 @@ def _declared_dependency_scopes_by_ecosystem(manifest: dict, packet: Path, sourc
                 package = json.loads(content)
             except json.JSONDecodeError:
                 package = {}
+            if not isinstance(package, dict):
+                continue
             section_map = {"dependencies": "runtime", "peerDependencies": "runtime", "optionalDependencies": "optional", "devDependencies": "dev"}
             for section, target in section_map.items():
                 section_deps = package.get(section)
@@ -544,6 +549,9 @@ def _declared_dependency_names_from_patch_by_ecosystem_structural(changes: list[
                 package = json.loads(post)
             except json.JSONDecodeError:
                 uncertainties.append({"id": "dependency_manifest_uncertain", "message": f"Could not parse {ch.path} as JSON", "path": ch.path})
+                continue
+            if not isinstance(package, dict):
+                uncertainties.append({"id": "dependency_manifest_uncertain", "message": f"Expected {ch.path} to contain a JSON object", "path": ch.path})
                 continue
             for section in JS_DEP_SECTIONS:
                 section_deps = package.get(section)
@@ -592,6 +600,8 @@ def _declared_dependency_names_by_ecosystem(manifest: dict, packet: Path) -> dic
                 package = json.loads(content)
             except json.JSONDecodeError:
                 package = {}
+            if not isinstance(package, dict):
+                continue
             for section in JS_DEP_SECTIONS:
                 section_deps = package.get(section)
                 if isinstance(section_deps, dict):
@@ -634,6 +644,8 @@ def _workspace_package_names(packet: Path) -> set[str]:
         root = json.loads(contents.get("package.json", "{}"))
     except json.JSONDecodeError:
         return set()
+    if not isinstance(root, dict):
+        return set()
     workspaces = root.get("workspaces")
     patterns = workspaces if isinstance(workspaces, list) else workspaces.get("packages", []) if isinstance(workspaces, dict) else []
     names: set[str] = set()
@@ -647,6 +659,8 @@ def _workspace_package_names(packet: Path) -> set[str]:
                 try:
                     package = json.loads(content)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(package, dict):
                     continue
                 name = package.get("name")
                 if isinstance(name, str):
